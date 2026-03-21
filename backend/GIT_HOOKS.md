@@ -6,7 +6,13 @@
 
 ### 一键安装（推荐）
 
-**Windows:**
+**Windows PowerShell（推荐）:**
+```powershell
+cd backend
+.\setup-hooks.ps1
+```
+
+**Windows CMD:**
 ```bash
 cd backend
 setup-hooks.bat

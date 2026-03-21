@@ -274,4 +274,3 @@ re## 术语表
 4. THE Backend_Service SHALL 支持并发请求处理
 5. THE System SHALL 支持水平扩展以增加处理能力
 6. THE System SHALL 使用缓存机制优化重复请求的响应时间
-

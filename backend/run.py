@@ -1,6 +1,7 @@
 """
 Development server runner
 """
+
 import uvicorn
 
 from app.core.config import settings

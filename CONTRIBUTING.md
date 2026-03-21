@@ -131,13 +131,16 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 
 # 安装开发依赖
 pip install --upgrade pip
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
+pip install -r backend/requirements.txt
+pip install -r backend/requirements-dev.txt
 
 # 安装 Git hooks（重要！）
-cd backend
+# 从项目根目录运行
 
-# Windows:
+# Windows PowerShell:
+.\setup-hooks.ps1
+
+# Windows CMD:
 setup-hooks.bat
 
 # Linux/Mac:
@@ -150,12 +153,19 @@ chmod +x setup-hooks.sh
 本项目使用 pre-commit 框架管理 Git hooks。安装后，每次提交时会自动：
 
 1. **格式化代码** - Black, isort
-2. **检查代码质量** - flake8, mypy
+2. **检查代码质量** - flake8
 3. **检测密钥** - detect-secrets
 4. **验证提交消息** - Conventional Commits
 5. **运行测试** - pytest (pre-push)
 
-详细文档：[Git Hooks 配置指南](backend/GIT_HOOKS.md)
+**注意**: Mypy 类型检查已从 pre-commit hooks 中移除（因为依赖问题），但你可以手动运行：
+```bash
+mypy backend/app
+```
+
+详细文档：
+- [Git Hooks 配置指南](backend/GIT_HOOKS.md)
+- [提交消息规范](backend/COMMIT_CONVENTION.md)
 
 **跳过 hooks（紧急情况）：**
 ```bash

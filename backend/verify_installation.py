@@ -2,6 +2,7 @@
 安装验证脚本
 检查所有依赖是否正确安装
 """
+
 import sys
 
 
@@ -21,7 +22,7 @@ def check_package(package_name, import_name=None):
     """检查包是否已安装"""
     if import_name is None:
         import_name = package_name
-    
+
     try:
         module = __import__(import_name)
         version = getattr(module, "__version__", "未知版本")
@@ -38,17 +39,17 @@ def main():
     print("智能穿搭助手 - 安装验证")
     print("=" * 60)
     print()
-    
+
     # 检查 Python 版本
     print("1. 检查 Python 版本")
     print("-" * 60)
     python_ok = check_python_version()
     print()
-    
+
     # 检查核心依赖
     print("2. 检查核心依赖")
     print("-" * 60)
-    
+
     packages = [
         ("FastAPI", "fastapi"),
         ("Uvicorn", "uvicorn"),
@@ -58,14 +59,14 @@ def main():
         ("Loguru", "loguru"),
         ("HTTPX", "httpx"),
     ]
-    
+
     core_ok = all(check_package(name, import_name) for name, import_name in packages)
     print()
-    
+
     # 检查可选依赖（数据库、机器学习等）
     print("3. 检查可选依赖（如果未安装，后续任务会需要）")
     print("-" * 60)
-    
+
     optional_packages = [
         ("SQLAlchemy", "sqlalchemy"),
         ("Alembic", "alembic"),
@@ -74,25 +75,25 @@ def main():
         ("NumPy", "numpy"),
         ("TensorFlow", "tensorflow"),
     ]
-    
+
     for name, import_name in optional_packages:
         check_package(name, import_name)
     print()
-    
+
     # 检查开发工具
     print("4. 检查开发工具")
     print("-" * 60)
-    
+
     dev_packages = [
         ("Pytest", "pytest"),
         ("Black", "black"),
         ("isort", "isort"),
     ]
-    
+
     for name, import_name in dev_packages:
         check_package(name, import_name)
     print()
-    
+
     # 总结
     print("=" * 60)
     if python_ok and core_ok:

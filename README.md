@@ -107,7 +107,11 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt
 
 # 设置 Git hooks（重要！）
-# Windows:
+# 从项目根目录运行：
+# Windows PowerShell（推荐）:
+.\setup-hooks.ps1
+
+# Windows CMD:
 setup-hooks.bat
 
 # Linux/Mac:
@@ -133,19 +137,40 @@ pip install -e .
 
 本项目使用 pre-commit 框架管理 Git hooks，确保代码质量：
 
-- **Pre-commit**: 自动格式化、linting、类型检查
+- **Pre-commit**: 自动格式化、linting、安全检查
 - **Commit-msg**: 强制使用规范的提交消息（Conventional Commits）
 - **Pre-push**: 运行测试
 
 **快速安装：**
 ```bash
-cd backend
-setup-hooks.bat  # Windows
-# 或
-./setup-hooks.sh  # Linux/Mac
+# 从项目根目录运行
+cd D:\Users\omen\OneDrive\桌面\clothing-assistant
+
+# Windows PowerShell（推荐）:
+.\setup-hooks.ps1
+
+# Windows CMD:
+setup-hooks.bat
+
+# Linux/Mac:
+chmod +x setup-hooks.sh
+./setup-hooks.sh
 ```
 
-详细文档请查看 [Git Hooks 配置指南](backend/GIT_HOOKS.md)。
+**提交消息格式：**
+```bash
+# 格式：type(scope): description
+# Scope 是可选的
+
+git commit -m "feat: add new feature"
+git commit -m "feat(api): add user authentication"
+git commit -m "fix: resolve bug"
+```
+
+详细文档请查看：
+- 完整指南：[backend/GIT_HOOKS.md](backend/GIT_HOOKS.md)
+- 提交规范：[backend/COMMIT_CONVENTION.md](backend/COMMIT_CONVENTION.md)
+- 快速开始：[SETUP_HOOKS_README.md](SETUP_HOOKS_README.md)
 
 ## 开发状态
 

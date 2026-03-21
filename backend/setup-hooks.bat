@@ -9,7 +9,7 @@ echo ==========================================
 echo.
 
 REM Check if we're in a git repository
-if not exist "..\. git" (
+if not exist "..\.git" (
     echo [错误] 不在 Git 仓库中
     echo        请从项目的 backend 目录运行此脚本
     pause

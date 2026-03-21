@@ -1,6 +1,7 @@
 """
 Application configuration using Pydantic Settings
 """
+
 from typing import List
 
 from pydantic import Field
@@ -30,9 +31,7 @@ class Settings(BaseSettings):
     DATABASE_MAX_OVERFLOW: int = 10
 
     # Redis
-    REDIS_URL: str = Field(
-        default="redis://localhost:6379/0", description="Redis connection URL"
-    )
+    REDIS_URL: str = Field(default="redis://localhost:6379/0", description="Redis connection URL")
     REDIS_MAX_CONNECTIONS: int = 50
 
     # JWT Authentication
@@ -56,7 +55,7 @@ class Settings(BaseSettings):
         default="http://localhost:3000,http://localhost:8080",
         description="Allowed CORS origins (comma-separated)",
     )
-    
+
     @property
     def cors_origins_list(self) -> List[str]:
         """Parse CORS origins from comma-separated string"""
