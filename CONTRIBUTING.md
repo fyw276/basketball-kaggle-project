@@ -130,10 +130,36 @@ python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 
 # 安装开发依赖
+pip install --upgrade pip
+pip install -r requirements.txt
 pip install -r requirements-dev.txt
 
-# 安装 pre-commit hooks
-pre-commit install
+# 安装 Git hooks（重要！）
+cd backend
+
+# Windows:
+setup-hooks.bat
+
+# Linux/Mac:
+chmod +x setup-hooks.sh
+./setup-hooks.sh
+```
+
+### Git Hooks
+
+本项目使用 pre-commit 框架管理 Git hooks。安装后，每次提交时会自动：
+
+1. **格式化代码** - Black, isort
+2. **检查代码质量** - flake8, mypy
+3. **检测密钥** - detect-secrets
+4. **验证提交消息** - Conventional Commits
+5. **运行测试** - pytest (pre-push)
+
+详细文档：[Git Hooks 配置指南](backend/GIT_HOOKS.md)
+
+**跳过 hooks（紧急情况）：**
+```bash
+git commit --no-verify -m "emergency fix"
 ```
 
 ## 问题和讨论

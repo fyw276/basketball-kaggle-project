@@ -6,7 +6,7 @@
 
 ## 任务列表
 
-- [ ] 1. 项目初始化与基础设施搭建
+- [x] 1. 项目初始化与基础设施搭建
   - 创建项目目录结构（backend、mobile、cli、mcp、models）
   - 配置 Python 虚拟环境和依赖管理（requirements.txt 或 pyproject.toml）
   - 初始化 FastAPI 项目框架

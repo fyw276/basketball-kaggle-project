@@ -81,11 +81,11 @@ clothing-assistant/
 
 ### 环境要求
 
-- Python 3.9+
+- Python 3.11+ (推荐 3.14)
 - PostgreSQL 14+
 - Redis 7+
 - Flutter 3.x (移动端开发)
-- Node.js 16+ (可选，用于前端工具)
+- Git (版本控制)
 
 ### 安装步骤
 
@@ -94,11 +94,31 @@ clothing-assistant/
 git clone https://github.com/your-username/smart-outfit-assistant.git
 cd smart-outfit-assistant
 
-# 后端服务（待实现）
+# 后端服务
 cd backend
+
+# 创建虚拟环境
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# 安装依赖
+pip install --upgrade pip
 pip install -r requirements.txt
+pip install -r requirements-dev.txt
+
+# 设置 Git hooks（重要！）
+# Windows:
+setup-hooks.bat
+
+# Linux/Mac:
+chmod +x setup-hooks.sh
+./setup-hooks.sh
+
+# 配置环境变量
+cp .env.example .env
+
+# 启动服务器
+python run.py
 
 # 移动端（待实现）
 cd mobile
@@ -108,6 +128,24 @@ flutter pub get
 cd cli
 pip install -e .
 ```
+
+### Git Hooks 设置
+
+本项目使用 pre-commit 框架管理 Git hooks，确保代码质量：
+
+- **Pre-commit**: 自动格式化、linting、类型检查
+- **Commit-msg**: 强制使用规范的提交消息（Conventional Commits）
+- **Pre-push**: 运行测试
+
+**快速安装：**
+```bash
+cd backend
+setup-hooks.bat  # Windows
+# 或
+./setup-hooks.sh  # Linux/Mac
+```
+
+详细文档请查看 [Git Hooks 配置指南](backend/GIT_HOOKS.md)。
 
 ## 开发状态
 
@@ -154,3 +192,6 @@ pip install -e .
 ---
 
 **注意**: 本项目为毕业设计/课题研究项目，仅供学习和研究使用。
+年级：2024级
+学号：202452320220
+班级：智能科学与技术2班

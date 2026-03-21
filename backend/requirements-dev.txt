@@ -1,0 +1,24 @@
+# Include production requirements
+-r requirements.txt
+
+# Development Tools
+ipython==8.31.0
+ipdb==0.13.13
+
+# Code Quality
+flake8==7.1.1
+autopep8==2.3.1
+pre-commit==4.0.1
+
+# Testing
+faker==33.1.0
+factory-boy==3.3.1
+pytest-mock==3.14.0
+pytest-xdist==3.6.1
+
+# Documentation
+mkdocs==1.6.1
+mkdocs-material==9.5.48
+
+# Security
+detect-secrets==1.5.0
