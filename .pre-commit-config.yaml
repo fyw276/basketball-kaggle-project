@@ -84,13 +84,11 @@ repos:
     hooks:
       - id: pytest-check
         name: pytest-check
-        entry: bash -c 'cd backend && pytest'
+        entry: bash -c 'cd backend && python -m pytest -v --tb=short -x'
         language: system
         pass_filenames: false
         always_run: true
         stages: [pre-push]
-        args: ["-v", "--tb=short", "-x"]
-        # -x stops at first failure for faster feedback
 
 # CI configuration
 ci:
