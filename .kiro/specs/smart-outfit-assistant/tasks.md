@@ -13,21 +13,21 @@
   - 配置开发环境（linting、formatting、pre-commit hooks）
   - _需求: 9.1, 9.2_
 
-- [ ] 2. 数据库设计与初始化
-  - [ ] 2.1 设计并创建 PostgreSQL 数据库模式
+- [x] 2. 数据库设计与初始化
+  - [x] 2.1 设计并创建 PostgreSQL 数据库模式
     - 创建 users 表（user_id, username, email, password_hash, created_at, updated_at, is_active）
     - 创建 user_profiles 表（profile_id, user_id, height, body_type, skin_tone, style_preference, budget_range, avoid_body_parts）
     - 创建 garments 表（garment_id, user_id, category, main_color, secondary_colors, style_tags, fit_type, image_path, image_url, feature_vector）
     - 添加索引和外键约束
     - _需求: 14.1, 14.2, 14.3_
 
-  - [ ] 2.2 实现数据库连接和 ORM 配置
+  - [x] 2.2 实现数据库连接和 ORM 配置
     - 配置 SQLAlchemy 或 asyncpg 数据库连接
     - 实现数据库会话管理
     - 创建数据库迁移脚本（Alembic）
     - _需求: 9.10_
 
-  - [ ] 2.3 配置 Redis 缓存层
+  - [x] 2.3 配置 Redis 缓存层
     - 配置 Redis 连接
     - 实现缓存工具函数（get、set、delete）
     - _需求: 16.6_
