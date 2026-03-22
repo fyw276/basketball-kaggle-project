@@ -17,6 +17,12 @@ from app.services.user import (
     get_user_by_username,
     update_user,
 )
+from app.services.user_profile import (
+    create_profile,
+    delete_profile,
+    get_profile_by_user_id,
+    update_profile,
+)
 
 __all__ = [
     "hash_password",
@@ -30,4 +36,8 @@ __all__ = [
     "update_user",
     "delete_user",
     "authenticate_user",
+    "get_profile_by_user_id",
+    "create_profile",
+    "update_profile",
+    "delete_profile",
 ]

@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import auth_router, users_router
+from app.api import auth_router, profile_router, users_router
 from app.core.config import settings
 from app.core.logging import setup_logging
 
@@ -73,6 +73,7 @@ async def health_check():
 # Include routers
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(users_router, prefix="/api/v1")
+app.include_router(profile_router, prefix="/api/v1")
 
 
 if __name__ == "__main__":
