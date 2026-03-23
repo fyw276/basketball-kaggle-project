@@ -41,7 +41,55 @@
 - ✅ 测试数据库、Redis、认证功能
 - ✅ 提供详细的验证文档和故障排除指南
 
-### 13. 衣橱管理模块 ✅
+### 6. 图像识别模块 - 模型准备 ✅
+- ✅ 下载和配置 MobileNetV2 预训练模型
+- ✅ 实现模型加载函数（ModelLoader）
+- ✅ 实现图像预处理流程（ImagePreprocessor）
+  - 图像读取和格式转换
+  - 图像缩放到 224x224
+  - 归一化处理（[-1, 1]）
+  - 批量预处理函数
+- ✅ 实现特征提取器（FeatureExtractor）
+  - 1280 维特征向量提取
+  - L2 归一化
+  - 批量特征提取
+- ✅ 创建测试脚本验证功能
+
+### 7. 图像识别模块 - 品类识别 ✅
+- ✅ 定义 6 个品类常量（上衣/裤子/裙子/外套/鞋/包）
+- ✅ 实现 MobileNetV2 品类分类头（CategoryClassifier）
+- ✅ 实现 classify_category 函数
+- ✅ 实现置信度阈值处理逻辑（高/中/低置信度）
+- ✅ 创建图片上传端点（POST /api/v1/recognition/category）
+- ✅ 集成品类分类器到 API
+- ✅ 返回品类和置信度
+- ✅ 创建测试脚本验证功能
+
+### 8. 图像识别模块 - 颜色识别 ✅
+- ✅ 实现 K-Means 颜色聚类（ColorExtractor）
+- ✅ 实现主色和辅助色提取
+- ✅ 实现标准色系映射（10 种标准颜色）
+- ✅ 实现 RGB/HSV/Hex 颜色转换
+- ✅ 创建颜色识别端点（POST /api/v1/recognition/colors）
+- ✅ 创建测试脚本验证功能
+
+### 9. 图像识别模块 - 风格识别 ✅
+- ✅ 定义 12 个风格标签常量
+- ✅ 实现 MobileNetV2 风格分类头（StyleClassifier）
+- ✅ 实现多标签分类（Sigmoid 激活）
+- ✅ 实现置信度阈值过滤
+- ✅ 创建测试脚本验证功能
+
+### 10. 图像识别模块 - 完整流程集成 ✅
+- ✅ 实现 ImageRecognizer 类集成所有识别模块
+- ✅ 实现 recognize() 方法返回 RecognitionResult
+- ✅ 实现批量识别 recognize_batch() 方法
+- ✅ 实现完整识别 API 端点（POST /api/v1/recognition/analyze）
+- ✅ 实现错误处理和日志记录
+- ✅ 性能验证（< 2 秒每张图片）
+- ✅ 创建测试脚本验证功能
+
+### 11. 衣橱管理模块 ✅
 - ✅ 实现 Garment 数据模型（品类、颜色、风格、版型）
 - ✅ 实现图片存储服务
 - ✅ 实现添加服饰 API
@@ -76,20 +124,17 @@
 - `GET /docs` - Swagger UI 文档
 - `GET /redoc` - ReDoc 文档
 
-## 待实现模块 🚧
+### 图像识别 (Recognition)
+- `POST /api/v1/recognition/category` - 识别服饰品类
+- `GET /api/v1/recognition/categories` - 获取可用品类列表
+- `POST /api/v1/recognition/colors` - 提取服饰颜色
+- `POST /api/v1/recognition/analyze` - 完整图像识别分析（品类+颜色+风格+特征）
 
-### 6-11. 图像识别模块 🚧
-- ⏳ 下载和配置 MobileNetV2 预训练模型
-- ⏳ 实现图像预处理流程
-- ⏳ 实现品类识别（上衣/裤子/裙子/外套/鞋/包）
-- ⏳ 实现颜色识别（K-Means 聚类）
-- ⏳ 实现风格识别（多标签分类）
-- ⏳ 实现特征提取（1280 维向量）
-- ⏳ 集成完整图像识别流程
+## 待实现模块 🚧
 
 ### 12. 检查点 - 图像识别模块验证 ⏳
 
-### 14. 相似度分析模块 ⏳
+### 13. 相似度分析模块 ⏳
 - ⏳ 实现余弦相似度计算
 - ⏳ 实现相似度分级逻辑
 - ⏳ 实现相似度分析 API
@@ -198,18 +243,19 @@
 - **数据验证**: Pydantic 2.10.5
 - **迁移**: Alembic 1.14.0
 
+### AI/ML
+- **深度学习**: TensorFlow 2.18.0
+- **模型**: MobileNetV2 (ImageNet pretrained)
+- **图像处理**: OpenCV 4.10.0, Pillow 11.1.0
+- **科学计算**: NumPy 1.26.0+, scikit-learn 1.6.1
+- **特征提取**: 1280 维 L2-normalized vectors
+
 ### 开发工具
 - **代码格式化**: Black 24.10.0
 - **导入排序**: isort 5.13.2
 - **代码检查**: Flake8 7.1.1
 - **Git Hooks**: Pre-commit 框架
 - **提交规范**: Conventional Commits
-
-### AI/ML（待实现）
-- **图像识别**: TensorFlow 2.18.0
-- **模型**: MobileNetV2
-- **图像处理**: OpenCV 4.10.0, Pillow 11.1.0
-- **科学计算**: NumPy 2.0.2, scikit-learn 1.6.1
 
 ## 开发指南
 
@@ -277,6 +323,7 @@ backend/
 │   │   ├── users.py      # 用户端点
 │   │   ├── profile.py    # 用户画像端点
 │   │   ├── wardrobe.py   # 衣橱管理端点
+│   │   ├── recognition.py # 图像识别端点
 │   │   └── dependencies.py # 依赖注入
 │   ├── core/             # 核心配置
 │   │   ├── config.py     # 应用配置
@@ -300,11 +347,21 @@ backend/
 │   │   ├── user_profile.py # 画像服务
 │   │   ├── garment.py    # 服饰服务
 │   │   └── storage.py    # 存储服务
+│   ├── ml/               # 机器学习模块
+│   │   ├── model_loader.py         # MobileNetV2 模型加载
+│   │   ├── image_preprocessor.py   # 图像预处理
+│   │   ├── feature_extractor.py    # 特征提取
+│   │   ├── category_classifier.py  # 品类分类
+│   │   ├── color_extractor.py      # 颜色提取
+│   │   ├── style_classifier.py     # 风格分类
+│   │   ├── image_recognizer.py     # 完整识别流程
+│   │   └── README.md               # ML 模块文档
 │   └── main.py           # 应用入口
 ├── scripts/              # 工具脚本
 │   ├── init_db.py
 │   ├── test_db_connection.py
 │   ├── test_redis_connection.py
+│   ├── test_model_loading.py
 │   └── verify_infrastructure.py
 ├── tests/                # 测试
 ├── alembic/              # 数据库迁移

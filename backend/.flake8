@@ -1,0 +1,24 @@
+[flake8]
+max-line-length = 100
+extend-ignore = E203,W503
+exclude =
+    .git,
+    __pycache__,
+    .pytest_cache,
+    venv,
+    .venv,
+    *.egg-info,
+    .eggs,
+    dist,
+    build
+
+# Allow E402 (module level import not at top) in scripts and diagnostic tools
+per-file-ignores =
+    scripts/*.py:E402,E501,F821
+    diagnose_*.py:E402,F841,F811
+    fix_*.py:E402,E501,F841
+    test_*.py:E402,F401,F841
+    **/test_*.py:F401,F841
+    verify_*.py:E402,F401
+    check_*.py:E402
+    quick_*.py:E402
