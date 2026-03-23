@@ -1,0 +1,650 @@
+{
+  "info": {
+    "name": "Smart Outfit Assistant API",
+    "_postman_id": "smart-outfit-assistant-v1",
+    "description": "智能穿搭助手 API 完整测试集合",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000/api/v1",
+      "type": "string"
+    },
+    {
+      "key": "access_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "user_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "garment_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Authentication",
+      "item": [
+        {
+          "name": "Register User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const jsonData = pm.response.json();",
+                  "    pm.collectionVariables.set('user_id', jsonData.user_id);",
+                  "    pm.test('User registered successfully', function() {",
+                  "        pm.expect(jsonData).to.have.property('user_id');",
+                  "        pm.expect(jsonData).to.have.property('username');",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"testuser_{{$timestamp}}\",\n  \"email\": \"test_{{$timestamp}}@example.com\",\n  \"password\": \"SecurePass123\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "register"]
+            },
+            "description": "注册新用户账号"
+          },
+          "response": []
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const jsonData = pm.response.json();",
+                  "    pm.collectionVariables.set('access_token', jsonData.access_token);",
+                  "    pm.test('Login successful', function() {",
+                  "        pm.expect(jsonData).to.have.property('access_token');",
+                  "        pm.expect(jsonData.token_type).to.eql('bearer');",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"testuser\",\n  \"password\": \"SecurePass123\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "login"]
+            },
+            "description": "用户登录获取访问令牌"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. User Profile",
+      "item": [
+        {
+          "name": "Create Profile",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"height\": 168,\n  \"body_type\": \"沙漏型\",\n  \"skin_tone\": \"冷白\",\n  \"style_preference\": [\"通勤\", \"简约\", \"优雅\"],\n  \"budget_range\": \"中档\",\n  \"avoid_body_parts\": [\"肩部\"]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/profile",
+              "host": ["{{base_url}}"],
+              "path": ["profile"]
+            },
+            "description": "创建用户画像"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/profile",
+              "host": ["{{base_url}}"],
+              "path": ["profile"]
+            },
+            "description": "获取用户画像"
+          },
+          "response": []
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"style_preference\": [\"通勤\", \"简约\", \"优雅\", \"休闲\"],\n  \"budget_range\": \"高档\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/profile",
+              "host": ["{{base_url}}"],
+              "path": ["profile"]
+            },
+            "description": "更新用户画像"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. Image Recognition",
+      "item": [
+        {
+          "name": "Recognize Category",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "/path/to/test_image.jpg",
+                  "description": "上传服饰图片"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/recognition/category",
+              "host": ["{{base_url}}"],
+              "path": ["recognition", "category"]
+            },
+            "description": "识别服饰品类"
+          },
+          "response": []
+        },
+        {
+          "name": "Recognize Colors",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "/path/to/test_image.jpg"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/recognition/colors",
+              "host": ["{{base_url}}"],
+              "path": ["recognition", "colors"]
+            },
+            "description": "提取服饰颜色"
+          },
+          "response": []
+        },
+        {
+          "name": "Complete Analysis",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const jsonData = pm.response.json();",
+                  "    pm.test('Analysis completed', function() {",
+                  "        pm.expect(jsonData).to.have.property('category');",
+                  "        pm.expect(jsonData).to.have.property('main_color');",
+                  "        pm.expect(jsonData).to.have.property('style_tags');",
+                  "        pm.expect(jsonData).to.have.property('feature_vector');",
+                  "        pm.expect(jsonData.feature_vector).to.have.lengthOf(1280);",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "/path/to/test_image.jpg"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/recognition/analyze",
+              "host": ["{{base_url}}"],
+              "path": ["recognition", "analyze"]
+            },
+            "description": "完整图像识别分析"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Categories",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/recognition/categories",
+              "host": ["{{base_url}}"],
+              "path": ["recognition", "categories"]
+            },
+            "description": "获取支持的品类列表"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. Wardrobe Management",
+      "item": [
+        {
+          "name": "Add Garment",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const jsonData = pm.response.json();",
+                  "    pm.collectionVariables.set('garment_id', jsonData.garment_id);",
+                  "    pm.test('Garment added successfully', function() {",
+                  "        pm.expect(jsonData).to.have.property('garment_id');",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "/path/to/test_image.jpg"
+                },
+                {
+                  "key": "category",
+                  "value": "上衣",
+                  "type": "text"
+                },
+                {
+                  "key": "main_color_name",
+                  "value": "蓝",
+                  "type": "text"
+                },
+                {
+                  "key": "main_color_rgb",
+                  "value": "52,120,180",
+                  "type": "text"
+                },
+                {
+                  "key": "main_color_hsv",
+                  "value": "210.0,71.1,70.6",
+                  "type": "text"
+                },
+                {
+                  "key": "main_color_hex",
+                  "value": "#3478b4",
+                  "type": "text"
+                },
+                {
+                  "key": "style_tags",
+                  "value": "通勤,简约",
+                  "type": "text"
+                },
+                {
+                  "key": "fit_type",
+                  "value": "合身",
+                  "type": "text"
+                },
+                {
+                  "key": "notes",
+                  "value": "蓝色衬衫",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/wardrobe/garments",
+              "host": ["{{base_url}}"],
+              "path": ["wardrobe", "garments"]
+            },
+            "description": "添加服饰到衣橱"
+          },
+          "response": []
+        },
+        {
+          "name": "List Garments",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/wardrobe/garments?page=1&page_size=20",
+              "host": ["{{base_url}}"],
+              "path": ["wardrobe", "garments"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "查询衣橱列表"
+          },
+          "response": []
+        },
+        {
+          "name": "List Garments (Filter by Category)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/wardrobe/garments?category=上衣",
+              "host": ["{{base_url}}"],
+              "path": ["wardrobe", "garments"],
+              "query": [
+                {
+                  "key": "category",
+                  "value": "上衣"
+                }
+              ]
+            },
+            "description": "按品类筛选衣橱"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Garment",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/wardrobe/garments/{{garment_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["wardrobe", "garments", "{{garment_id}}"]
+            },
+            "description": "获取服饰详情"
+          },
+          "response": []
+        },
+        {
+          "name": "Update Garment",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"style_tags\": [\"通勤\", \"简约\", \"优雅\"],\n  \"fit_type\": \"宽松\",\n  \"notes\": \"更新后的备注\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/wardrobe/garments/{{garment_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["wardrobe", "garments", "{{garment_id}}"]
+            },
+            "description": "更新服饰信息"
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Garment",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/wardrobe/garments/{{garment_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["wardrobe", "garments", "{{garment_id}}"]
+            },
+            "description": "删除服饰"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "5. Analysis",
+      "item": [
+        {
+          "name": "Similarity Analysis",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "/path/to/test_image.jpg"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/analysis/similarity",
+              "host": ["{{base_url}}"],
+              "path": ["analysis", "similarity"]
+            },
+            "description": "相似度分析"
+          },
+          "response": []
+        },
+        {
+          "name": "Outfit Recommendations",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "/path/to/test_image.jpg"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/analysis/outfits?num_outfits=3",
+              "host": ["{{base_url}}"],
+              "path": ["analysis", "outfits"],
+              "query": [
+                {
+                  "key": "num_outfits",
+                  "value": "3"
+                }
+              ]
+            },
+            "description": "搭配推荐"
+          },
+          "response": []
+        },
+        {
+          "name": "Suitability Analysis",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{access_token}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "/path/to/test_image.jpg"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/analysis/suitability",
+              "host": ["{{base_url}}"],
+              "path": ["analysis", "suitability"]
+            },
+            "description": "适合度评分"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "6. Health Check",
+      "item": [
+        {
+          "name": "Root",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8000/",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8000",
+              "path": [""]
+            },
+            "description": "根端点"
+          },
+          "response": []
+        },
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8000/health",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "8000",
+              "path": ["health"]
+            },
+            "description": "健康检查"
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
