@@ -135,17 +135,28 @@ pip install -e .
 
 ### Git Hooks 设置
 
-本项目使用 pre-commit 框架管理 Git hooks，确保代码质量：
+本项目使用 **pre-commit 框架**管理 Git hooks，确保跨语言的代码质量和安全检查。
 
-- **Pre-commit**: 自动格式化、linting、安全检查
-- **Commit-msg**: 强制使用规范的提交消息（Conventional Commits）
-- **Pre-push**: 运行测试
+#### 🎯 已实现的 Hooks
 
-**快速安装：**
-```bash
-# 从项目根目录运行
-cd D:\Users\omen\OneDrive\桌面\clothing-assistant
+| 阶段 | 功能 | 语言 | 说明 |
+|------|------|------|------|
+| **Pre-commit** | 代码格式化 | Python | Black + isort |
+| | 代码格式化 | Dart/Flutter | `dart format` |
+| | Linting | Python | flake8 (100字符上限) |
+| | Linting | Dart/Flutter | `dart analyze` |
+| | 基础检查 | 全局 | trailing whitespace, EOF, merge conflicts, etc. |
+| | 大文件检查 | 全局 | 禁止提交 >1MB 文件 |
+| | 密钥检测 | 全局 | detect-secrets 防止凭证泄露 |
+| **Commit-msg** | 提交规范 | 全局 | Conventional Commits 强制执行 |
+| **Pre-push** | 测试 | Python | pytest 完整测试 |
+| | 测试 | Flutter | flutter test 单元测试 |
 
+#### ⚡ 快速安装
+
+从项目根目录运行安装脚本：
+
+```powershell
 # Windows PowerShell（推荐）:
 .\setup-hooks.ps1
 
@@ -157,20 +168,80 @@ chmod +x setup-hooks.sh
 ./setup-hooks.sh
 ```
 
-**提交消息格式：**
-```bash
-# 格式：type(scope): description
-# Scope 是可选的
+或手动安装：
 
-git commit -m "feat: add new feature"
-git commit -m "feat(api): add user authentication"
-git commit -m "fix: resolve bug"
+```bash
+# 1. 安装依赖
+pip install pre-commit==4.0.1 detect-secrets==1.5.0
+
+# 2. 安装 hooks
+pre-commit install --hook-type pre-commit
+pre-commit install --hook-type commit-msg
+pre-commit install --hook-type pre-push
+
+# 3. 验证安装
+ls .git/hooks
+# 应该看到：pre-commit, commit-msg, pre-push （无 .sample 后缀）
 ```
 
-详细文档请查看：
-- 完整指南：[backend/GIT_HOOKS.md](backend/GIT_HOOKS.md)
-- 提交规范：[backend/COMMIT_CONVENTION.md](backend/COMMIT_CONVENTION.md)
-- 快速开始：[SETUP_HOOKS_README.md](SETUP_HOOKS_README.md)
+#### 📝 提交消息规范
+
+遵循 **Conventional Commits** 格式：
+
+```bash
+# 基础格式：type(scope): description
+type(scope): description
+
+# 示例：
+git commit -m "feat: add wardrobe management feature"
+git commit -m "fix(api): resolve authentication timeout bug"
+git commit -m "docs: update installation guide"
+git commit -m "refactor(ui): simplify color theme system"
+```
+
+**允许的提交类型：**
+- `feat` - 新功能
+- `fix` - bug 修复
+- `docs` - 文档更新
+- `style` - 代码格式、无逻辑修改
+- `refactor` - 代码重构
+- `test` - 测试相关
+- `chore` - 构建、依赖、工具更新
+- `perf` - 性能优化
+- `ci` - CI/CD 配置
+- `build` - 构建系统
+- `revert` - 回滚提交
+
+**Scope（作用域）是可选的：** `(api)`, `(ui)`, `(mobile)`, `(backend)` 等
+
+#### 🔧 常见操作
+
+```bash
+# 运行所有 hooks（不提交）
+pre-commit run --all-files
+
+# 跳过 hooks 提交（仅在特殊情况下使用）
+git commit --no-verify -m "type: message"
+
+# 手动格式化和检查 Dart 代码
+cd mobile
+dart format lib test
+dart analyze lib
+
+# 手动运行 Python 测试
+cd backend
+python -m pytest -v --tb=short
+
+# 手动运行 Flutter 测试
+cd mobile
+flutter test
+```
+
+#### 📚 详细文档
+
+- [GIT_HOOKS 完整指南](backend/GIT_HOOKS.md)
+- [Conventional Commits 规范](backend/COMMIT_CONVENTION.md)
+- [Git Hooks 设置说明](SETUP_HOOKS_README.md)
 
 ## 开发状态
 

@@ -55,6 +55,10 @@ class Settings(BaseSettings):
         default="http://localhost:3000,http://localhost:8080",
         description="Allowed CORS origins (comma-separated)",
     )
+    CORS_ALLOW_ALL_LOCALHOST: bool = Field(
+        default=True,
+        description="Allow all localhost ports (useful for Flutter Web development)",
+    )
 
     @property
     def cors_origins_list(self) -> List[str]:

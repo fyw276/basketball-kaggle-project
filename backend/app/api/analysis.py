@@ -395,13 +395,40 @@ async def analyze_suitability(
         image_bytes = await file.read()
 
         # Initialize image recognizer
-        recognizer = ImageRecognizer()
+        try:
+            recognizer = ImageRecognizer()
+        except Exception as e:
+            import traceback
+
+            traceback.print_exc()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to initialize recognizer: {str(e)}",
+            )
 
         # Recognize image
-        recognition_result: RecognitionResult = recognizer.recognize(image_bytes)
+        try:
+            recognition_result: RecognitionResult = recognizer.recognize(image_bytes)
+        except Exception as e:
+            import traceback
+
+            traceback.print_exc()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Image recognition failed: {str(e)}",
+            )
 
         # Get user profile
-        user_profile = get_profile_by_user_id(db, current_user.user_id)
+        try:
+            user_profile = get_profile_by_user_id(db, current_user.user_id)
+        except Exception as e:
+            import traceback
+
+            traceback.print_exc()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get user profile: {str(e)}",
+            )
 
         if not user_profile:
             raise HTTPException(
@@ -410,18 +437,36 @@ async def analyze_suitability(
             )
 
         # Initialize suitability scorer
-        from app.services.suitability_scorer import SuitabilityScorer
+        try:
+            from app.services.suitability_scorer import SuitabilityScorer
 
-        scorer = SuitabilityScorer()
+            scorer = SuitabilityScorer()
+        except Exception as e:
+            import traceback
+
+            traceback.print_exc()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to initialize scorer: {str(e)}",
+            )
 
         # Calculate suitability score
-        suitability_result = scorer.calculate_score(
-            garment_color=recognition_result.main_color,
-            secondary_colors=recognition_result.secondary_colors,
-            garment_fit=recognition_result.fit_type,
-            garment_styles=recognition_result.style_tags,
-            user_profile=user_profile,
-        )
+        try:
+            suitability_result = scorer.calculate_score(
+                garment_color=recognition_result.main_color,
+                secondary_colors=recognition_result.secondary_colors,
+                garment_fit=None,  # fit_type is not available from recognition
+                garment_styles=recognition_result.style_tags,
+                user_profile=user_profile,
+            )
+        except Exception as e:
+            import traceback
+
+            traceback.print_exc()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Score calculation failed: {str(e)}",
+            )
 
         return SuitabilityAnalysisResponse(
             garment={
@@ -430,7 +475,7 @@ async def analyze_suitability(
                 "main_color": recognition_result.main_color.model_dump(),
                 "secondary_colors": [c.model_dump() for c in recognition_result.secondary_colors],
                 "style_tags": recognition_result.style_tags,
-                "fit_type": recognition_result.fit_type,
+                "fit_type": None,  # Not available from recognition
             },
             suitability_score=suitability_result.suitability_score,
             color_score=suitability_result.color_score,
@@ -441,12 +486,20 @@ async def analyze_suitability(
             suggestions=suitability_result.suggestions,
         )
 
+    except HTTPException:
+        raise
     except ValueError as e:
+        import traceback
+
+        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Image processing failed: {str(e)}",
         )
     except Exception as e:
+        import traceback
+
+        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Suitability analysis failed: {str(e)}",

@@ -2,10 +2,13 @@
 Main FastAPI application entry point
 """
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError as PydanticValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -17,6 +20,7 @@ from app.api import (
     users_router,
     wardrobe_router,
 )
+from app.api.wardrobe_simple import router as wardrobe_simple_router
 from app.core.config import settings
 from app.core.error_handlers import (
     app_exception_handler,
@@ -70,13 +74,24 @@ app = FastAPI(
 )
 
 # Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins_list,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if settings.CORS_ALLOW_ALL_LOCALHOST:
+    # Allow all localhost ports for development (Flutter Web uses random ports)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    # Use specific origins from configuration
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins_list,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # Register exception handlers
 app.add_exception_handler(AppException, app_exception_handler)
@@ -268,8 +283,14 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(users_router, prefix="/api/v1")
 app.include_router(profile_router, prefix="/api/v1")
 app.include_router(wardrobe_router, prefix="/api/v1")
+app.include_router(wardrobe_simple_router, prefix="/api/v1")  # Simplified API
 app.include_router(recognition_router, prefix="/api/v1")
 app.include_router(analysis_router, prefix="/api/v1")
+
+# Mount static files for uploaded images
+upload_dir = Path(settings.UPLOAD_DIR)
+upload_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(upload_dir)), name="uploads")
 
 
 if __name__ == "__main__":

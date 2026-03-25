@@ -82,9 +82,11 @@ class StorageService:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # Generate URL (relative path)
+        # Generate URL (full URL with base URL)
         relative_path = f"{user_id}/{filename}"
-        file_url = f"/uploads/{relative_path}"
+        # Use http://localhost:8000 for development
+        base_url = "http://localhost:8000"
+        file_url = f"{base_url}/uploads/{relative_path}"
 
         return str(file_path), file_url
 

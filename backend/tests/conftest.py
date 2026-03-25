@@ -76,3 +76,51 @@ def setup_database(test_engine):
     Base.metadata.create_all(bind=test_engine)
     yield
     # Tables will be cleaned before next test
+
+
+@pytest.fixture
+def client(test_client):
+    """Provide test client for each test function"""
+    return test_client
+
+
+@pytest.fixture
+def auth_headers(client):
+    """Create a test user and return authentication headers"""
+    # Register user
+    user_data = {
+        "username": "testuser",
+        "email": "testuser@example.com",
+        "password": "Test123!@#",
+    }
+    client.post("/api/v1/auth/register", json=user_data)
+
+    # Login to get token
+    login_response = client.post(
+        "/api/v1/auth/login",
+        json={"username": user_data["username"], "password": user_data["password"]},
+    )
+    token = login_response.json()["access_token"]
+
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def second_user_headers(client):
+    """Create a second test user and return authentication headers"""
+    # Register second user
+    user_data = {
+        "username": "testuser2",
+        "email": "testuser2@example.com",
+        "password": "Test123!@#",
+    }
+    client.post("/api/v1/auth/register", json=user_data)
+
+    # Login to get token
+    login_response = client.post(
+        "/api/v1/auth/login",
+        json={"username": user_data["username"], "password": user_data["password"]},
+    )
+    token = login_response.json()["access_token"]
+
+    return {"Authorization": f"Bearer {token}"}

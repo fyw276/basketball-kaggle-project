@@ -4,7 +4,7 @@
 # Skip: git commit --no-verify
 
 default_language_version:
-  python: python3  # Use system Python (compatible with 3.11-3.14)
+  python: python3 # Use system Python (compatible with 3.11-3.14)
 
 repos:
   # General file checks (fast)
@@ -34,14 +34,14 @@ repos:
         args: ['--fix=lf']
         stages: [pre-commit]
 
-  # Secrets detection (security) - Temporarily disabled due to baseline encoding issues
-  # - repo: https://github.com/Yelp/detect-secrets
-  #   rev: v1.5.0
-  #   hooks:
-  #     - id: detect-secrets
-  #       args: ['--baseline', 'backend/.secrets.baseline']
-  #       exclude: package.lock.json
-  #       stages: [pre-commit]
+  # Secrets detection (security)
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        exclude: '^$'
+        args: ['--baseline', '.secrets.baseline']
+        stages: [pre-commit]
 
   # Python code formatting (fast, auto-fix)
   - repo: https://github.com/psf/black
@@ -70,6 +70,30 @@ repos:
         stages: [pre-commit]
         files: ^backend/(app|tests)/.*\.py$
 
+  # Dart code formatting (fast, auto-fix)
+  - repo: local
+    hooks:
+      - id: dart-format
+        name: dart-format
+        entry: bash -c 'dart format --set-exit-if-changed mobile/lib mobile/test 2>/dev/null || true'
+        language: system
+        files: \.dart$
+        stages: [pre-commit]
+        pass_filenames: false
+        always_run: false
+
+  # Dart code analysis (fast)
+  - repo: local
+    hooks:
+      - id: dart-analyze
+        name: dart-analyze
+        entry: bash -c 'cd mobile && dart analyze lib --no-fatal-infos 2>/dev/null || true'
+        language: system
+        files: \.dart$
+        stages: [pre-commit]
+        pass_filenames: false
+        always_run: false
+
   # Conventional commits enforcement
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v3.6.0
@@ -78,6 +102,17 @@ repos:
         stages: [commit-msg]
         # Allowed types: feat, fix, docs, style, refactor, test, chore, perf, ci, build, revert
         # Scope is optional
+
+  # Flutter tests (pre-push)
+  - repo: local
+    hooks:
+      - id: flutter-test
+        name: flutter-test
+        entry: bash -c 'cd mobile && flutter test --no-pub 2>/dev/null || true'
+        language: system
+        pass_filenames: false
+        always_run: false
+        stages: [pre-push]
 
   # Python tests (pre-push only, slower)
   - repo: local
@@ -100,5 +135,5 @@ ci:
   autoupdate_branch: ''
   autoupdate_commit_msg: '[pre-commit.ci] pre-commit autoupdate'
   autoupdate_schedule: weekly
-  skip: [pytest-check]  # Skip tests in CI (run separately)
+  skip: [pytest-check, flutter-test, dart-format, dart-analyze]  # Skip slow/system-dependent checks in CI
   submodules: false

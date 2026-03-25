@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API 测试工具</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            border-bottom: 3px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+        .section {
+            margin: 30px 0;
+            padding: 20px;
+            background: #f9f9f9;
+            border-radius: 5px;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .output {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .success {
+            color: #4CAF50;
+        }
+        .error {
+            color: #f44336;
+        }
+        .info {
+            color: #2196F3;
+        }
+        input {
+            width: 100%;
+            padding: 10px;
+            margin: 5px 0;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        label {
+            display: block;
+            margin-top: 10px;
+            font-weight: bold;
+            color: #555;
+        }
+        .status {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .status.online {
+            background: #4CAF50;
+            color: white;
+        }
+        .status.offline {
+            background: #f44336;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 智能穿搭助手 API 测试工具</h1>
+
+        <div class="section">
+            <h2>后端状态</h2>
+            <button onclick="checkHealth()">检查后端状态</button>
+            <div id="healthOutput" class="output" style="display:none;"></div>
+        </div>
+
+        <div class="section">
+            <h2>注册测试</h2>
+            <label>用户名:</label>
+            <input type="text" id="regUsername" placeholder="输入用户名">
+
+            <label>邮箱:</label>
+            <input type="email" id="regEmail" placeholder="输入邮箱">
+
+            <label>密码:</label>
+            <input type="password" id="regPassword" value="Test123!@#" placeholder="至少8个字符，包含字母、数字和特殊字符">
+
+            <br><br>
+            <button onclick="generateUniqueUser()">生成唯一用户名</button>
+            <button onclick="testRegister()">测试注册</button>
+            <div id="registerOutput" class="output" style="display:none;"></div>
+        </div>
+
+        <div class="section">
+            <h2>登录测试</h2>
+            <label>用户名:</label>
+            <input type="text" id="loginUsername" placeholder="输入用户名">
+
+            <label>密码:</label>
+            <input type="password" id="loginPassword" value="Test123!@#" placeholder="输入密码">
+
+            <br><br>
+            <button onclick="testLogin()">测试登录</button>
+            <div id="loginOutput" class="output" style="display:none;"></div>
+        </div>
+
+        <div class="section">
+            <h2>完整流程测试</h2>
+            <button onclick="testFullFlow()">自动测试: 注册 → 登录 → 获取用户信息</button>
+            <div id="fullFlowOutput" class="output" style="display:none;"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000/api/v1';
+        let currentToken = null;
+
+        function log(elementId, message, type = 'info') {
+            const output = document.getElementById(elementId);
+            output.style.display = 'block';
+            const timestamp = new Date().toLocaleTimeString();
+            const className = type === 'success' ? 'success' : type === 'error' ? 'error' : 'info';
+            output.innerHTML += `<span class="${className}">[${timestamp}] ${message}</span>\n`;
+            output.scrollTop = output.scrollHeight;
+        }
+
+        function clearLog(elementId) {
+            const output = document.getElementById(elementId);
+            output.innerHTML = '';
+        }
+
+        async function checkHealth() {
+            clearLog('healthOutput');
+            log('healthOutput', '正在检查后端状态...', 'info');
+
+            try {
+                const response = await fetch('http://localhost:8000/health');
+                const data = await response.json();
+
+                if (response.ok) {
+                    log('healthOutput', '✅ 后端服务器正常运行', 'success');
+                    log('healthOutput', JSON.stringify(data, null, 2), 'success');
+                } else {
+                    log('healthOutput', '❌ 后端返回错误', 'error');
+                    log('healthOutput', JSON.stringify(data, null, 2), 'error');
+                }
+            } catch (error) {
+                log('healthOutput', '❌ 无法连接到后端服务器', 'error');
+                log('healthOutput', error.message, 'error');
+            }
+        }
+
+        function generateUniqueUser() {
+            const timestamp = Date.now();
+            document.getElementById('regUsername').value = 'flutter_' + timestamp;
+            document.getElementById('regEmail').value = 'flutter_' + timestamp + '@test.com';
+            log('registerOutput', '✅ 已生成唯一用户名和邮箱', 'success');
+        }
+
+        async function testRegister() {
+            clearLog('registerOutput');
+
+            const username = document.getElementById('regUsername').value;
+            const email = document.getElementById('regEmail').value;
+            const password = document.getElementById('regPassword').value;
+
+            if (!username || !email || !password) {
+                log('registerOutput', '❌ 请填写所有字段', 'error');
+                return;
+            }
+
+            log('registerOutput', '正在注册...', 'info');
+            log('registerOutput', `用户名: ${username}`, 'info');
+            log('registerOutput', `邮箱: ${email}`, 'info');
+            log('registerOutput', `密码: ${password.replace(/./g, '*')}`, 'info');
+
+            try {
+                const response = await fetch(`${API_BASE}/auth/register`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ username, email, password })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    log('registerOutput', '✅ 注册成功！', 'success');
+                    log('registerOutput', JSON.stringify(data, null, 2), 'success');
+
+                    // 自动填充登录表单
+                    document.getElementById('loginUsername').value = username;
+                    document.getElementById('loginPassword').value = password;
+                    log('registerOutput', '✅ 已自动填充登录表单', 'success');
+                } else {
+                    log('registerOutput', `❌ 注册失败 (${response.status})`, 'error');
+                    log('registerOutput', JSON.stringify(data, null, 2), 'error');
+                }
+            } catch (error) {
+                log('registerOutput', '❌ 请求失败', 'error');
+                log('registerOutput', error.message, 'error');
+            }
+        }
+
+        async function testLogin() {
+            clearLog('loginOutput');
+
+            const username = document.getElementById('loginUsername').value;
+            const password = document.getElementById('loginPassword').value;
+
+            if (!username || !password) {
+                log('loginOutput', '❌ 请填写用户名和密码', 'error');
+                return;
+            }
+
+            log('loginOutput', '正在登录...', 'info');
+            log('loginOutput', `用户名: ${username}`, 'info');
+
+            try {
+                const response = await fetch(`${API_BASE}/auth/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    currentToken = data.access_token;
+                    log('loginOutput', '✅ 登录成功！', 'success');
+                    log('loginOutput', `Token: ${data.access_token.substring(0, 50)}...`, 'success');
+                    log('loginOutput', '✅ Token 已保存，可以用于后续请求', 'success');
+                } else {
+                    log('loginOutput', `❌ 登录失败 (${response.status})`, 'error');
+                    log('loginOutput', JSON.stringify(data, null, 2), 'error');
+                }
+            } catch (error) {
+                log('loginOutput', '❌ 请求失败', 'error');
+                log('loginOutput', error.message, 'error');
+            }
+        }
+
+        async function testFullFlow() {
+            clearLog('fullFlowOutput');
+
+            const timestamp = Date.now();
+            const username = 'auto_' + timestamp;
+            const email = 'auto_' + timestamp + '@test.com';
+            const password = 'Test123!@#';
+
+            log('fullFlowOutput', '🚀 开始完整流程测试', 'info');
+            log('fullFlowOutput', '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━', 'info');
+
+            // 步骤 1: 注册
+            log('fullFlowOutput', '\n📝 步骤 1: 注册新用户', 'info');
+            log('fullFlowOutput', `用户名: ${username}`, 'info');
+            log('fullFlowOutput', `邮箱: ${email}`, 'info');
+
+            try {
+                const registerResponse = await fetch(`${API_BASE}/auth/register`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, email, password })
+                });
+
+                const registerData = await registerResponse.json();
+
+                if (!registerResponse.ok) {
+                    log('fullFlowOutput', '❌ 注册失败', 'error');
+                    log('fullFlowOutput', JSON.stringify(registerData, null, 2), 'error');
+                    return;
+                }
+
+                log('fullFlowOutput', '✅ 注册成功', 'success');
+                log('fullFlowOutput', `用户ID: ${registerData.user_id}`, 'success');
+
+                // 步骤 2: 登录
+                log('fullFlowOutput', '\n🔐 步骤 2: 登录', 'info');
+
+                const loginResponse = await fetch(`${API_BASE}/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const loginData = await loginResponse.json();
+
+                if (!loginResponse.ok) {
+                    log('fullFlowOutput', '❌ 登录失败', 'error');
+                    log('fullFlowOutput', JSON.stringify(loginData, null, 2), 'error');
+                    return;
+                }
+
+                log('fullFlowOutput', '✅ 登录成功', 'success');
+                log('fullFlowOutput', `Token: ${loginData.access_token.substring(0, 50)}...`, 'success');
+
+                // 步骤 3: 获取用户信息
+                log('fullFlowOutput', '\n👤 步骤 3: 获取用户信息', 'info');
+
+                const meResponse = await fetch(`${API_BASE}/users/me`, {
+                    headers: {
+                        'Authorization': `Bearer ${loginData.access_token}`
+                    }
+                });
+
+                const meData = await meResponse.json();
+
+                if (!meResponse.ok) {
+                    log('fullFlowOutput', '❌ 获取用户信息失败', 'error');
+                    log('fullFlowOutput', JSON.stringify(meData, null, 2), 'error');
+                    return;
+                }
+
+                log('fullFlowOutput', '✅ 获取用户信息成功', 'success');
+                log('fullFlowOutput', JSON.stringify(meData, null, 2), 'success');
+
+                log('fullFlowOutput', '\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━', 'info');
+                log('fullFlowOutput', '🎉 完整流程测试成功！', 'success');
+                log('fullFlowOutput', '\n💡 这证明后端 API 完全正常工作', 'success');
+                log('fullFlowOutput', '💡 如果 Flutter Web 仍然失败，问题在前端代码', 'success');
+
+            } catch (error) {
+                log('fullFlowOutput', '❌ 测试过程中出错', 'error');
+                log('fullFlowOutput', error.message, 'error');
+            }
+        }
+
+        // 页面加载时自动检查后端状态
+        window.onload = function() {
+            checkHealth();
+            generateUniqueUser();
+        };
+    </script>
+</body>
+</html>

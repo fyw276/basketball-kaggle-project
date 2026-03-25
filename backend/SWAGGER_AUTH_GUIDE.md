@@ -1,179 +1,208 @@
-# 🔐 Swagger UI 认证指南
+# Swagger UI 认证使用指南
 
-## 问题：创建用户画像时返回 401 Unauthorized
+## 问题说明
 
-如果你在 Swagger UI 中测试 `POST /api/v1/profile` 时遇到 401 错误，最常见的原因是 **Authorize 对话框中的 Token 格式不正确**。
+当你在 Swagger UI 中测试需要认证的 API（如相似度分析、搭配推荐等）时，如果没有提供 JWT token，会收到 403 Forbidden 错误：
 
----
-
-## ✅ 正确的认证步骤
-
-### 步骤 1: 登录获取 Token
-
-1. 展开 `POST /api/v1/auth/login`
-2. 点击 "Try it out"
-3. 输入登录信息：
-   ```json
-   {
-     "username": "your_username",
-     "password": "your_password"
-   }
-   ```
-4. 点击 "Execute"
-5. 在响应中找到 `access_token`，**完整复制整个 Token**
-
-**响应示例**：
 ```json
 {
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJmNzI4NDY1Yi1lMjhiLTQyZTctYTA2Mi0zNDg5ZWM3NDQyOWUiLCJ1c2VybmFtZSI6Im1hbnVhbF90ZXN0X3VzZXIiLCJleHAiOjE3NDI3MzYwNTh9.example",
-  "token_type": "bearer"
+  "error": {
+    "type": "JWTException",
+    "message": "JWT token is required",
+    "status_code": 403,
+    "path": "/api/v1/analysis/similarity"
+  }
 }
 ```
 
-### 步骤 2: 在 Swagger UI 中授权
+## 解决方案：在 Swagger UI 中添加认证
 
-1. 点击页面右上角的 **"Authorize" 🔓** 按钮
-2. 在弹出的对话框中：
-   - **只粘贴 Token 本身**
-   - **不要包含 "Bearer" 前缀**
-   - **不要包含引号**
-   - **确保 Token 完整（没有被截断）**
+### 步骤 1: 注册用户（如果还没有账号）
 
-#### ❌ 错误示例：
+1. 在 Swagger UI 中找到 `POST /api/v1/auth/register` 端点
+2. 点击 "Try it out"
+3. 填写请求体：
+   ```json
+   {
+     "username": "testuser",
+     "email": "test@example.com",
+     "password": "Test123!@#"
+   }
+   ```
+4. 点击 "Execute"
+5. 确认返回 201 Created
 
+### 步骤 2: 登录获取 Token
+
+1. 找到 `POST /api/v1/auth/login` 端点
+2. 点击 "Try it out"
+3. 填写请求体：
+   ```json
+   {
+     "username": "testuser",
+     "password": "Test123!@#"
+   }
+   ```
+4. 点击 "Execute"
+5. 从响应中复制 `access_token` 的值
+   ```json
+   {
+     "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+     "token_type": "bearer"
+   }
+   ```
+
+### 步骤 3: 在 Swagger UI 中设置认证
+
+1. 点击页面右上角的 **"Authorize"** 按钮（🔒 锁图标）
+2. 在弹出的对话框中，找到 "HTTPBearer (http, Bearer)" 部分
+3. 在 "Value" 输入框中输入：
+   ```
+   Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+   ```
+   **注意**：必须包含 "Bearer " 前缀（注意空格）
+4. 点击 **"Authorize"** 按钮
+5. 看到 "Authorized" 提示后，点击 **"Close"**
+
+### 步骤 4: 测试需要认证的 API
+
+现在你可以测试任何需要认证的 API 了，例如：
+
+#### 测试相似度分析 API
+
+1. 找到 `POST /api/v1/analysis/similarity` 端点
+2. 点击 "Try it out"
+3. 点击 "Choose File" 上传一张服饰图片
+4. 点击 "Execute"
+5. 应该返回 200 OK 和相似度分析结果
+
+#### 测试搭配推荐 API
+
+1. 找到 `POST /api/v1/analysis/outfits` 端点
+2. 点击 "Try it out"
+3. 上传图片，设置 `num_outfits` 参数（默认 3）
+4. 点击 "Execute"
+5. 应该返回 200 OK 和搭配推荐结果
+
+#### 测试适合度评分 API
+
+1. 找到 `POST /api/v1/analysis/suitability` 端点
+2. 点击 "Try it out"
+3. 上传图片
+4. 点击 "Execute"
+5. 应该返回 200 OK 和适合度评分结果
+
+## 需要认证的 API 列表
+
+以下 API 端点需要 JWT token 认证：
+
+### 用户画像
+- `POST /api/v1/profile` - 创建用户画像
+- `GET /api/v1/profile` - 获取用户画像
+- `PUT /api/v1/profile` - 更新用户画像
+
+### 衣橱管理
+- `POST /api/v1/wardrobe/garments` - 添加服饰
+- `GET /api/v1/wardrobe/garments` - 查询衣橱
+- `GET /api/v1/wardrobe/garments/{garment_id}` - 获取服饰详情
+- `PUT /api/v1/wardrobe/garments/{garment_id}` - 更新服饰
+- `DELETE /api/v1/wardrobe/garments/{garment_id}` - 删除服饰
+
+### 分析功能
+- `POST /api/v1/analysis/similarity` - 相似度分析
+- `POST /api/v1/analysis/outfits` - 搭配推荐
+- `POST /api/v1/analysis/suitability` - 适合度评分
+
+## 不需要认证的 API
+
+以下 API 端点不需要认证：
+
+- `POST /api/v1/auth/register` - 用户注册
+- `POST /api/v1/auth/login` - 用户登录
+- `GET /` - 根路径
+- `GET /health` - 健康检查
+- `GET /docs` - API 文档
+- `GET /redoc` - ReDoc 文档
+
+## 使用 Python 脚本测试
+
+如果你想使用脚本测试，可以运行：
+
+```bash
+cd backend
+python test_similarity_api.py
+```
+
+这个脚本会：
+1. 自动注册测试用户
+2. 登录获取 token
+3. 测试相似度分析 API
+4. 显示如何在 Swagger UI 中使用 token
+
+## 常见问题
+
+### Q: Token 过期了怎么办？
+
+A: Token 默认有效期是 24 小时。如果过期，需要重新登录获取新的 token。
+
+### Q: 忘记在 "Bearer " 前缀怎么办？
+
+A: 必须包含 "Bearer " 前缀（注意空格），否则会收到 403 错误。正确格式：
 ```
 Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
+### Q: 如何退出登录？
+
+A: 在 Swagger UI 中：
+1. 点击右上角的 "Authorize" 按钮
+2. 点击 "Logout" 按钮
+3. 点击 "Close"
+
+### Q: 可以使用 Postman 测试吗？
+
+A: 可以。在 Postman 中：
+1. 在请求的 "Authorization" 标签页
+2. 选择 "Bearer Token" 类型
+3. 粘贴 token（不需要 "Bearer " 前缀）
+
+## 测试流程示例
+
+完整的测试流程：
+
 ```
-"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-```
+1. 注册用户
+   POST /api/v1/auth/register
+   → 201 Created
 
-#### ✅ 正确示例：
+2. 登录获取 token
+   POST /api/v1/auth/login
+   → 200 OK, access_token: "eyJ..."
 
-```
-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJmNzI4NDY1Yi1lMjhiLTQyZTctYTA2Mi0zNDg5ZWM3NDQyOWUiLCJ1c2VybmFtZSI6Im1hbnVhbF90ZXN0X3VzZXIiLCJleHAiOjE3NDI3MzYwNTh9.example
-```
+3. 在 Swagger UI 中设置认证
+   点击 Authorize → 输入 "Bearer eyJ..." → Authorize → Close
 
-3. 点击 **"Authorize"** 按钮
-4. 点击 **"Close"** 关闭对话框
-5. **确认右上角的锁图标变为 🔒（已授权状态）**
+4. 创建用户画像（可选，适合度评分需要）
+   POST /api/v1/profile
+   → 201 Created
 
-### 步骤 3: 测试认证端点
+5. 测试相似度分析
+   POST /api/v1/analysis/similarity
+   → 200 OK, 返回相似度分析结果
 
-现在你可以测试需要认证的端点了：
+6. 测试搭配推荐
+   POST /api/v1/analysis/outfits
+   → 200 OK, 返回搭配推荐
 
-1. 展开 `POST /api/v1/profile`
-2. 点击 "Try it out"
-3. 输入画像信息
-4. 点击 "Execute"
-5. 应该返回 **201 Created** 状态码
-
----
-
-## 🔍 诊断工具
-
-如果仍然遇到问题，运行诊断脚本：
-
-```bash
-cd backend
-python diagnose_auth.py
-```
-
-这个脚本会：
-- 测试完整的认证流程
-- 验证 Token 是否有效
-- 测试创建用户画像
-- 提供详细的错误诊断
-
----
-
-## 🐛 常见问题
-
-### Q1: 仍然返回 401 错误
-
-**可能原因**：
-1. Token 被截断或复制不完整
-2. Token 已过期（24 小时有效期）
-3. 在 Authorize 对话框中包含了 "Bearer" 前缀
-
-**解决方案**：
-1. 重新登录获取新 Token
-2. 确保复制完整的 Token（通常很长，200+ 字符）
-3. 在 Authorize 对话框中只粘贴 Token 本身
-
-### Q2: 如何验证 Token 是否有效？
-
-运行 Token 测试脚本：
-
-```bash
-python test_token.py "your_token_here"
+7. 测试适合度评分
+   POST /api/v1/analysis/suitability
+   → 200 OK, 返回适合度评分
 ```
 
-这会显示：
-- Token 是否能正确解码
-- Token 是否已过期
-- Token 包含的用户信息
+## 技术说明
 
-### Q3: curl 命令可以工作，但 Swagger UI 不行
-
-这通常是因为：
-- curl 命令中使用 `Bearer <token>` 格式（正确）
-- Swagger UI 的 Authorize 对话框会自动添加 "Bearer" 前缀
-- 如果你手动输入 "Bearer <token>"，会变成 "Bearer Bearer <token>"（错误）
-
-**解决方案**：在 Swagger UI 中只输入 Token 本身。
-
----
-
-## 📝 验证步骤
-
-完成授权后，验证是否成功：
-
-1. 右上角的锁图标应该是 🔒（已锁定）
-2. 测试 `GET /api/v1/users/me` 端点：
-   - 点击 "Try it out"
-   - 点击 "Execute"
-   - 应该返回 200 状态码和你的用户信息
-
-如果这个端点返回 200，说明认证成功，可以继续测试其他端点。
-
----
-
-## 🎯 快速测试
-
-使用 curl 命令快速测试（替换 YOUR_TOKEN）：
-
-```bash
-# 测试认证
-curl -X GET http://localhost:8000/api/v1/users/me \
-  -H "Authorization: Bearer YOUR_TOKEN"
-
-# 创建用户画像
-curl -X POST http://localhost:8000/api/v1/profile \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "height": 170,
-    "body_type": "矩形",
-    "skin_tone": "冷白",
-    "style_preference": ["通勤", "简约"],
-    "budget_range": "中等",
-    "avoid_body_parts": ["肩部"]
-  }'
-```
-
-如果 curl 命令成功但 Swagger UI 失败，问题一定是 Swagger UI 的授权配置。
-
----
-
-## 💡 提示
-
-- Token 有效期为 24 小时，过期后需要重新登录
-- 每次重新登录都会获得新的 Token
-- 可以在多个标签页中使用同一个 Token
-- Token 包含用户 ID 和用户名信息
-
----
-
-**如果按照以上步骤仍然无法解决问题，请运行 `python diagnose_auth.py` 获取详细诊断信息。**
+- 认证方式：JWT (JSON Web Token)
+- Token 类型：Bearer Token
+- Token 位置：HTTP Header `Authorization: Bearer <token>`
+- Token 有效期：24 小时（可在配置中修改）
+- 加密算法：HS256
