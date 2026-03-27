@@ -29,12 +29,19 @@ env/
 ENV/
 env.bak/
 venv.bak/
+backend/venv/
+backend/env/
 
 # PyCharm
 .idea/
+*.iws
+*.iml
+*.ipr
 
-# VS Code
-.vscode/
+# VS Code (keep settings.json for project config)
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
 *.code-workspace
 
 # Jupyter Notebook
@@ -53,6 +60,7 @@ venv.bak/
 # Logs
 logs/
 *.log
+backend/logs/
 
 # OS
 .DS_Store
@@ -71,11 +79,15 @@ models/*.tflite
 # Uploads
 uploads/
 temp/
+backend/uploads/
 
 # Test coverage
 .coverage
 htmlcov/
 .pytest_cache/
+backend/.pytest_cache/
+backend/htmlcov/
+backend/.coverage
 
 # Flutter/Dart
 mobile/.dart_tool/

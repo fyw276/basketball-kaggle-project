@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
 from app.db.session import get_db
-from app.ml.image_recognizer import ImageRecognizer
+from app.ml.clip_recognizer import get_clip_recognizer
 from app.models.user import User
 from app.schemas.garment import GarmentCreate, GarmentListResponse, GarmentResponse
 from app.services.garment import (
@@ -58,12 +58,9 @@ async def upload_garment_simple(
                 detail="Uploaded file is empty",
             )
 
-        # Reset file position for storage
-        await file.seek(0)
-
-        # Step 1: Recognize image
+        # Step 1: Recognize image using CLIP (FashionCLIP approach)
         try:
-            recognizer = ImageRecognizer()
+            recognizer = get_clip_recognizer()
             recognition_result = recognizer.recognize(image_bytes)
         except Exception as e:
             import traceback
@@ -77,6 +74,8 @@ async def upload_garment_simple(
         # Step 2: Save image
         try:
             storage = get_storage_service()
+            # Reset file position for storage
+            await file.seek(0)
             image_path, image_url = await storage.save_image(file, str(current_user.user_id))
         except Exception as e:
             import traceback
@@ -88,18 +87,42 @@ async def upload_garment_simple(
             )
 
         # Step 3: Create garment
+        # CLIP feature dimension (768 for ViT-L/14, 512 for ViT-B/32)
+        # Pad/truncate to 1280 for compatibility with existing schema
+        clip_features = recognition_result["feature_vector"]
+        feature_dim = len(clip_features)
+        if feature_dim == 768:
+            feature_vector = clip_features + [0.0] * 512  # Pad to 1280
+        elif feature_dim == 512:
+            feature_vector = clip_features + [0.0] * 768  # Pad to 1280
+        else:
+            feature_vector = clip_features[:1280] + [0.0] * max(0, 1280 - len(clip_features))
+
         try:
+            from app.ml.color_extractor import ColorExtractor
+            from app.schemas.garment import ColorSchema
+
+            # Extract colors using existing ColorExtractor
+            color_extractor = ColorExtractor(n_colors=3)
+            colors = color_extractor.extract_colors(image_bytes)
+            main_color = (
+                colors[0]
+                if colors
+                else ColorSchema(
+                    name="灰", rgb=(128, 128, 128), hsv=(0.0, 0.0, 50.0), hex_code="#808080"
+                )
+            )
+            secondary_colors = colors[1:] if len(colors) > 1 else []
+
             garment_in = GarmentCreate(
-                category=recognition_result.category,
-                main_color=recognition_result.main_color,
-                secondary_colors=recognition_result.secondary_colors,
-                style_tags=recognition_result.style_tags,
-                fit_type=(
-                    recognition_result.fit_type if hasattr(recognition_result, "fit_type") else None
-                ),
+                category=recognition_result["category"],
+                main_color=main_color,
+                secondary_colors=secondary_colors,
+                style_tags=recognition_result["style_tags"],
+                fit_type=recognition_result.get("fit_type"),
                 image_path=image_path,
                 image_url=image_url,
-                feature_vector=recognition_result.feature_vector,
+                feature_vector=feature_vector,
                 notes=notes,
             )
 

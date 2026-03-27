@@ -33,6 +33,17 @@ opencv-python==4.10.0.84
 # Machine Learning - 使用 TensorFlow 2.18+ (支持 Python 3.14)
 tensorflow==2.18.0
 
+# ── NEW: Fashion AI (CLIP + Diffusers) ──────────────────────────────────────
+# CLIP for zero-shot fashion classification (FashionCLIP approach)
+transformers>=4.36.0,<5.0.0    # CLIP model support
+torch>=2.0.0                    # PyTorch for transformers
+# Stable Diffusion for virtual try-on (SD-VTON approach)
+diffusers>=0.25.0              # Stable Diffusion pipelines
+accelerate>=0.25.0              # Faster model loading
+# Scipy for image processing (used in virtual try-on)
+scipy>=1.11.0                  # For morphological operations in masking
+opencv-python-headless>=4.9.0  # Lightweight OpenCV (no GUI)
+
 # Scientific Computing
 numpy>=1.26.0,<2.1.0
 scikit-learn==1.6.1

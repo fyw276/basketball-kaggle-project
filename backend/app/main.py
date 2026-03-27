@@ -20,6 +20,7 @@ from app.api import (
     users_router,
     wardrobe_router,
 )
+from app.api.tryon import router as tryon_router
 from app.api.wardrobe_simple import router as wardrobe_simple_router
 from app.core.config import settings
 from app.core.error_handlers import (
@@ -47,17 +48,20 @@ app = FastAPI(
 
     * **用户认证**: 注册、登录、JWT Token 管理
     * **用户画像**: 创建和管理个人画像信息（身高、体型、肤色、风格偏好等）
-    * **图像识别**: 识别服饰品类、颜色、风格标签
-    * **衣橱管理**: 添加、查询、编辑、删除服饰单品
-    * **相似度分析**: 计算服饰相似度，提供重复购买预警
-    * **搭配推荐**: 生成个性化搭配方案
-    * **适合度评分**: 基于用户画像评估服饰适合度
+    * **图像识别**: FashionCLIP 零样本分类 — 品类、颜色、风格标签识别
+    * **衣橱管理**: 添加、查询、编辑、删除服饰单品（支持 CLIP 自动识别）
+    * **相似度分析**: CLIP 语义向量相似度计算，提供重复购买预警
+    * **穿搭推荐**: 场景-品类-风格 三维匹配推荐（基于 Polyvore 风格规则）
+    * **适合度评分**: 场景-体型-风格 三维评分引擎
+    * **虚拟试穿**: SD-VTON/Stable Diffusion 虚拟试穿（GPU 推荐）
 
     ### 技术栈
 
     * FastAPI + Python 3.9+
     * PostgreSQL + Redis
-    * MobileNetV2 图像识别模型
+    * **FashionCLIP** 零样本图文分类（transformers + PyTorch）
+    * **Stable Diffusion Inpainting** 虚拟试穿（diffusers）
+    * MobileNetV2 特征提取（备用）
     * JWT 认证
     """,
     docs_url="/docs",
@@ -286,6 +290,7 @@ app.include_router(wardrobe_router, prefix="/api/v1")
 app.include_router(wardrobe_simple_router, prefix="/api/v1")  # Simplified API
 app.include_router(recognition_router, prefix="/api/v1")
 app.include_router(analysis_router, prefix="/api/v1")
+app.include_router(tryon_router, prefix="/api/v1")  # Virtual Try-On
 
 # Mount static files for uploaded images
 upload_dir = Path(settings.UPLOAD_DIR)

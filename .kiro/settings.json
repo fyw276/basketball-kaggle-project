@@ -1,0 +1,20 @@
+{
+  "excludePatterns": [
+    "**/venv/**",
+    "**/env/**",
+    "**/.dart_tool/**",
+    "**/build/**",
+    "**/node_modules/**",
+    "**/__pycache__/**",
+    "**/.pytest_cache/**",
+    "**/.git/**",
+    "backend/venv/**",
+    "backend/uploads/**",
+    "mobile/.dart_tool/**",
+    "mobile/build/**",
+    "**/logs/**",
+    "**/.coverage/**"
+  ],
+  "maxFileSize": 1048576,
+  "maxFiles": 10000
+}

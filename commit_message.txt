@@ -1,0 +1,43 @@
+feat: FashionCLIP image recognition + 3D recommendation engine + SD-VTON virtual try-on
+
+Backend core upgrade based on FashionCLIP research + community pain point analysis:
+
+feat: CLIP zero-shot fashion recognition (app/ml/clip_recognizer.py)
+- Replace MobileNetV2 with OpenAI CLIP (ViT-L/14) for semantic fashion understanding
+- Zero-shot classification: 6 categories + 13 styles + 10 occasions + 4 fit types
+- Chinese prompt engineering (通勤/复古/国风 etc.)
+- 768-dim CLIP feature vectors (padded to 1280 for compatibility)
+- Falls back to MobileNetV2 if CLIP/torch unavailable
+
+feat: 3D suitability scorer (app/services/suitability_scorer_3d.py)
+- Replace old 2D scorer with 场景-体型-风格 3D model
+- Scene dimension (25%): style to occasion mapping + user preference matching
+- Body dimension (35%): category-aware rules (梨形下身宽松/倒三角上身宽松)
+- Style dimension (40%): exact/compatible style matching
+- Color as sub-component within scene dimension
+
+feat: 3D outfit recommender (app/services/outfit_recommender_3d.py)
+- Replace old color-only recommender with 场景-品类-风格 3D engine
+- 10 scene templates (通勤/约会/度假 etc.) from Polyvore-style rules
+- 4D scoring: scene (30%) + category completeness (25%) + style (25%) + color (20%)
+- Full outfit generation (top + bottom + outer + shoes/bag)
+
+feat: virtual try-on service (app/services/virtual_tryon.py)
+- SD-VTON/Stable Diffusion Inpainting pipeline
+- garment image + person image to try-on result
+- Auto mask generation, scene-aware prompts
+- Graceful CPU fallback (alpha blending) if GPU unavailable
+
+feat: try-on API endpoint (app/api/tryon.py)
+- POST /api/v1/tryon/garment with garment_file + person_file
+
+fix: zero-vector bug in wardrobe.py
+- Replace dummy [0.0]*1280 with real ImageRecognizer feature extraction
+
+tests: add CLIP recognizer test suite (tests/test_clip_recognizer.py)
+- Category, style, occasion, feature, similarity tests
+
+chore: add transformers/torch/diffusers/accelerate/scipy to requirements.txt
+
+BREAKING CHANGE: wardrobe uploads now use CLIP features; existing 1280-dim
+feature vectors in DB remain compatible (CLIP 768-dim padded to 1280)

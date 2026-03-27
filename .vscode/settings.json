@@ -1,0 +1,80 @@
+{
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "**/.pytest_cache": true,
+    "**/htmlcov": true,
+    "**/.coverage": true,
+    "**/venv": true,
+    "**/env": true,
+    "**/ENV": true,
+    "backend/venv": true,
+    "backend/env": true,
+    "**/.dart_tool": true,
+    "**/build": true,
+    "mobile/.dart_tool": true,
+    "mobile/build": true,
+    "mobile/.flutter-plugins": true,
+    "mobile/.flutter-plugins-dependencies": true,
+    "**/.git": true,
+    "**/node_modules": true,
+    "backend/uploads": true,
+    "**/logs": true,
+    "**/*.log": true
+  },
+  "search.exclude": {
+    "**/venv": true,
+    "**/env": true,
+    "**/ENV": true,
+    "backend/venv": true,
+    "backend/env": true,
+    "**/.dart_tool": true,
+    "**/build": true,
+    "**/node_modules": true,
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "**/.git": true,
+    "backend/uploads": true,
+    "mobile/.dart_tool": true,
+    "mobile/build": true,
+    "**/logs": true,
+    "**/*.log": true,
+    "**/htmlcov": true,
+    "**/.coverage": true
+  },
+  "files.watcherExclude": {
+    "**/venv/**": true,
+    "**/env/**": true,
+    "**/ENV/**": true,
+    "backend/venv/**": true,
+    "backend/env/**": true,
+    "**/.dart_tool/**": true,
+    "**/build/**": true,
+    "**/node_modules/**": true,
+    "**/__pycache__/**": true,
+    "**/.pytest_cache/**": true,
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "backend/uploads/**": true,
+    "mobile/.dart_tool/**": true,
+    "mobile/build/**": true,
+    "**/logs/**": true,
+    "**/*.log": true
+  },
+  "python.analysis.exclude": [
+    "**/venv/**",
+    "**/env/**",
+    "**/__pycache__/**",
+    "**/.pytest_cache/**",
+    "backend/venv/**"
+  ],
+  "python.analysis.extraPaths": [
+    "./backend"
+  ],
+  "files.associations": {
+    "*.md": "markdown"
+  },
+  "files.maxMemoryForLargeFilesMB": 4096,
+  "search.maxResults": 10000,
+  "search.followSymlinks": false
+}

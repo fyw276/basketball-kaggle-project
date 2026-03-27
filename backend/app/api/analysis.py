@@ -188,10 +188,13 @@ async def analyze_similarity(
 
 
 class OutfitRecommendationResponse(BaseModel):
-    """Outfit recommendation response"""
+    """Outfit recommendation response (3D: 场景-品类-风格)"""
 
     target_garment: dict = Field(..., description="Target garment recognition result")
-    outfit_cards: List[dict] = Field(default_factory=list, description="Outfit recommendations")
+    outfit_cards: List[dict] = Field(
+        default_factory=list,
+        description="Outfit recommendations with 3D scores (scene/category/style/color)",
+    )
 
     class Config:
         json_schema_extra = {
@@ -200,17 +203,26 @@ class OutfitRecommendationResponse(BaseModel):
                     "category": "上衣",
                     "main_color": {"name": "白", "hex_code": "#ffffff"},
                     "style_tags": ["简约", "通勤"],
+                    "occasions": ["通勤上班", "校园"],
                 },
                 "outfit_cards": [
                     {
                         "outfit_id": "outfit_1",
+                        "scene": "通勤上班",
+                        "secondary_scenes": ["商务正式", "校园"],
                         "items": [],
-                        "occasion": "商务",
-                        "description": "白色衬衫搭配黑色西裤，适合正式场合",
-                        "color_harmony": "中性色搭配",
-                        "color_harmony_score": 0.9,
-                        "style_consistency": 0.95,
-                        "overall_score": 0.92,
+                        "description": "简约通勤穿搭，白色上衣 + 深蓝裤子，通勤干练",
+                        "scene_score": 0.92,
+                        "category_score": 1.0,
+                        "style_score": 0.88,
+                        "color_score": 0.85,
+                        "overall_score": 0.90,
+                        "dimension_weights": {
+                            "scene": 0.30,
+                            "category": 0.25,
+                            "style": 0.25,
+                            "color": 0.20,
+                        },
                     }
                 ],
             }
@@ -225,13 +237,14 @@ async def recommend_outfits(
     db: Session = Depends(get_db),
 ):
     """
-    Generate outfit recommendations for uploaded garment
+    Generate outfit recommendations for uploaded garment (3D: 场景-品类-风格)
 
     This endpoint:
-    1. Recognizes the uploaded garment image
-    2. Finds matching garments from wardrobe
-    3. Generates outfit combinations
-    4. Returns top N outfit recommendations
+    1. Recognizes the uploaded garment image (CLIP)
+    2. Derives user's primary scene from their style preferences
+    3. Finds matching garments from wardrobe using scene-aware templates
+    4. Scores across 4 dimensions: scene / category / style / color
+    5. Returns top N outfit recommendations with interpretable scores
     """
     # Validate file type
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -251,11 +264,20 @@ async def recommend_outfits(
         # Read image file
         image_bytes = await file.read()
 
-        # Initialize image recognizer
-        recognizer = ImageRecognizer()
+        # Recognize image using CLIP (FashionCLIP approach)
+        try:
+            from app.ml.clip_recognizer import get_clip_recognizer
 
-        # Recognize image
-        recognition_result: RecognitionResult = recognizer.recognize(image_bytes)
+            recognizer = get_clip_recognizer()
+            clip_result = recognizer.recognize(image_bytes)
+        except Exception as e:
+            import traceback
+
+            traceback.print_exc()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Image recognition failed: {str(e)}",
+            )
 
         # Get user's wardrobe
         wardrobe_garments = get_garments_by_user(db, current_user.user_id)
@@ -264,41 +286,69 @@ async def recommend_outfits(
             # Empty wardrobe - cannot generate recommendations
             return OutfitRecommendationResponse(
                 target_garment={
-                    "category": recognition_result.category,
-                    "main_color": recognition_result.main_color.model_dump(),
-                    "style_tags": recognition_result.style_tags,
+                    "category": clip_result["category"],
+                    "main_color": clip_result.get("main_color", {}),
+                    "style_tags": clip_result["style_tags"],
                 },
                 outfit_cards=[],
             )
 
+        # Get user's style preferences for scene derivation
+        user_profile = get_profile_by_user_id(db, current_user.user_id)
+        user_style_prefs = user_profile.style_preference if user_profile else []
+
         # Create a temporary garment object for the target
         from uuid import uuid4
 
+        from app.ml.color_extractor import ColorExtractor
         from app.models.garment import Garment
+        from app.schemas.garment import ColorSchema
+
+        color_extractor = ColorExtractor(n_colors=3)
+        colors = color_extractor.extract_colors(image_bytes)
+        main_color = (
+            colors[0]
+            if colors
+            else ColorSchema(
+                name="灰", rgb=(128, 128, 128), hsv=(0.0, 0.0, 50.0), hex_code="#808080"
+            )
+        )
+        secondary_colors = colors[1:] if len(colors) > 1 else []
+
+        # CLIP feature vector (pad to 1280)
+        clip_features = clip_result["feature_vector"]
+        feature_dim = len(clip_features)
+        if feature_dim == 768:
+            feature_vector = clip_features + [0.0] * 512
+        elif feature_dim == 512:
+            feature_vector = clip_features + [0.0] * 768
+        else:
+            feature_vector = clip_features[:1280] + [0.0] * max(0, 1280 - len(clip_features))
 
         target_garment = Garment(
             garment_id=uuid4(),
             user_id=current_user.user_id,
-            category=recognition_result.category,
-            main_color=recognition_result.main_color.model_dump(),
-            secondary_colors=[c.model_dump() for c in recognition_result.secondary_colors],
-            style_tags=recognition_result.style_tags,
-            fit_type=None,
+            category=clip_result["category"],
+            main_color=main_color.model_dump(),
+            secondary_colors=[c.model_dump() for c in secondary_colors],
+            style_tags=clip_result["style_tags"],
+            fit_type=clip_result.get("fit_type"),
             image_path="",
             image_url="",
-            feature_vector=recognition_result.feature_vector,
+            feature_vector=feature_vector,
         )
 
-        # Initialize outfit recommender
-        from app.services.outfit_recommender import OutfitRecommender
+        # Initialize 3D outfit recommender (场景-品类-风格)
+        from app.services.outfit_recommender_3d import OutfitRecommender3D
 
-        recommender = OutfitRecommender()
+        recommender = OutfitRecommender3D()
 
         # Generate outfit recommendations
         outfit_cards = recommender.recommend_outfits(
             target_garment=target_garment,
             wardrobe=wardrobe_garments,
             num_outfits=num_outfits,
+            user_style_preferences=user_style_prefs,
         )
 
         # Convert to dict for response
@@ -306,21 +356,30 @@ async def recommend_outfits(
 
         return OutfitRecommendationResponse(
             target_garment={
-                "category": recognition_result.category,
-                "category_confidence": recognition_result.category_confidence,
-                "main_color": recognition_result.main_color.model_dump(),
-                "secondary_colors": [c.model_dump() for c in recognition_result.secondary_colors],
-                "style_tags": recognition_result.style_tags,
+                "category": clip_result["category"],
+                "category_confidence": clip_result["category_confidence"],
+                "main_color": main_color.model_dump(),
+                "secondary_colors": [c.model_dump() for c in secondary_colors],
+                "style_tags": clip_result["style_tags"],
+                "occasions": clip_result.get("occasions", []),
             },
             outfit_cards=outfit_cards_dict,
         )
 
+    except HTTPException:
+        raise
     except ValueError as e:
+        import traceback
+
+        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Image processing failed: {str(e)}",
         )
     except Exception as e:
+        import traceback
+
+        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Outfit recommendation failed: {str(e)}",
@@ -330,12 +389,12 @@ async def recommend_outfits(
 class SuitabilityAnalysisResponse(BaseModel):
     """Suitability analysis response"""
 
-    garment: dict = Field(..., description="Garment recognition result")
+    garment: dict = Field(..., description="Garment recognition result (CLIP + color extraction)")
     suitability_score: int = Field(..., ge=0, le=100, description="Overall suitability score")
     color_score: int = Field(..., ge=0, le=100, description="Color suitability score")
-    fit_score: int = Field(..., ge=0, le=100, description="Fit suitability score")
+    fit_score: int = Field(..., ge=0, le=100, description="Body fit suitability score (体型适配)")
     style_score: int = Field(..., ge=0, le=100, description="Style suitability score")
-    explanation: Dict[str, str] = Field(..., description="Score explanations")
+    explanation: Dict[str, str] = Field(..., description="Score explanations per dimension")
     recommended_occasions: List[str] = Field(
         default_factory=list, description="Recommended occasions"
     )
@@ -349,17 +408,18 @@ class SuitabilityAnalysisResponse(BaseModel):
                     "main_color": {"name": "粉色", "hex_code": "#ffc0cb"},
                     "style_tags": ["甜美"],
                     "fit_type": "修身",
+                    "occasions": ["约会", "聚会"],
                 },
-                "suitability_score": 75,
+                "suitability_score": 82,
                 "color_score": 80,
                 "fit_score": 70,
-                "style_score": 75,
+                "style_score": 85,
                 "explanation": {
-                    "color": "粉色与您的冷白肤色搭配度较高，能提亮肤色",
-                    "fit": "修身版型可能会强化肩部线条，建议选择落肩款式",
-                    "style": "甜美风格与您的通勤偏好有一定差异",
+                    "scene": "服装适合约会、聚会等场合，与您的风格偏好高度匹配，色彩搭配也协调。",
+                    "body": "修身版型可能会强化肩部线条，建议选择落肩款式",
+                    "style": "甜美风格与您的甜美偏好完全契合",
                 },
-                "recommended_occasions": ["约会", "聚会"],
+                "recommended_occasions": ["约会", "聚会", "度假旅行"],
                 "suggestions": [
                     "建议选择落肩或宽松版型以避免强化肩部",
                     "可搭配简约配饰平衡甜美感",
@@ -394,30 +454,6 @@ async def analyze_suitability(
         # Read image file
         image_bytes = await file.read()
 
-        # Initialize image recognizer
-        try:
-            recognizer = ImageRecognizer()
-        except Exception as e:
-            import traceback
-
-            traceback.print_exc()
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to initialize recognizer: {str(e)}",
-            )
-
-        # Recognize image
-        try:
-            recognition_result: RecognitionResult = recognizer.recognize(image_bytes)
-        except Exception as e:
-            import traceback
-
-            traceback.print_exc()
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Image recognition failed: {str(e)}",
-            )
-
         # Get user profile
         try:
             user_profile = get_profile_by_user_id(db, current_user.user_id)
@@ -436,11 +472,11 @@ async def analyze_suitability(
                 detail="User profile not found. Please create a profile first.",
             )
 
-        # Initialize suitability scorer
+        # Initialize suitability scorer (3D: 场景-体型-风格)
         try:
-            from app.services.suitability_scorer import SuitabilityScorer
+            from app.services.suitability_scorer_3d import SuitabilityScorer3D
 
-            scorer = SuitabilityScorer()
+            scorer = SuitabilityScorer3D()
         except Exception as e:
             import traceback
 
@@ -450,13 +486,43 @@ async def analyze_suitability(
                 detail=f"Failed to initialize scorer: {str(e)}",
             )
 
-        # Calculate suitability score
+        # Recognize garment using CLIP (FashionCLIP approach)
+        try:
+            from app.ml.clip_recognizer import get_clip_recognizer
+
+            recognizer = get_clip_recognizer()
+            clip_result = recognizer.recognize(image_bytes)
+        except Exception as e:
+            import traceback
+
+            traceback.print_exc()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Image recognition failed: {str(e)}",
+            )
+
+        # Extract colors
+        from app.ml.color_extractor import ColorExtractor
+
+        color_extractor = ColorExtractor(n_colors=3)
+        colors = color_extractor.extract_colors(image_bytes)
+        main_color = colors[0] if colors else None
+        secondary_colors = colors[1:] if len(colors) > 1 else []
+
+        if not main_color:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to extract color from image",
+            )
+
+        # Calculate suitability score (3D: 场景-体型-风格)
         try:
             suitability_result = scorer.calculate_score(
-                garment_color=recognition_result.main_color,
-                secondary_colors=recognition_result.secondary_colors,
-                garment_fit=None,  # fit_type is not available from recognition
-                garment_styles=recognition_result.style_tags,
+                garment_color=main_color,
+                secondary_colors=secondary_colors,
+                garment_fit=clip_result.get("fit_type"),
+                garment_styles=clip_result["style_tags"],
+                garment_category=clip_result["category"],
                 user_profile=user_profile,
             )
         except Exception as e:
@@ -470,12 +536,13 @@ async def analyze_suitability(
 
         return SuitabilityAnalysisResponse(
             garment={
-                "category": recognition_result.category,
-                "category_confidence": recognition_result.category_confidence,
-                "main_color": recognition_result.main_color.model_dump(),
-                "secondary_colors": [c.model_dump() for c in recognition_result.secondary_colors],
-                "style_tags": recognition_result.style_tags,
-                "fit_type": None,  # Not available from recognition
+                "category": clip_result["category"],
+                "category_confidence": clip_result["category_confidence"],
+                "main_color": main_color.model_dump(),
+                "secondary_colors": [c.model_dump() for c in secondary_colors],
+                "style_tags": clip_result["style_tags"],
+                "fit_type": clip_result.get("fit_type"),
+                "occasions": clip_result.get("occasions", []),
             },
             suitability_score=suitability_result.suitability_score,
             color_score=suitability_result.color_score,

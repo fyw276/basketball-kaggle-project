@@ -170,6 +170,25 @@ class StorageService:
         except Exception:
             return False
 
+    def _save_bytes(self, data: bytes, relative_path: str) -> tuple[str, str]:
+        """
+        Save raw bytes to a file path.
+
+        Args:
+            data: Raw bytes to save
+            relative_path: Relative path within upload directory (e.g. "user_id/tryon/result.jpg")
+
+        Returns:
+            Tuple of (absolute_path, url)
+        """
+        file_path = self.upload_dir / relative_path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(file_path, "wb") as f:
+            f.write(data)
+        base_url = "http://localhost:8000"
+        file_url = f"{base_url}/uploads/{relative_path}"
+        return str(file_path), file_url
+
 
 # Global storage service instance
 storage_service = StorageService()

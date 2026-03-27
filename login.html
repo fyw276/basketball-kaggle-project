@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智能穿搭助手 - 登录</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Patrick+Hand&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            /* 男生版配色 - 复古美式风 */
+            --theme-primary: #2c3e66;
+            --theme-accent: #b85c38;
+            --theme-light: #f5e6d3;
+            --theme-bg: #faf6f1;
+            --theme-text: #2c3e66;
+            --theme-border: #d4a574;
+            --theme-shadow: rgba(44, 62, 102, 0.1);
+            --theme-hover: #1a2642;
+
+            /* 通用设置 */
+            --font-serif: 'Playfair Display', serif;
+            --font-handwrite: 'Patrick Hand', cursive;
+            --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+
+        /* 女生版主题：森系童话风 */
+        [data-theme="female"] {
+            --theme-primary: #a7b893;
+            --theme-accent: #b2808a;
+            --theme-light: #fff9ef;
+            --theme-bg: #fdfcf9;
+            --theme-text: #6b7a5e;
+            --theme-border: #d4c5b0;
+            --theme-shadow: rgba(167, 184, 147, 0.08);
+            --theme-hover: #8b9873;
+        }
+
+        /* 通用版主题：米白浅黄色系 */
+        [data-theme="universal"] {
+            --theme-primary: #A69C92;
+            --theme-accent: #A69C92;
+            --theme-light: #F5F0E6;
+            --theme-bg: #FAF7F0;
+            --theme-text: #4B4643;
+            --theme-border: #D4C8B8;
+            --theme-shadow: 0 1px 2px rgba(0,0,0,0.06);
+            --theme-hover: #8A827A;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: var(--font-sans);
+            background-color: var(--theme-bg);
+            color: var(--theme-text);
+            transition: background-color 0.4s ease, color 0.4s ease;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* ========== 主题切换按钮 ========== */
+        .theme-switcher {
+            display: flex;
+            justify-content: center;
+            gap: 1rem;
+            padding: 1.5rem 1rem;
+            background: rgba(255, 255, 255, 0.5);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid var(--theme-border);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .theme-btn {
+            padding: 0.5rem 1.2rem;
+            border: 2px solid var(--theme-primary);
+            background: transparent;
+            color: var(--theme-primary);
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 0.95rem;
+            font-weight: 500;
+            font-family: var(--font-sans);
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .theme-btn:hover {
+            background: var(--theme-primary);
+            color: var(--theme-light);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px var(--theme-shadow);
+        }
+
+        .theme-btn.active {
+            background: var(--theme-primary);
+            color: var(--theme-light);
+            box-shadow: 0 4px 16px var(--theme-shadow);
+        }
+
+        /* ========== 主容器 ========== */
+        .container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem 1rem;
+        }
+
+        .login-wrapper {
+            width: 100%;
+            max-width: 420px;
+        }
+
+        /* ========== 装饰元素 ========== */
+        .decorative {
+            position: relative;
+            height: 80px;
+            margin-bottom: 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        /* 男生版装饰 */
+        [data-theme="male"] .decorative::before {
+            content: "♫";
+            font-size: 3rem;
+            color: var(--theme-accent);
+            opacity: 0.7;
+            animation: spin 4s linear infinite;
+        }
+
+        [data-theme="male"] .decorative::after {
+            content: "🏍";
+            position: absolute;
+            right: 10%;
+            font-size: 2.5rem;
+            opacity: 0.5;
+            animation: float 3s ease-in-out infinite;
+        }
+
+        /* 女生版装饰 */
+        [data-theme="female"] .decorative::before {
+            content: "🍄";
+            font-size: 2.5rem;
+            margin-right: 1rem;
+            animation: bounce 2s ease-in-out infinite;
+        }
+
+        [data-theme="female"] .decorative::after {
+            content: "🦌";
+            position: absolute;
+            right: 10%;
+            font-size: 2.5rem;
+            animation: float 3s ease-in-out infinite;
+        }
+
+        /* 通用版装饰 */
+        [data-theme="universal"] .decorative {
+            background: var(--theme-light);
+            border-radius: 20px;
+            margin-bottom: 2.5rem;
+            box-shadow: var(--theme-shadow);
+        }
+
+        [data-theme="universal"] .decorative::before {
+            content: "◊ ▢ ◊";
+            font-size: 1.5rem;
+            letter-spacing: 0.5rem;
+            color: var(--theme-primary);
+            font-weight: 700;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0px); }
+            50% { transform: translateY(-10px); }
+        }
+
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0px); }
+            50% { transform: translateY(-15px); }
+        }
+
+        /* ========== 标题 ========== */
+        .login-title {
+            text-align: center;
+            margin-bottom: 1.5rem;
+        }
+
+        .login-title h1 {
+            font-family: var(--font-serif);
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+            color: var(--theme-primary);
+            transition: all 0.4s ease;
+        }
+
+        [data-theme="female"] .login-title h1 {
+            font-family: var(--font-handwrite);
+            font-size: 1.8rem;
+            font-weight: 400;
+            letter-spacing: 0.1em;
+        }
+
+        [data-theme="universal"] .login-title h1 {
+            font-size: 1.6rem;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+            color: #4B4643;
+        }
+
+        .login-title p {
+            font-size: 0.95rem;
+            color: #8A827A;
+            opacity: 1;
+        }
+
+        /* ========== 登录表单 ========== */
+        .login-form {
+            display: flex;
+            flex-direction: column;
+            gap: 1.2rem;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .form-group label {
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: var(--theme-text);
+            opacity: 0.8;
+        }
+
+        [data-theme="universal"] .form-group label {
+            color: #8A827A;
+        }
+
+        .form-group input {
+            padding: 0.85rem 1rem;
+            border: 2px solid var(--theme-border);
+            border-radius: 10px;
+            font-family: var(--font-sans);
+            font-size: 0.95rem;
+            color: var(--theme-text);
+            background: rgba(255, 255, 255, 0.7);
+            transition: all 0.3s ease;
+        }
+
+        .form-group input::placeholder {
+            color: var(--theme-text);
+            opacity: 0.4;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: var(--theme-primary);
+            background: rgba(255, 255, 255, 0.95);
+            box-shadow: 0 0 0 3px var(--theme-shadow);
+        }
+
+        /* ========== 按钮样式 ========== */
+        .btn {
+            padding: 0.9rem 1.5rem;
+            border: none;
+            border-radius: 10px;
+            font-family: var(--font-sans);
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--theme-primary) 0%, var(--theme-accent) 100%);
+            color: var(--theme-light);
+            border: none;
+            box-shadow: 0 4px 15px var(--theme-shadow);
+        }
+
+        [data-theme="universal"] .btn-primary {
+            background: var(--theme-primary);
+            box-shadow: var(--theme-shadow);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 6px 20px var(--theme-shadow);
+        }
+
+        .btn-primary:active {
+            transform: translateY(-1px);
+        }
+
+        .btn-secondary {
+            background: transparent;
+            color: var(--theme-primary);
+            border: 2px solid var(--theme-primary);
+            text-transform: none;
+            letter-spacing: 0.02em;
+        }
+
+        .btn-secondary:hover {
+            background: var(--theme-primary);
+            color: var(--theme-light);
+            transform: translateY(-2px);
+        }
+
+        /* ========== 按钮容器 ========== */
+        .button-group {
+            display: flex;
+            gap: 0.8rem;
+            margin-top: 0.5rem;
+        }
+
+        .btn-login {
+            flex: 1;
+        }
+
+        .btn-signup {
+            flex: 1;
+        }
+
+        /* ========== 分割线 ========== */
+        .divider {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin: 1.5rem 0;
+            color: var(--theme-text);
+            opacity: 0.5;
+            font-size: 0.85rem;
+        }
+
+        .divider::before,
+        .divider::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: var(--theme-border);
+        }
+
+        /* ========== 社交登录 ========== */
+        .social-login {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.8rem;
+        }
+
+        .social-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.8rem;
+            border: 2px solid var(--theme-border);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.6);
+            color: var(--theme-text);
+            cursor: pointer;
+            font-size: 1.5rem;
+            transition: all 0.3s ease;
+        }
+
+        [data-theme="universal"] .social-btn {
+            background: var(--theme-light);
+            border-color: var(--theme-border);
+            color: var(--theme-primary);
+        }
+
+        .social-btn:hover {
+            border-color: var(--theme-primary);
+            background: rgba(255, 255, 255, 0.9);
+            transform: translateY(-3px);
+            box-shadow: 0 4px 12px var(--theme-shadow);
+        }
+
+        /* ========== 底部链接 ========== */
+        .footer-link {
+            text-align: center;
+            margin-top: 1.5rem;
+            font-size: 0.85rem;
+            color: var(--theme-text);
+            opacity: 0.6;
+        }
+
+        .footer-link a {
+            color: var(--theme-primary);
+            text-decoration: none;
+            font-weight: 600;
+            transition: opacity 0.3s ease;
+        }
+
+        .footer-link a:hover {
+            opacity: 0.7;
+            text-decoration: underline;
+        }
+
+        /* ========== 响应式设计 ========== */
+        @media (max-width: 480px) {
+            .theme-switcher {
+                gap: 0.5rem;
+                padding: 1rem;
+                border-bottom-width: 1px;
+            }
+
+            .theme-btn {
+                padding: 0.45rem 0.95rem;
+                font-size: 0.85rem;
+            }
+
+            .login-wrapper {
+                max-width: 90vw;
+            }
+
+            .login-title h1 {
+                font-size: 1.5rem;
+            }
+
+            [data-theme="female"] .login-title h1 {
+                font-size: 1.3rem;
+            }
+
+            .decorative {
+                height: 60px;
+                margin-bottom: 1.5rem;
+            }
+
+            .decorative::before {
+                font-size: 2rem !important;
+            }
+
+            .decorative::after {
+                font-size: 1.5rem !important;
+            }
+
+            .button-group {
+                flex-direction: column;
+            }
+
+            .social-login {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+
+        @media (max-width: 360px) {
+            .login-title h1 {
+                font-size: 1.3rem;
+            }
+
+            .btn {
+                font-size: 0.85rem;
+                padding: 0.75rem 1rem;
+            }
+
+            .theme-btn {
+                padding: 0.35rem 0.75rem;
+                font-size: 0.75rem;
+            }
+        }
+
+        /* ========== 深色模式支持（可选） ========== */
+        @media (prefers-color-scheme: dark) {
+            .theme-switcher {
+                background: rgba(30, 30, 30, 0.7);
+            }
+
+            .form-group input {
+                background: rgba(50, 50, 50, 0.7);
+            }
+
+            .social-btn {
+                background: rgba(50, 50, 50, 0.7);
+            }
+        }
+    </style>
+</head>
+<body data-theme="male">
+    <!-- 主题切换器 -->
+    <div class="theme-switcher">
+        <button class="theme-btn active" data-theme="male" title="复古美式风">♪ 复古美式</button>
+        <button class="theme-btn" data-theme="female" title="森系童话风">🌲 森系童话</button>
+        <button class="theme-btn" data-theme="universal" title="盐系极简风">☐ 盐系极简</button>
+    </div>
+
+    <!-- 登录容器 -->
+    <div class="container">
+        <div class="login-wrapper">
+            <!-- 装饰元素 -->
+            <div class="decorative"></div>
+
+            <!-- 登录标题 -->
+            <div class="login-title">
+                <h1>智能穿搭助手</h1>
+                <p>发现属于你的风格</p>
+            </div>
+
+            <!-- 登录表单 -->
+            <form class="login-form" id="loginForm">
+                <!-- 用户名 -->
+                <div class="form-group">
+                    <label for="username">用户名</label>
+                    <input
+                        type="text"
+                        id="username"
+                        name="username"
+                        placeholder="请输入用户名或邮箱"
+                        required
+                    >
+                </div>
+
+                <!-- 密码 -->
+                <div class="form-group">
+                    <label for="password">密码</label>
+                    <input
+                        type="password"
+                        id="password"
+                        name="password"
+                        placeholder="请输入密码"
+                        required
+                    >
+                </div>
+
+                <!-- 登录和注册按钮 -->
+                <div class="button-group">
+                    <button type="submit" class="btn btn-primary btn-login">登 录</button>
+                    <button type="button" class="btn btn-secondary btn-signup" id="signupBtn">创建账户</button>
+                </div>
+            </form>
+
+            <!-- 分割线 -->
+            <div class="divider">或通过以下方式登录</div>
+
+            <!-- 社交登录 -->
+            <div class="social-login">
+                <button class="social-btn" id="googleBtn" title="Google登录">🔵</button>
+                <button class="social-btn" id="appleBtn" title="Apple登录">🍎</button>
+                <button class="social-btn" id="wechatBtn" title="微信登录">💬</button>
+            </div>
+
+            <!-- 底部链接 -->
+            <div class="footer-link">
+                <a href="#">忘记密码？</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ========== 主题管理 ==========
+        class ThemeManager {
+            constructor() {
+                this.STORAGE_KEY = 'clothing-assistant-theme';
+                this.DEFAULT_THEME = 'male';
+                this.init();
+            }
+
+            init() {
+                // 从 localStorage 读取保存的主题
+                const savedTheme = this.getSavedTheme();
+                this.setTheme(savedTheme);
+                this.bindThemeButtons();
+            }
+
+            getSavedTheme() {
+                const saved = localStorage.getItem(this.STORAGE_KEY);
+                return saved || this.DEFAULT_THEME;
+            }
+
+            saveTheme(theme) {
+                localStorage.setItem(this.STORAGE_KEY, theme);
+            }
+
+            setTheme(theme) {
+                // 设置 data-theme 属性
+                document.documentElement.setAttribute('data-theme', theme);
+
+                // 更新按钮状态
+                this.updateThemeButtons(theme);
+
+                // 保存到 localStorage
+                this.saveTheme(theme);
+            }
+
+            updateThemeButtons(activeTheme) {
+                document.querySelectorAll('.theme-btn').forEach(btn => {
+                    if (btn.getAttribute('data-theme') === activeTheme) {
+                        btn.classList.add('active');
+                    } else {
+                        btn.classList.remove('active');
+                    }
+                });
+            }
+
+            bindThemeButtons() {
+                document.querySelectorAll('.theme-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const theme = e.target.getAttribute('data-theme');
+                        this.setTheme(theme);
+                        this.showNotification('主题已切换');
+                    });
+                });
+            }
+
+            showNotification(message) {
+                // 简单的通知效果（可选）
+                console.log('✓ ' + message);
+            }
+        }
+
+        // ========== 表单处理 ==========
+        class LoginManager {
+            constructor() {
+                this.form = document.getElementById('loginForm');
+                this.usernameInput = document.getElementById('username');
+                this.passwordInput = document.getElementById('password');
+                this.signupBtn = document.getElementById('signupBtn');
+
+                this.bindEvents();
+            }
+
+            bindEvents() {
+                this.form.addEventListener('submit', (e) => this.handleLogin(e));
+                this.signupBtn.addEventListener('click', () => this.handleSignup());
+
+                // 社交登录按钮
+                document.getElementById('googleBtn').addEventListener('click', () =>
+                    this.handleSocialLogin('Google')
+                );
+                document.getElementById('appleBtn').addEventListener('click', () =>
+                    this.handleSocialLogin('Apple')
+                );
+                document.getElementById('wechatBtn').addEventListener('click', () =>
+                    this.handleSocialLogin('微信')
+                );
+            }
+
+            handleLogin(e) {
+                e.preventDefault();
+
+                const username = this.usernameInput.value.trim();
+                const password = this.passwordInput.value.trim();
+
+                // 前端验证
+                if (!username) {
+                    alert('⚠️ 请输入用户名或邮箱');
+                    this.usernameInput.focus();
+                    return;
+                }
+
+                if (!password) {
+                    alert('⚠️ 请输入密码');
+                    this.passwordInput.focus();
+                    return;
+                }
+
+                if (password.length < 6) {
+                    alert('⚠️ 密码长度不能少于6位');
+                    this.passwordInput.focus();
+                    return;
+                }
+
+                // 模拟登录成功
+                alert(`✅ 登录成功！\n\n用户名: ${username}\n密码: ${'*'.repeat(password.length)}\n\n(这是演示提示，实际应连接后端API)`);
+
+                // 可选：清空表单
+                this.form.reset();
+                this.usernameInput.focus();
+            }
+
+            handleSignup() {
+                alert('📝 创建账户\n\n将打开注册页面...\n\n(这是演示提示，实际应跳转到注册页面)');
+            }
+
+            handleSocialLogin(provider) {
+                alert(`🔐 ${provider} 登录\n\n将跳转至 ${provider} 授权页面...\n\n(这是演示提示，实际应集成 OAuth)`);
+            }
+        }
+
+        // ========== 初始化 ==========
+        document.addEventListener('DOMContentLoaded', () => {
+            new ThemeManager();
+            new LoginManager();
+
+            // 可选：控制台欢迎信息
+            console.log('%c智能穿搭助手 v1.0', 'font-size: 16px; color: #2c3e66; font-weight: bold;');
+            console.log('%c支持三主题切换：复古美式风 | 森系童话风 | 盐系极简风', 'color: #b85c38; font-size: 12px;');
+            console.log('%c主题选择已保存到 localStorage，下次自动应用', 'color: #a7b893; font-size: 12px;');
+        });
+    </script>
+</body>
+</html>

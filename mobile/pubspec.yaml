@@ -19,6 +19,9 @@ dependencies:
   # 本地存储
   shared_preferences: ^2.2.2
 
+  # 字体
+  google_fonts: ^6.3.0
+
   # 图片选择
   image_picker: ^1.0.7
 
