@@ -4,7 +4,7 @@ Wardrobe (garment) API endpoints
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
@@ -18,6 +18,7 @@ from app.schemas.garment import (
     GarmentCreate,
     GarmentListResponse,
     GarmentResponse,
+    GarmentSearchQuery,
     GarmentUpdate,
 )
 from app.services.garment import (
@@ -26,6 +27,7 @@ from app.services.garment import (
     delete_garment,
     get_garment_by_id,
     get_garments_by_user,
+    search_garments,
     update_garment,
 )
 from app.services.storage import get_storage_service
@@ -61,14 +63,14 @@ def validate_garment_data(garment_data):
 
 @router.post("/garments", response_model=GarmentResponse, status_code=status.HTTP_201_CREATED)
 async def add_garment(
-    category: str,
-    main_color_name: str,
-    main_color_rgb: str,  # Format: "r,g,b"
-    main_color_hsv: str,  # Format: "h,s,v"
-    main_color_hex: str,
-    style_tags: str = "",  # Comma-separated
-    fit_type: Optional[str] = None,
-    notes: Optional[str] = None,
+    category: str = Form(..., description="服装品类"),
+    main_color_name: str = Form(..., description="主颜色名称"),
+    main_color_rgb: str = Form(..., description="RGB值，格式：r,g,b"),
+    main_color_hsv: str = Form(..., description="HSV值，格式：h,s,v"),
+    main_color_hex: str = Form(..., description="十六进制颜色码"),
+    style_tags: str = Form("", description="风格标签，逗号分隔"),
+    fit_type: Optional[str] = Form(None, description="版型"),
+    notes: Optional[str] = Form(None, description="备注"),
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -262,3 +264,73 @@ def delete_garment_endpoint(
     delete_garment(db, garment_uuid)
 
     return None
+
+
+# ─── Search endpoint ─────────────────────────────────────────────────────────
+
+
+@router.post("/garments/search", response_model=GarmentListResponse)
+def search_garments_endpoint(
+    query_params: GarmentSearchQuery,
+    page: int = Query(1, ge=1, description="页码（与body参数合并使用）"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    高级搜索服装
+
+    支持多维度过滤：
+    - keyword: 关键词（匹配名称/备注）
+    - category: 品类
+    - style_tags: 风格标签列表（AND匹配）
+    - color_name: 颜色名称（如：蓝/红/黑）
+    - is_favorite: 仅收藏的
+    - season: 季节（春夏/秋冬/全年）
+    - min_worn: 最小穿搭次数
+    - sort_by: 排序字段（created_at/worn_times/category）
+    - sort_order: 排序方向（asc/desc）
+    """
+    skip = (page - 1) * page_size
+    items, total = search_garments(db, current_user.user_id, query_params)
+
+    # Apply pagination
+    paginated_items = items[skip : skip + page_size]
+
+    return GarmentListResponse(
+        total=total, page=page, page_size=page_size, items=paginated_items
+    )
+
+
+@router.patch("/garments/{garment_id}/favorite", response_model=GarmentResponse)
+def toggle_favorite_endpoint(
+    garment_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """快速切换收藏状态"""
+    from uuid import UUID
+
+    try:
+        garment_uuid = UUID(garment_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid garment ID format"
+        )
+
+    garment = get_garment_by_id(db, garment_uuid)
+    if not garment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Garment not found")
+
+    if garment.user_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized"
+        )
+
+    # Toggle favorite
+    current_fav = garment.is_favorite == "1"
+    garment.is_favorite = "0" if current_fav else "1"
+    db.commit()
+    db.refresh(garment)
+
+    return garment

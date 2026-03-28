@@ -109,6 +109,7 @@ class Garment(Base):
         nullable=False,
         index=True,
     )
+    name = Column(String(100), nullable=True)  # 服装名称
     category = Column(String(20), nullable=False, index=True)  # 上衣/裤子/裙子/外套/鞋/包
     main_color = Column(JSONBCompat, nullable=False)  # Color object as JSON
     secondary_colors = Column(JSONBCompat, default=list)  # List of Color objects
@@ -118,6 +119,8 @@ class Garment(Base):
     image_url = Column(String(500), nullable=False)
     feature_vector = Column(JSONEncodedArray, nullable=False)  # 1280-dimensional feature vector
     notes = Column(Text)
+    is_favorite = Column(CHAR(1), default="0")  # 0=否, 1=是
+    wearing_count = Column(String(10), default="0")  # 穿搭次数
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

@@ -29,57 +29,99 @@ from app.core.logging import setup_logging
 logger = setup_logging()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Prompt Engineering: Chinese Fashion Domain
+# Enhanced Chinese Fashion Prompt Engineering
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Garment categories in Chinese (target classes for zero-shot classification)
+# Garment categories — Extended with Chinese-fashion specific categories
 CATEGORY_CANDIDATES = [
-    "上衣",  # Tops: T-shirt, shirt, sweater, hoodie, blouse
-    "裤子",  # Bottoms: jeans, trousers, slacks, leggings
-    "裙子",  # Dresses/Skirts
-    "外套",  # Outerwear: jacket, coat, blazer, cardigan
-    "鞋",  # Footwear: sneakers, heels, boots, sandals
-    "包",  # Bags: handbag, backpack, clutch, tote
+    # Western fashion
+    "上衣",  # Tops: T-shirt, 衬衫, 毛衣, 卫衣, 针织衫
+    "裤子",  # Bottoms: 牛仔裤, 西裤, 休闲裤, 运动裤
+    "裙子",  # Dresses/Skirts: 连衣裙, 半裙, 短裙
+    "外套",  # Outerwear: 夹克, 西装, 风衣, 大衣, 羽绒服
+    "鞋",  # Footwear: 运动鞋, 高跟鞋, 靴子, 休闲鞋
+    "包",  # Bags: 手提包, 双肩包, 单肩包
+    # Chinese-fashion specific
+    "汉服",  # Hanfu整套
+    "国风",  # 新中式（旗袍/唐装/禅意风）
+    "马面裙",  # 马面裙
+    "上衣(汉)",  # 汉服上衣
+    "下装(汉)",  # 汉服下装
 ]
 
-# Fashion styles in Chinese
+# Fashion styles — Extended with Chinese fashion styles
 STYLE_CANDIDATES = [
-    "通勤",
-    "休闲",
-    "正式",
-    "运动",
-    "街头",
-    "学院",
-    "甜酷",
-    "简约",
-    "复古",
-    "朋克",
-    "民族",
-    "优雅",
-    "度假",
+    # Western styles
+    "通勤", "休闲", "正式", "运动", "街头",
+    "学院", "甜酷", "简约", "复古", "朋克",
+    "民族", "优雅", "度假",
+    # Chinese styles
+    "国风", "汉服", "新中式", "禅意", "古风",
 ]
 
-# Fit types in Chinese
-FIT_CANDIDATES = [
-    "修身",
-    "宽松",
-    "标准",
-    "oversized",
-]
+# Fit types
+FIT_CANDIDATES = ["修身", "标准", "宽松", "oversized"]
 
-# Occasions in Chinese (for occasion tagging)
+# Occasions
 OCCASION_CANDIDATES = [
-    "通勤上班",
-    "商务正式",
-    "约会",
-    "休闲日常",
-    "运动健身",
-    "校园",
-    "聚会",
-    "度假旅行",
-    "街头潮流",
-    "正式宴会",
+    "通勤上班", "商务正式", "约会", "休闲日常", "运动健身",
+    "校园", "聚会", "度假旅行", "街头潮流", "正式宴会",
 ]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Enhanced Chinese Fashion Prompt Templates
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Category prompts — bilingual for better CLIP understanding
+CATEGORY_PROMPTS = {
+    "上衣": "a stylish Chinese top: T-shirt, dress shirt, sweater, hoodie, knitwear",
+    "裤子": "classic pants or bottoms: jeans, trousers, casual pants, leggings",
+    "裙子": "elegant dress or skirt: dress, skirt, miniskirt, gown",
+    "外套": "fashionable outerwear: jacket, blazer, coat, windbreaker, down jacket",
+    "鞋": "fashionable shoes: sneakers, high heels, boots, casual shoes",
+    "包": "designer bag: handbag, backpack, shoulder bag, tote",
+    "汉服": "traditional Chinese Hanfu complete outfit,曲裾直裾圆领袍 Han Chinese clothing",
+    "国风": "Chinese fashion 新中式旗袍唐装 with traditional Chinese elements",
+    "马面裙": "Chinese Mamian skirt 马面裙 with traditional pleated design",
+    "上衣(汉)": "traditional Chinese top 汉服上襦衫袄 with Han style",
+    "下装(汉)": "traditional Chinese bottom 汉服裙裤 with Han style",
+}
+
+# Style prompts — detailed descriptions in English for better CLIP matching
+STYLE_PROMPTS = {
+    "通勤": "professional office commute style, business work outfit",
+    "休闲": "casual everyday comfortable style, relaxed leisure outfit",
+    "正式": "formal business attire, elegant formal wear",
+    "运动": "athletic sports fitness outfit, gym workout clothing",
+    "街头": "street fashion urban style, trendy urban streetwear",
+    "学院": "preppy academic college style, scholarly campus fashion",
+    "甜酷": "sweet and cool mix style, girl crush outfit",
+    "简约": "minimalist simple clean style, basic wardrobe pieces",
+    "复古": "vintage retro old-fashioned style, classic vintage fashion",
+    "朋克": "punk edgy rebellious style, alternative fashion",
+    "民族": "ethnic cultural style, traditional folk fashion",
+    "优雅": "elegant graceful feminine style, sophisticated chic outfit",
+    "度假": "resort vacation tropical style, holiday travel outfit",
+    "国风": "国潮 Chinese fashion, modern Chinese cultural style, 中国风",
+    "汉服": "traditional Chinese Hanfu style, 汉服古典造型",
+    "新中式": "neo-Chinese new Chinese style, modern Chinese chic, 新中式穿搭",
+    "禅意": "zen minimalist Eastern aesthetic, 禅意素雅风格",
+    "古风": "ancient classical Chinese style, 古风造型, traditional Chinese",
+}
+
+# Scene prompts — detailed descriptions
+SCENE_PROMPTS = {
+    "通勤上班": "suitable for daily commute office work, professional business setting",
+    "商务正式": "appropriate for formal business meeting conference negotiation",
+    "约会": "romantic date dinner outfit, couple dating, love atmosphere",
+    "休闲日常": "casual daily life shopping outing, comfortable home relaxed",
+    "运动健身": "gym fitness exercise running outdoor sports activity",
+    "校园": "campus school life classroom learning student activities",
+    "聚会": "friend party social gathering birthday celebration",
+    "度假旅行": "vacation travel beach resort tropical holiday trip",
+    "街头潮流": "street trend fashion show edgy avant-garde urban style",
+    "正式宴会": "gala dinner red carpet formal banquet high-end event",
+}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Chinese Fashion CLIP Recognizer
@@ -88,11 +130,11 @@ OCCASION_CANDIDATES = [
 
 class CLIPRecognizer:
     """
-    CLIP-based fashion image recognizer.
+    Enhanced CLIP-based fashion image recognizer.
 
     Supports:
-    - Category classification (6 classes)
-    - Style tagging (12+ styles, multi-label)
+    - Category classification (11 classes including Chinese fashion)
+    - Style tagging (18+ styles, multi-label)
     - Fit type estimation (4 types)
     - Occasion tagging (10 occasions, multi-label)
     - Feature extraction (512-dim for ViT-B/32, 768-dim for ViT-L/14)
@@ -100,7 +142,6 @@ class CLIPRecognizer:
     Falls back to MobileNetV2 if CLIP loading fails.
     """
 
-    # Feature dimension per CLIP model
     CLIP_FEATURE_DIMS = {
         "vit_b32": 512,
         "vit_l14": 768,
@@ -108,32 +149,20 @@ class CLIPRecognizer:
 
     def __init__(
         self,
-        model_name: str = "vit_l14",  # "vit_b32" or "vit_l14"
-        device: str = "auto",  # "auto", "cuda", "cpu"
+        model_name: str = "vit_l14",
+        device: str = "auto",
         enable_cache: bool = True,
     ):
-        """
-        Initialize CLIP recognizer.
-
-        Args:
-            model_name: CLIP model variant ("vit_b32" or "vit_l14")
-            device: Device to run on ("auto", "cuda", "cpu")
-            enable_cache: Whether to cache results (default True)
-        """
         self.model_name = model_name
         self.device = self._resolve_device(device)
         self.enable_cache = enable_cache
 
-        # Initialize cache
         self._cache: Dict[str, dict] = {}
         self._executor = ThreadPoolExecutor(max_workers=2)
-
-        # Cache for text embeddings (computed once per instance)
         self._text_cache: Dict[str, np.ndarray] = {}
 
-        # Will be initialized lazily on first use
         self._model = None
-        self._preprocess = None
+        self._processor = None
         self._feature_dim = self.CLIP_FEATURE_DIMS.get(model_name, 512)
         self._is_clip_available = None
 
@@ -144,7 +173,6 @@ class CLIPRecognizer:
         if device == "auto":
             try:
                 import torch
-
                 return "cuda" if torch.cuda.is_available() else "cpu"
             except ImportError:
                 return "cpu"
@@ -153,24 +181,19 @@ class CLIPRecognizer:
     # ─── Lazy model loading ────────────────────────────────────────────────────
 
     def _ensure_model_loaded(self) -> bool:
-        """
-        Lazily load CLIP model. Returns True if successful, False if fallback needed.
-        """
+        """Lazily load CLIP model. Returns True if successful, False if fallback needed."""
         if self._is_clip_available is not None:
             return self._is_clip_available
 
         try:
             from transformers import CLIPModel, CLIPProcessor
-
             model_id = self._get_huggingface_model_id()
             logger.info(f"Loading CLIP model: {model_id} on {self.device}")
 
             self._model = CLIPModel.from_pretrained(model_id)
             self._model.to(self.device)
             self._model.eval()
-
             self._processor = CLIPProcessor.from_pretrained(model_id)
-
             self._is_clip_available = True
             logger.info("CLIP model loaded successfully")
             return True
@@ -201,17 +224,14 @@ class CLIPRecognizer:
 
         if self._is_clip_available:
             import torch
-
             inputs = self._processor(images=image, return_tensors="pt")
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
             with torch.no_grad():
                 image_features = self._model.get_image_features(**inputs)
-            # L2 normalize
-            image_features = image_features.cpu().numpy()
+            image_features = image_features.cpu().numpy()[0]
             image_features = image_features / np.linalg.norm(image_features)
-            return image_features[0]
+            return image_features
         else:
-            # Fallback: use MobileNetV2
             return self._mobilenet_fallback_features(image)
 
     def _compute_text_features(self, texts: List[str]) -> np.ndarray:
@@ -224,25 +244,22 @@ class CLIPRecognizer:
 
         if self._is_clip_available:
             import torch
-
             inputs = self._processor(text=texts, return_tensors="pt", padding=True)
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
             with torch.no_grad():
                 text_features = self._model.get_text_features(**inputs)
             text_features = text_features.cpu().numpy()
-            # L2 normalize
             norms = np.linalg.norm(text_features, axis=1, keepdims=True)
             norms = np.maximum(norms, 1e-12)
             text_features = text_features / norms
             self._text_cache[cache_key] = text_features
             return text_features
         else:
-            # Fallback: random unit vectors
             n = len(texts)
             features = np.random.randn(n, self._feature_dim).astype(np.float32)
             features = features / np.linalg.norm(features, axis=1, keepdims=True)
             self._text_cache[cache_key] = features
-            return text_features
+            return features
 
     def _cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
         """Compute cosine similarity between two vectors."""
@@ -254,39 +271,26 @@ class CLIPRecognizer:
         """Compute cosine similarities between image and text features."""
         return np.dot(text_features, image_features)
 
-    # ─── Zero-shot classification ─────────────────────────────────────────────
+    # ─── Zero-shot classification with enhanced prompts ─────────────────────────
 
     def _classify_zero_shot(
         self,
         image: Image.Image,
         candidates: List[str],
-        prompt_template: str = "a photo of {label}",
+        prompt_dict: Dict[str, str],
+        default_template: str = "a photo of {label} clothing",
     ) -> Tuple[str, float, Dict[str, float]]:
-        """
-        Zero-shot classification using CLIP.
-
-        Args:
-            image: PIL Image
-            candidates: List of candidate labels
-            prompt_template: Template to wrap each label
-
-        Returns:
-            Tuple of (best_label, best_score, all_scores_dict)
-        """
+        """Zero-shot classification using enhanced bilingual prompts."""
         self._ensure_model_loaded()
 
-        # Build text inputs
-        texts = [prompt_template.format(label=c) for c in candidates]
+        # Build text inputs using enhanced prompts
+        texts = [prompt_dict.get(c, default_template.format(label=c)) for c in candidates]
         text_features = self._compute_text_features(texts)
         image_features = self._compute_image_features(image)
 
-        # Compute similarities
         similarities = self._compute_similarities(image_features, text_features)
-
-        # Map to candidate labels
         scores = {candidates[i]: float(similarities[i]) for i in range(len(candidates))}
 
-        # Find best
         best_label = max(scores, key=scores.get)
         best_score = scores[best_label]
 
@@ -296,26 +300,17 @@ class CLIPRecognizer:
         self,
         image: Image.Image,
         candidates: List[str],
+        prompt_dict: Dict[str, str],
         threshold: float = 0.25,
-        prompt_template: str = "a photo of {label}",
+        default_template: str = "a {label} style outfit",
     ) -> List[str]:
-        """
-        Multi-label classification using CLIP (returns all candidates above threshold).
-
-        Args:
-            image: PIL Image
-            candidates: List of candidate labels
-            threshold: Minimum similarity score to include a label
-            prompt_template: Template to wrap each label
-
-        Returns:
-            List of labels that exceed threshold
-        """
-        _, _, scores = self._classify_zero_shot(image, candidates, prompt_template)
+        """Multi-label classification using enhanced prompts."""
+        _, _, scores = self._classify_zero_shot(
+            image, candidates, prompt_dict, default_template
+        )
 
         selected = [label for label, score in scores.items() if score >= threshold]
 
-        # Always return at least the top-1 if nothing exceeds threshold
         if not selected:
             best = max(scores, key=scores.get)
             selected = [best]
@@ -333,36 +328,28 @@ class CLIPRecognizer:
 
         Pipeline:
         1. Load & preprocess image
-        2. Zero-shot category classification (6 classes)
-        3. Zero-shot style tagging (12+ styles, multi-label)
-        4. Zero-shot fit type estimation (4 types)
-        5. Zero-shot occasion tagging (10 occasions, multi-label)
+        2. Category classification (11 classes including Chinese fashion)
+        3. Style tagging (18+ styles, multi-label)
+        4. Fit type estimation (4 types)
+        5. Occasion tagging (10 occasions, multi-label)
         6. Extract CLIP feature vector (768-dim)
-
-        Args:
-            image_source: Image file path, bytes, or PIL Image
-
-        Returns:
-            Dict with category, style_tags, fit_type, occasions, feature_vector
         """
-        # Load image
         image = self._load_image(image_source)
 
-        # Check cache
         cache_key = self._compute_cache_key(image_source)
         if self.enable_cache and cache_key in self._cache:
             logger.debug("CLIPRecognizer cache hit")
             return self._cache[cache_key]
 
         self._ensure_model_loaded()
-
         logger.info("Starting CLIP fashion recognition")
 
-        # 1. Category (single-label, high confidence needed)
+        # 1. Category (single-label)
         category, cat_conf, cat_scores = self._classify_zero_shot(
             image,
             CATEGORY_CANDIDATES,
-            prompt_template="a photo of {label} clothing",
+            CATEGORY_PROMPTS,
+            default_template="a photo of {label} clothing",
         )
         logger.info(f"Category: {category} (conf={cat_conf:.3f})")
 
@@ -370,8 +357,9 @@ class CLIPRecognizer:
         style_tags = self._classify_multi_label(
             image,
             STYLE_CANDIDATES,
+            STYLE_PROMPTS,
             threshold=0.25,
-            prompt_template="a {label} style outfit",
+            default_template="a {label} style outfit",
         )
         logger.info(f"Styles: {style_tags}")
 
@@ -379,19 +367,20 @@ class CLIPRecognizer:
         fit_type, fit_conf, _ = self._classify_zero_shot(
             image,
             FIT_CANDIDATES,
-            prompt_template="a photo of {label} fit clothing",
+            {},
+            default_template="a photo of {label} fit clothing",
         )
-        # Only return fit_type if confidence is reasonable
         if fit_conf < 0.20:
             fit_type = None
         logger.info(f"Fit type: {fit_type} (conf={fit_conf:.3f})")
 
-        # 4. Occasion tags (multi-label) - for recommendation context
+        # 4. Occasion tags (multi-label)
         occasions = self._classify_multi_label(
             image,
             OCCASION_CANDIDATES,
+            SCENE_PROMPTS,
             threshold=0.25,
-            prompt_template="a photo suitable for {label}",
+            default_template="a photo suitable for {label}",
         )
         logger.info(f"Occasions: {occasions}")
 
@@ -411,7 +400,6 @@ class CLIPRecognizer:
             "feature_dim": len(feature_vector),
         }
 
-        # Cache
         if self.enable_cache:
             self._cache[cache_key] = result
 
@@ -423,16 +411,14 @@ class CLIPRecognizer:
     def _mobilenet_fallback_features(self, image: Image.Image) -> np.ndarray:
         """
         Fallback feature extraction using MobileNetV2 when CLIP unavailable.
-        Returns a 512-dim or 768-dim zero-padded vector compatible with CLIP dims.
+        Returns CLIP-compatible dimension zero-padded vector.
         """
         try:
             from app.ml.feature_extractor import FeatureExtractor
-
             extractor = FeatureExtractor(enable_cache=False)
             mobilenet_features = extractor.extract(image)  # 1280-dim
 
-            # Project to CLIP-compatible dimension using simple PCA-like approach
-            # Take first N dimensions (mobilenet correlates with CLIP somewhat)
+            # Project to CLIP-compatible dimension
             target_dim = self._feature_dim
             if len(mobilenet_features) >= target_dim:
                 projected = mobilenet_features[:target_dim]
@@ -440,16 +426,14 @@ class CLIPRecognizer:
                 projected = np.zeros(target_dim, dtype=np.float32)
                 projected[: len(mobilenet_features)] = mobilenet_features
 
-            # L2 normalize
             projected = projected / np.linalg.norm(projected)
             return projected
         except Exception as e:
             logger.warning(f"MobileNetV2 fallback also failed: {e}")
-            # Return random unit vector
             v = np.random.randn(self._feature_dim).astype(np.float32)
             return v / np.linalg.norm(v)
 
-    # ─── Utility ──────────────────────────────────────────────────────────────
+    # ─── Utility ─────────────────────────────────────────────────────────────
 
     def _load_image(self, source: Union[str, Path, bytes, Image.Image]) -> Image.Image:
         """Load image from various sources."""
@@ -457,13 +441,9 @@ class CLIPRecognizer:
             return source.convert("RGB")
 
         if isinstance(source, (str, Path)):
-            from pathlib import Path as P
-
-            return Image.open(P(source)).convert("RGB")
+            return Image.open(Path(source)).convert("RGB")
 
         if isinstance(source, bytes):
-            from io import BytesIO
-
             return Image.open(BytesIO(source)).convert("RGB")
 
         raise ValueError(f"Unsupported image source type: {type(source)}")
@@ -484,10 +464,7 @@ class CLIPRecognizer:
     # ─── Specialized methods ─────────────────────────────────────────────────
 
     def extract_features(self, image_source: Union[str, Path, bytes, Image.Image]) -> np.ndarray:
-        """
-        Extract CLIP feature vector from image.
-        Used for similarity matching.
-        """
+        """Extract CLIP feature vector from image. Used for similarity matching."""
         image = self._load_image(image_source)
         return self._compute_image_features(image)
 
@@ -499,7 +476,8 @@ class CLIPRecognizer:
         return self._classify_zero_shot(
             image,
             CATEGORY_CANDIDATES,
-            prompt_template="a photo of {label} clothing",
+            CATEGORY_PROMPTS,
+            default_template="a photo of {label} clothing",
         )[:2]
 
     def classify_styles(self, image_source: Union[str, Path, bytes, Image.Image]) -> List[str]:
@@ -508,8 +486,9 @@ class CLIPRecognizer:
         return self._classify_multi_label(
             image,
             STYLE_CANDIDATES,
+            STYLE_PROMPTS,
             threshold=0.25,
-            prompt_template="a {label} style outfit",
+            default_template="a {label} style outfit",
         )
 
     def tag_occasions(self, image_source: Union[str, Path, bytes, Image.Image]) -> List[str]:
@@ -518,8 +497,9 @@ class CLIPRecognizer:
         return self._classify_multi_label(
             image,
             OCCASION_CANDIDATES,
+            SCENE_PROMPTS,
             threshold=0.25,
-            prompt_template="a photo suitable for {label}",
+            default_template="a photo suitable for {label}",
         )
 
     def clear_cache(self):

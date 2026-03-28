@@ -22,6 +22,7 @@ from app.api import (
 )
 from app.api.tryon import router as tryon_router
 from app.api.wardrobe_simple import router as wardrobe_simple_router
+from app.api.outfit_collections import router as outfit_collections_router
 from app.core.config import settings
 from app.core.error_handlers import (
     app_exception_handler,
@@ -48,11 +49,12 @@ app = FastAPI(
 
     * **用户认证**: 注册、登录、JWT Token 管理
     * **用户画像**: 创建和管理个人画像信息（身高、体型、肤色、风格偏好等）
-    * **图像识别**: FashionCLIP 零样本分类 — 品类、颜色、风格标签识别
-    * **衣橱管理**: 添加、查询、编辑、删除服饰单品（支持 CLIP 自动识别）
+    * **图像识别**: FashionCLIP 零样本分类 — 品类、颜色、风格标签识别（含国风/汉服）
+    * **衣橱管理**: 添加、查询、搜索、编辑、删除服饰单品（支持 CLIP 自动识别）
     * **相似度分析**: CLIP 语义向量相似度计算，提供重复购买预警
     * **穿搭推荐**: 场景-品类-风格 三维匹配推荐（基于 Polyvore 风格规则）
     * **适合度评分**: 场景-体型-风格 三维评分引擎
+    * **套装收藏**: 保存和管理用户精选搭配，记录穿搭次数
     * **虚拟试穿**: SD-VTON/Stable Diffusion 虚拟试穿（GPU 推荐）
 
     ### 技术栈
@@ -291,6 +293,7 @@ app.include_router(wardrobe_simple_router, prefix="/api/v1")  # Simplified API
 app.include_router(recognition_router, prefix="/api/v1")
 app.include_router(analysis_router, prefix="/api/v1")
 app.include_router(tryon_router, prefix="/api/v1")  # Virtual Try-On
+app.include_router(outfit_collections_router, prefix="/api/v1")  # Outfit Collections
 
 # Mount static files for uploaded images
 upload_dir = Path(settings.UPLOAD_DIR)

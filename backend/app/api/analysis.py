@@ -2,7 +2,7 @@
 Analysis API endpoints (similarity, recommendations, suitability)
 """
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
@@ -233,18 +233,22 @@ class OutfitRecommendationResponse(BaseModel):
 async def recommend_outfits(
     file: UploadFile = File(...),
     num_outfits: int = 3,
+    scene: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Generate outfit recommendations for uploaded garment (3D: 场景-品类-风格)
+    Generate outfit recommendations (3D: 场景-品类-风格 + 体型感知)
 
     This endpoint:
     1. Recognizes the uploaded garment image (CLIP)
-    2. Derives user's primary scene from their style preferences
+    2. Derives user's primary scene from style preferences OR uses provided scene
     3. Finds matching garments from wardrobe using scene-aware templates
-    4. Scores across 4 dimensions: scene / category / style / color
-    5. Returns top N outfit recommendations with interpretable scores
+    4. Filters by user body type (Step 6: 体型感知)
+    5. Scores across 4 dimensions: scene / category / style / color
+    6. Returns top N outfit recommendations with interpretable scores
+
+    Step 6+7 已实现：体型过滤 + 场景模板
     """
     # Validate file type
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -293,9 +297,11 @@ async def recommend_outfits(
                 outfit_cards=[],
             )
 
-        # Get user's style preferences for scene derivation
+        # Get user's profile for scene and body type inference
         user_profile = get_profile_by_user_id(db, current_user.user_id)
         user_style_prefs = user_profile.style_preference if user_profile else []
+        user_body_type = user_profile.body_type if user_profile else None
+        avoid_body_parts = user_profile.avoid_body_parts if user_profile else []
 
         # Create a temporary garment object for the target
         from uuid import uuid4
@@ -343,12 +349,15 @@ async def recommend_outfits(
 
         recommender = OutfitRecommender3D()
 
-        # Generate outfit recommendations
+        # Generate outfit recommendations (Step 6+7: 体型+场景感知)
         outfit_cards = recommender.recommend_outfits(
             target_garment=target_garment,
             wardrobe=wardrobe_garments,
             num_outfits=num_outfits,
             user_style_preferences=user_style_prefs,
+            user_body_type=user_body_type,
+            avoid_body_parts=avoid_body_parts,
+            preferred_scene=scene,
         )
 
         # Convert to dict for response

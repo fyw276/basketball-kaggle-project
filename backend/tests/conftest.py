@@ -14,7 +14,7 @@ from app.db.session import get_db
 from app.main import app
 
 # Import all models to register them with Base.metadata
-from app.models import garment, user, user_profile  # noqa: F401
+from app.models import garment, outfit_collection, user, user_profile  # noqa: F401
 
 # Use file-based SQLite database for tests (will be deleted after session)
 TEST_DB_PATH = "test_database.db"

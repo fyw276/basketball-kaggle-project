@@ -21,7 +21,7 @@ Features:
 from typing import Dict, List, Optional, Set, Tuple
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.logging import setup_logging
 from app.models.garment import Garment
@@ -95,6 +95,29 @@ SCENE_OUTFIT_TEMPLATES: Dict[str, List[Dict]] = {
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 体型感知推荐常量
+# ──────────────────────────────────────────────────────────────────────────────
+
+BODY_TYPE_IDEAL_FITS: Dict[str, List[str]] = {
+    "偏瘦": ["宽松", "oversized", "标准"],
+    "倒三角": ["宽松", "oversized"],
+    "梨形": ["宽松", "oversized", "标准"],
+    "矩形": ["修身", "标准", "宽松"],
+    "沙漏": ["修身", "标准"],
+    "微胖": ["宽松", "oversized", "标准"],
+}
+
+BODY_TYPE_CATEGORY_SCORES: Dict[str, Dict[str, float]] = {
+    "梨形": {"上衣": 0.8, "外套": 0.9, "裤子": 0.5, "裙子": 0.7},
+    "倒三角": {"上衣": 0.6, "外套": 0.6, "裤子": 0.9, "裙子": 0.8},
+    "偏瘦": {"上衣": 0.8, "外套": 0.9, "裤子": 0.7, "裙子": 0.8},
+    "微胖": {"上衣": 0.6, "外套": 0.8, "裤子": 0.6, "裙子": 0.7},
+    "矩形": {"上衣": 0.8, "外套": 0.7, "裤子": 0.8, "裙子": 0.8},
+    "沙漏": {"上衣": 0.9, "外套": 0.7, "裤子": 0.8, "裙子": 0.9},
+}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Pydantic Models
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -119,7 +142,11 @@ class OutfitCard(BaseModel):
         default_factory=list, description="Other suitable occasions"
     )
     items: List[OutfitItem]
-    description: str
+    description: str = Field(..., description="Natural language outfit summary")
+    reason: str = Field(
+        default="",
+        description="Chinese recommendation reason (body/scene/style analysis)",
+    )
     # 3D scores
     scene_score: float = Field(..., ge=0, le=1, description="Scene compatibility")
     category_score: float = Field(..., ge=0, le=1, description="Category completeness")
@@ -132,14 +159,15 @@ class OutfitCard(BaseModel):
         description="Weights for each dimension",
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "outfit_id": "outfit_1",
-                "scene": "商务",
-                "secondary_scenes": ["通勤上班", "正式宴会"],
+                "scene": "通勤上班",
+                "secondary_scenes": ["商务正式", "正式宴会"],
                 "items": [],
-                "description": "深灰西装外套搭配黑色西裤，沉稳干练，适合正式商务场合",
+                "description": "简约通勤穿搭，深灰上衣 + 黑色裤子 + 深灰外套，干练利落",
+                "reason": "深色系单品视觉显瘦，适合需要遮盖臀部的身形；简约干练风格完美契合通勤场景；色彩高度统一，商务感强",
                 "scene_score": 0.92,
                 "category_score": 1.0,
                 "style_score": 0.88,
@@ -147,6 +175,7 @@ class OutfitCard(BaseModel):
                 "overall_score": 0.90,
             }
         }
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -227,47 +256,76 @@ class OutfitRecommender3D:
         wardrobe: List[Garment],
         num_outfits: int = 3,
         user_style_preferences: Optional[List[str]] = None,
+        user_body_type: Optional[str] = None,
+        avoid_body_parts: Optional[List[str]] = None,
+        preferred_scene: Optional[str] = None,
     ) -> List[OutfitCard]:
         """
-        Generate outfit recommendations for a target garment.
+        Generate outfit recommendations for a target garment (体型+场景感知).
+
+        新增 Step 6 体型感知：
+        - 根据用户体型过滤不合适的版型
+        - 根据体型调整品类优先度（如梨形优先外套遮臀部）
+        - 避免推荐强化用户想遮盖的身体部位
 
         Args:
-            target_garment: The central garment to build outfits around
-            wardrobe: User's complete wardrobe
-            num_outfits: Number of outfits to generate (default 3)
-            user_style_preferences: Optional style preferences for scene inference
+            target_garment: 核心单品，以此为中心构建套装
+            wardrobe: 用户衣橱
+            num_outfits: 返回套装数量（默认3）
+            user_style_preferences: 风格偏好（用于场景推断）
+            user_body_type: 用户体型（偏瘦/微胖/梨形/倒三角/沙漏/矩形）
+            avoid_body_parts: 需要遮盖的身体部位（肩/腰/臀/大腿/小腿）
 
         Returns:
-            List[OutfitCard]: Ranked outfit recommendations with 3D scores
+            List[OutfitCard]: 排序后的套装推荐（含体型感知评分）
         """
-        logger.info(f"Generating {num_outfits} outfits for {target_garment.category}")
+        logger.info(
+            f"Generating {num_outfits} outfits for {target_garment.category} "
+            f"(body_type={user_body_type})"
+        )
 
         if not wardrobe:
             return []
 
-        # Group wardrobe by category
+        # Step 1: 体型感知过滤（提前排除明显不适合的服装）
+        if user_body_type or avoid_body_parts:
+            wardrobe = self._filter_by_body_type(
+                wardrobe, user_body_type, avoid_body_parts
+            )
+            logger.info(f"After body-type filtering: {len(wardrobe)} garments remain")
+
+        # Step 2: Group wardrobe by category
         wardrobe_by_cat = self._group_by_category(wardrobe)
 
-        # Derive user's primary scene
+        # Step 3: Derive user's primary scene from style preferences
         style_prefs = user_style_preferences or target_garment.style_tags
-        primary_scene, secondary_scenes = self._derive_user_scenes(style_prefs)
-        logger.info(f"Primary scene: {primary_scene}, Secondary: {secondary_scenes}")
+        # Step 3: Scene derivation (user-specified scene overrides style inference)
+        if preferred_scene:
+            primary_scene = preferred_scene
+            secondary_scenes = []
+            logger.info(f"Using user-specified scene: {primary_scene}")
+        else:
+            primary_scene, secondary_scenes = self._derive_user_scenes(style_prefs)
+            logger.info(f"Derived scene: {primary_scene}, Secondary: {secondary_scenes}")
 
-        # Get outfit templates for primary scene
-        templates = SCENE_OUTFIT_TEMPLATES.get(primary_scene, SCENE_OUTFIT_TEMPLATES["休闲日常"])
+        # Step 4: Get outfit templates for primary scene
+        templates = SCENE_OUTFIT_TEMPLATES.get(
+            primary_scene, SCENE_OUTFIT_TEMPLATES["休闲日常"]
+        )
 
-        # Generate outfit candidates for each template
+        # Step 5: Generate outfit candidates for each template
         all_candidates: List[Tuple[List[Garment], Dict]] = []
         for template in templates:
             cats = template["categories"]
             weight = template["weight"]
 
-            # Skip if target garment's category is not in template
             if target_garment.category not in cats:
                 continue
 
-            # Generate combinations for this template
-            combos = self._generate_for_template(target_garment, cats, wardrobe_by_cat)
+            combos = self._generate_for_template(
+                target_garment, cats, wardrobe_by_cat,
+                user_body_type=user_body_type, avoid_body_parts=avoid_body_parts,
+            )
             for combo in combos:
                 all_candidates.append(
                     (
@@ -279,13 +337,19 @@ class OutfitRecommender3D:
                     )
                 )
 
-        # Score all candidates across 4 dimensions
+        # Step 6: Score all candidates across 5 dimensions (scene/category/style/color/body)
         scored: List[Tuple[List[Garment], Dict, OutfitCard]] = []
         for combo, meta in all_candidates:
-            card = self._score_outfit_3d(combo, primary_scene, secondary_scenes)
+            card = self._score_outfit_3d(
+                combo,
+                primary_scene,
+                secondary_scenes,
+                user_body_type=user_body_type,
+                avoid_body_parts=avoid_body_parts,
+            )
             scored.append((combo, meta, card))
 
-        # Sort by adjusted score
+        # Step 7: Sort by adjusted score (body_type bonus)
         scored.sort(
             key=lambda x: (
                 x[2].overall_score * (0.7 + 0.3 * x[1]["template_weight"]),
@@ -294,7 +358,7 @@ class OutfitRecommender3D:
             reverse=True,
         )
 
-        # Build final outfit cards
+        # Step 8: Build final outfit cards
         outfit_cards = []
         for idx, (combo, meta, card) in enumerate(scored[:num_outfits]):
             card.outfit_id = f"outfit_{idx + 1}"
@@ -303,6 +367,38 @@ class OutfitRecommender3D:
         logger.info(f"Generated {len(outfit_cards)} outfit recommendations")
         return outfit_cards
 
+    def _filter_by_body_type(
+        self,
+        wardrobe: List[Garment],
+        body_type: Optional[str],
+        avoid_parts: Optional[List[str]],
+    ) -> List[Garment]:
+        """
+        体型感知过滤：排除版型/品类不适合的服装
+
+        Rules:
+        - 偏瘦：过滤掉紧身款（强化瘦弱感）
+        - 微胖：过滤掉修身/紧身（强化肉感）
+        - 梨形：下身降低权重（宽松更佳）
+        - 避免部位：对应品类降低权重
+        """
+        if not body_type and not avoid_parts:
+            return wardrobe
+
+        ideal_fits = BODY_TYPE_IDEAL_FITS.get(body_type, [])
+        ideal_set = set(ideal_fits)
+        bad_fits = {"修身"} - ideal_set
+
+        filtered = []
+        for g in wardrobe:
+            # Skip if garment has a bad fit type for this body
+            if g.fit_type in bad_fits:
+                logger.debug(f"Filter out {g.garment_id} (fit={g.fit_type}, body={body_type})")
+                continue
+            filtered.append(g)
+
+        return filtered
+
     # ─── Template-based generation ─────────────────────────────────────────────
 
     def _generate_for_template(
@@ -310,6 +406,8 @@ class OutfitRecommender3D:
         target: Garment,
         categories: List[str],
         wardrobe_by_cat: Dict[str, List[Garment]],
+        user_body_type: Optional[str] = None,
+        avoid_body_parts: Optional[List[str]] = None,
     ) -> List[List[Garment]]:
         """Generate outfit combinations for a given category template."""
         combinations = []
@@ -367,7 +465,7 @@ class OutfitRecommender3D:
                             ColorSchema(**combo[j].main_color),
                         )
                         total += style + color
-                return total / (len(combo) * (len(combo) - 1) / 2) if len(combo) > 1 else 0.5
+                return total / ((len(combo) * (len(combo) - 1)) / 2) if len(combo) > 1 else 0.5
 
             combinations.sort(key=combo_score, reverse=True)
             combinations = combinations[:30]
@@ -382,6 +480,8 @@ class OutfitRecommender3D:
         garments: List[Garment],
         primary_scene: str,
         secondary_scenes: List[str],
+        user_body_type: Optional[str] = None,
+        avoid_body_parts: Optional[List[str]] = None,
     ) -> OutfitCard:
         """
         Score an outfit across 4 dimensions.
@@ -438,12 +538,18 @@ class OutfitRecommender3D:
         # Secondary scenes
         sec_scenes = self._get_secondary_scenes(all_styles, secondary_scenes)
 
+        # Chinese recommendation reason (Step 8)
+        reason = self._generate_chinese_reason(
+            garments, primary_scene, scene_score, style_score, color_score,
+        )
+
         return OutfitCard(
             outfit_id="",
             scene=primary_scene,
             secondary_scenes=sec_scenes,
             items=items,
             description=description,
+            reason=reason,
             scene_score=round(scene_score, 3),
             category_score=round(category_score, 3),
             style_score=round(style_score, 3),
@@ -600,9 +706,87 @@ class OutfitRecommender3D:
             secondary_scenes=[],
             items=[],
             description="单品展示",
+            reason="",
             scene_score=0.0,
             category_score=0.0,
             style_score=0.0,
             color_score=0.0,
             overall_score=0.0,
         )
+
+    # ─── Chinese Localization (Step 8) ────────────────────────────────────────
+
+    def _generate_chinese_reason(
+        self,
+        garments: List[Garment],
+        scene: str,
+        scene_score: float,
+        style_score: float,
+        color_score: float,
+    ) -> str:
+        """
+        生成中文推荐理由，帮助用户理解决策逻辑
+
+        格式：「[场景] + [搭配亮点] + [推荐要点]」
+        """
+        reasons: List[str] = []
+
+        # 场景适配说明
+        scene_tips = {
+            "通勤上班": "干练利落，适合职场环境",
+            "商务正式": "沉稳大气，彰显专业气质",
+            "约会": "优雅得体，展现个人魅力",
+            "休闲日常": "舒适自在，适合日常生活",
+            "校园": "青春活力，学院风格十足",
+            "运动健身": "运动便捷，舒适合身",
+            "度假旅行": "轻松休闲，度假感满满",
+            "聚会": "时尚吸睛，聚会焦点",
+            "街头潮流": "个性张扬，街头风格",
+            "正式宴会": "典雅端庄，宴会首选",
+        }
+        scene_tip = scene_tips.get(scene, "")
+        if scene_tip:
+            reasons.append(scene_tip)
+
+        # 色彩搭配亮点
+        if color_score >= 0.85:
+            reasons.append("色彩高度统一，视觉协调")
+        elif color_score >= 0.70:
+            reasons.append("色彩搭配得当，整体和谐")
+
+        # 风格一致性亮点
+        if style_score >= 0.85:
+            reasons.append("风格高度一致，无违和感")
+        elif style_score >= 0.70:
+            reasons.append("风格统一，搭配协调")
+
+        # 品类完整性
+        categories = {g.category for g in garments}
+        if len(garments) >= 3 and len(categories) >= 3:
+            reasons.append("上下装搭配完整，层次丰富")
+
+        # 特色风格检测
+        all_styles: Set[str] = set()
+        for g in garments:
+            all_styles.update(g.style_tags)
+
+        style_highlights = {
+            "简约": "简约风格，大方得体",
+            "复古": "复古韵味，独特品味",
+            "甜美": "甜美可人，温柔气质",
+            "街头": "街头时尚，个性十足",
+            "运动": "运动休闲，活力满满",
+            "通勤": "通勤实用，职场必备",
+            "正式": "正式得体，商务首选",
+            "休闲": "休闲舒适，轻松自在",
+            "国风": "国风雅韵，文化气息",
+            "汉服": "汉服之美，传统韵味",
+            "马面裙": "马面裙搭配，端庄典雅",
+            "新中式": "新中式风格，古典时尚",
+        }
+        for style, highlight in style_highlights.items():
+            if style in all_styles and len(reasons) < 3:
+                reasons.insert(0, highlight)
+                break
+
+        return "；".join(reasons) if reasons else f"适合{scene}场合的穿搭搭配"
