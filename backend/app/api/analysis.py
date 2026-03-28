@@ -4,7 +4,7 @@ Analysis API endpoints (similarity, recommendations, suitability)
 
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -188,12 +188,16 @@ async def analyze_similarity(
 
 
 class OutfitRecommendationResponse(BaseModel):
-    """Outfit recommendation response (3D: 场景-品类-风格)"""
+    """Outfit recommendation response (3D: 场景-品类-风格 + 无性别推荐)"""
 
     target_garment: dict = Field(..., description="Target garment recognition result")
     outfit_cards: List[dict] = Field(
         default_factory=list,
-        description="Outfit recommendations with 3D scores (scene/category/style/color)",
+        description="Outfit recommendations with 5D scores (scene/category/style/color/gender)",
+    )
+    gender_expression_used: Optional[float] = Field(
+        default=None,
+        description="The gender_expression value used for scoring (None for male users)",
     )
 
     class Config:
@@ -216,15 +220,18 @@ class OutfitRecommendationResponse(BaseModel):
                         "category_score": 1.0,
                         "style_score": 0.88,
                         "color_score": 0.85,
+                        "gender_compatibility": 0.85,
                         "overall_score": 0.90,
                         "dimension_weights": {
-                            "scene": 0.30,
-                            "category": 0.25,
-                            "style": 0.25,
-                            "color": 0.20,
+                            "scene": 0.28,
+                            "category": 0.22,
+                            "style": 0.22,
+                            "color": 0.18,
+                            "gender": 0.10,
                         },
                     }
                 ],
+                "gender_expression_used": 0.5,
             }
         }
 
@@ -234,21 +241,23 @@ async def recommend_outfits(
     file: UploadFile = File(...),
     num_outfits: int = 3,
     scene: Optional[str] = None,
+    # 无性别推荐系统参数（修正版）
+    gender_expression: Optional[float] = Query(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="性别表达指数（仅对女性生效）: 0=偏男性化，1=偏女性化",
+    ),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Generate outfit recommendations (3D: 场景-品类-风格 + 体型感知)
+    Generate outfit recommendations (3D: 场景-品类-风格 + 无性别推荐)
 
-    This endpoint:
-    1. Recognizes the uploaded garment image (CLIP)
-    2. Derives user's primary scene from style preferences OR uses provided scene
-    3. Finds matching garments from wardrobe using scene-aware templates
-    4. Filters by user body type (Step 6: 体型感知)
-    5. Scores across 4 dimensions: scene / category / style / color
-    6. Returns top N outfit recommendations with interpretable scores
-
-    Step 6+7 已实现：体型过滤 + 场景模板
+    无性别推荐系统（修正版）：
+    - 女性用户（gender == "女"）：全量召回，应用 gender_compatibility 评分
+    - 男性用户（gender == "男"）：默认仅召回 [male, neutral]，不应用 gender_compatibility
+    - 男性用户（explore_cross_gender=True）：小比例混入 neutral_score>0.7 的女款
     """
     # Validate file type
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -303,6 +312,20 @@ async def recommend_outfits(
         user_body_type = user_profile.body_type if user_profile else None
         avoid_body_parts = user_profile.avoid_body_parts if user_profile else []
 
+        # 无性别推荐系统（修正版）：从 profile 获取性别信息
+        user_gender = getattr(user_profile, 'gender', None) if user_profile else None
+        profile_gender_expression = getattr(user_profile, 'gender_expression', None) if user_profile else None
+        explore_cross_gender = getattr(user_profile, 'explore_cross_gender', False) if user_profile else False
+
+        # API 传参优先；若未传参且用户为女性，使用 profile 中的值
+        is_female = user_gender == "女"
+        if gender_expression is not None:
+            # API 显式传参，优先使用
+            final_gender_expression = gender_expression if is_female else None
+        else:
+            # API 未传参：女性使用 profile 值，男性不使用
+            final_gender_expression = profile_gender_expression if is_female else None
+
         # Create a temporary garment object for the target
         from uuid import uuid4
 
@@ -344,12 +367,12 @@ async def recommend_outfits(
             feature_vector=feature_vector,
         )
 
-        # Initialize 3D outfit recommender (场景-品类-风格)
+        # Initialize 3D outfit recommender (场景-品类-风格 + 无性别推荐)
         from app.services.outfit_recommender_3d import OutfitRecommender3D
 
         recommender = OutfitRecommender3D()
 
-        # Generate outfit recommendations (Step 6+7: 体型+场景感知)
+        # Generate outfit recommendations (无性别推荐系统修正版)
         outfit_cards = recommender.recommend_outfits(
             target_garment=target_garment,
             wardrobe=wardrobe_garments,
@@ -358,6 +381,10 @@ async def recommend_outfits(
             user_body_type=user_body_type,
             avoid_body_parts=avoid_body_parts,
             preferred_scene=scene,
+            # 无性别推荐系统参数（修正版）
+            user_gender=user_gender,
+            user_gender_expression=final_gender_expression,
+            explore_cross_gender=explore_cross_gender,
         )
 
         # Convert to dict for response
@@ -373,6 +400,7 @@ async def recommend_outfits(
                 "occasions": clip_result.get("occasions", []),
             },
             outfit_cards=outfit_cards_dict,
+            gender_expression_used=final_gender_expression if is_female else None,
         )
 
     except HTTPException:

@@ -80,20 +80,40 @@ app = FastAPI(
 )
 
 # Configure CORS
-if settings.CORS_ALLOW_ALL_LOCALHOST:
-    # Allow all localhost ports for development (Flutter Web uses random ports)
+# Flutter Web 端口随机；页面 Origin 为 http://localhost:<port>，API 常为 http://127.0.0.1:8000，属跨域。
+# 请求带 Authorization 时，部分浏览器对 ACAO: * 与实际 Origin 组合较严，易报「无 ACAO」类 CORS 错误。
+# 开发宽松模式改为 allow_origin_regex + 回显具体 Origin（Starlette fullmatch），避免通配符。
+_localhost_origin_re = r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
+_env = (settings.ENVIRONMENT or "").lower()
+_cors_permissive = (
+    _env in ("development", "dev", "local")
+    or settings.DEBUG
+    or settings.CORS_ALLOW_ALL_LOCALHOST
+)
+if _cors_permissive:
     app.add_middleware(
         CORSMiddleware,
-        allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
-        allow_credentials=True,
+        allow_origin_regex=_localhost_origin_re,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 else:
-    # Use specific origins from configuration
+    # 生产等环境：显式域名 + 可选正则；localhost/127.0.0.1 任意端口可与 CORS_ALLOW_PATTERN 同时生效
+    _localhost_re = _localhost_origin_re
+    _pattern = (settings.CORS_ALLOW_PATTERN or "").strip()
+    _allow_regex: str | None = None
+    if _pattern and settings.CORS_ALLOW_ALL_LOCALHOST:
+        _allow_regex = f"(?:{_pattern})|(?:{_localhost_re})"
+    elif _pattern:
+        _allow_regex = _pattern
+    elif settings.CORS_ALLOW_ALL_LOCALHOST:
+        _allow_regex = _localhost_re
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,
+        allow_origin_regex=_allow_regex,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -110,9 +130,19 @@ app.add_exception_handler(Exception, generic_exception_handler)
 @app.on_event("startup")
 async def startup_event():
     """Application startup event"""
+    # 旧版 SQLite 库缺少 ORM 新增列时，启动时补齐（避免 no such column）
+    from app.db.session import engine
+    from app.db.sqlite_schema import apply_sqlite_schema_patches
+
+    apply_sqlite_schema_patches(engine)
+
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
     logger.info(f"Debug mode: {settings.DEBUG}")
+    logger.info(
+        "CORS: {}",
+        "宽松（本机 localhost/127.0.0.1 任意端口，回显 Origin）" if _cors_permissive else "严格（仅 CORS_ORIGINS / 正则）",
+    )
 
 
 @app.on_event("shutdown")

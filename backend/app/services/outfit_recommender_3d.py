@@ -1,21 +1,18 @@
 """
-3D Outfit Recommendation Engine — 场景-品类-风格 三维匹配
+3D Outfit Recommendation Engine — 场景-品类-风格 三维匹配 + 无性别推荐系统（修正版）
 
-Based on research insight:
-- Polyvore搭配数据集（数百万套装）→ 搭配规则学习
-- 社区动态：推荐不了解体型和场景需求 → 三维偏好模型
+修正规则：
+- 女性用户（gender == "女"）：全量召回（男装+女装+中性）
+  - 应用 gender_compatibility 评分：1 - |gender_expression - neutral_score|
+- 男性用户（gender == "男"）：默认仅召回 gender_label in [male, neutral]
+  - explore_cross_gender=True 时：小比例混入 neutral_score>0.7 的女款
+  - 不应用 gender_compatibility，简化公式：final_score = w1*scene + w2*category + w3*style + w4*color
 
-This module replaces the previous OutfitRecommender with a more sophisticated
-3-dimensional recommendation engine:
+This module provides gender-inclusive outfit recommendations:
 1. Scene dimension (场景匹配) — 套装整体适合哪些场合
 2. Category dimension (品类完整) — 上下装完整搭配，上下文协调
 3. Style dimension (风格一致) — 所有单品风格统一，无突兀感
-
-Features:
-- Multi-item outfit generation (不只是上衣+裤子，而是完整套装)
-- Scene-aware recommendation (通勤/约会/度假 不同套装)
-- Color harmony across ALL items (不只是两件，而是整体协调)
-- CLIP-powered semantic matching for style consistency
+4. Gender dimension (女性专用) — 仅女性用户应用 gender_compatibility 评分
 """
 
 from typing import Dict, List, Optional, Set, Tuple
@@ -118,6 +115,19 @@ BODY_TYPE_CATEGORY_SCORES: Dict[str, Dict[str, float]] = {
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 无性别推荐系统常量（修正版）
+# ──────────────────────────────────────────────────────────────────────────────
+
+# 男性用户跨性别探索配置
+CROSS_GENDER_CONFIG = {
+    # 当 explore_cross_gender=True 时，允许混入的女款比例
+    "max_female_ratio": 0.15,  # 最多 15% 的女款
+    # 仅混入高中性化的女款
+    "min_neutral_score": 0.7,  # neutral_score >= 0.7 才混入
+}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Pydantic Models
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -134,7 +144,7 @@ class OutfitItem(BaseModel):
 
 
 class OutfitCard(BaseModel):
-    """Complete outfit recommendation card with 3D scores."""
+    """Complete outfit recommendation card with 3D scores + gender-inclusive scoring."""
 
     outfit_id: str
     scene: str = Field(..., description="Primary occasion for this outfit")
@@ -152,10 +162,23 @@ class OutfitCard(BaseModel):
     category_score: float = Field(..., ge=0, le=1, description="Category completeness")
     style_score: float = Field(..., ge=0, le=1, description="Style consistency across all items")
     color_score: float = Field(..., ge=0, le=1, description="Color harmony across all items")
+    # 无性别推荐系统新增评分（仅对女性生效）
+    gender_compatibility: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="Gender expression compatibility (仅对女性生效, None=男性用户不使用)",
+    )
     overall_score: float = Field(..., ge=0, le=1, description="Weighted overall score")
     # Weight configuration for scoring
     dimension_weights: Dict[str, float] = Field(
-        default_factory=lambda: {"scene": 0.30, "category": 0.25, "style": 0.25, "color": 0.20},
+        default_factory=lambda: {
+            "scene": 0.28,
+            "category": 0.22,
+            "style": 0.22,
+            "color": 0.18,
+            "gender": 0.10,
+        },
         description="Weights for each dimension",
     )
 
@@ -172,6 +195,7 @@ class OutfitCard(BaseModel):
                 "category_score": 1.0,
                 "style_score": 0.88,
                 "color_score": 0.90,
+                "gender_compatibility": 0.85,
                 "overall_score": 0.90,
             }
         }
@@ -259,47 +283,54 @@ class OutfitRecommender3D:
         user_body_type: Optional[str] = None,
         avoid_body_parts: Optional[List[str]] = None,
         preferred_scene: Optional[str] = None,
+        # 无性别推荐系统参数（修正版）
+        user_gender: Optional[str] = None,  # "男" / "女" / None
+        user_gender_expression: Optional[float] = None,  # 仅对女性生效
+        explore_cross_gender: bool = False,  # 仅对男性生效
     ) -> List[OutfitCard]:
         """
-        Generate outfit recommendations for a target garment (体型+场景感知).
+        Generate outfit recommendations for a target garment (体型+场景感知 + 无性别推荐)
 
-        新增 Step 6 体型感知：
-        - 根据用户体型过滤不合适的版型
-        - 根据体型调整品类优先度（如梨形优先外套遮臀部）
-        - 避免推荐强化用户想遮盖的身体部位
+        无性别推荐系统（修正版）：
+        - 女性用户（gender == "女"）：全量召回，应用 gender_compatibility 评分
+        - 男性用户（gender == "男"）：默认仅召回 [male, neutral]，不应用 gender_compatibility
+        - 男性用户（explore_cross_gender=True）：小比例混入 neutral_score>0.7 的女款
 
-        Args:
-            target_garment: 核心单品，以此为中心构建套装
-            wardrobe: 用户衣橱
-            num_outfits: 返回套装数量（默认3）
-            user_style_preferences: 风格偏好（用于场景推断）
-            user_body_type: 用户体型（偏瘦/微胖/梨形/倒三角/沙漏/矩形）
-            avoid_body_parts: 需要遮盖的身体部位（肩/腰/臀/大腿/小腿）
-
-        Returns:
-            List[OutfitCard]: 排序后的套装推荐（含体型感知评分）
+        排序公式：
+        - 女性：final_score = w1*scene + w2*category + w3*style + w4*color + w5*(1-|gender_expression-neutral_score|)
+        - 男性：final_score = w1*scene + w2*category + w3*style + w4*color
         """
         logger.info(
             f"Generating {num_outfits} outfits for {target_garment.category} "
-            f"(body_type={user_body_type})"
+            f"(gender={user_gender}, gender_expression={user_gender_expression}, "
+            f"explore_cross_gender={explore_cross_gender})"
         )
 
         if not wardrobe:
             return []
 
-        # Step 1: 体型感知过滤（提前排除明显不适合的服装）
+        # Step 0: 无性别推荐系统 - 性别区分召回（修正版）
+        filtered_wardrobe = self._filter_by_gender(
+            wardrobe,
+            user_gender=user_gender,
+            explore_cross_gender=explore_cross_gender,
+        )
+        logger.info(
+            f"After gender filtering: {len(filtered_wardrobe)}/{len(wardrobe)} garments remain"
+        )
+
+        # Step 1: 体型感知过滤
         if user_body_type or avoid_body_parts:
-            wardrobe = self._filter_by_body_type(
-                wardrobe, user_body_type, avoid_body_parts
+            filtered_wardrobe = self._filter_by_body_type(
+                filtered_wardrobe, user_body_type, avoid_body_parts
             )
-            logger.info(f"After body-type filtering: {len(wardrobe)} garments remain")
+            logger.info(f"After body-type filtering: {len(filtered_wardrobe)} garments remain")
 
         # Step 2: Group wardrobe by category
-        wardrobe_by_cat = self._group_by_category(wardrobe)
+        wardrobe_by_cat = self._group_by_category(filtered_wardrobe)
 
         # Step 3: Derive user's primary scene from style preferences
         style_prefs = user_style_preferences or target_garment.style_tags
-        # Step 3: Scene derivation (user-specified scene overrides style inference)
         if preferred_scene:
             primary_scene = preferred_scene
             secondary_scenes = []
@@ -337,7 +368,10 @@ class OutfitRecommender3D:
                     )
                 )
 
-        # Step 6: Score all candidates across 5 dimensions (scene/category/style/color/body)
+        # Step 6: Score all candidates across 4-5 dimensions
+        # - 女性：5维 (scene/category/style/color/gender_compatibility)
+        # - 男性：4维 (scene/category/style/color)
+        is_female = user_gender == "女"
         scored: List[Tuple[List[Garment], Dict, OutfitCard]] = []
         for combo, meta in all_candidates:
             card = self._score_outfit_3d(
@@ -346,10 +380,12 @@ class OutfitRecommender3D:
                 secondary_scenes,
                 user_body_type=user_body_type,
                 avoid_body_parts=avoid_body_parts,
+                # 无性别推荐系统（修正版）
+                user_gender_expression=user_gender_expression if is_female else None,
             )
             scored.append((combo, meta, card))
 
-        # Step 7: Sort by adjusted score (body_type bonus)
+        # Step 7: Sort by adjusted score
         scored.sort(
             key=lambda x: (
                 x[2].overall_score * (0.7 + 0.3 * x[1]["template_weight"]),
@@ -364,8 +400,65 @@ class OutfitRecommender3D:
             card.outfit_id = f"outfit_{idx + 1}"
             outfit_cards.append(card)
 
-        logger.info(f"Generated {len(outfit_cards)} outfit recommendations")
+        logger.info(
+            f"Generated {len(outfit_cards)} outfit recommendations "
+            f"(gender={user_gender}, female_compatible={is_female})"
+        )
         return outfit_cards
+
+    def _filter_by_gender(
+        self,
+        wardrobe: List[Garment],
+        user_gender: Optional[str],
+        explore_cross_gender: bool = False,
+    ) -> List[Garment]:
+        """
+        无性别推荐系统 - 性别区分召回（修正版）
+
+        规则：
+        - 女性用户（gender == "女"）：全量召回（男装+女装+中性）
+        - 男性用户（gender == "男"）：默认仅召回 [male, neutral]
+        - 男性用户（explore_cross_gender=True）：小比例混入 neutral_score>0.7 的女款
+        """
+        if user_gender is None:
+            # 未设置性别，全量召回
+            return wardrobe
+
+        if user_gender == "女":
+            # 女性用户：全量召回
+            return wardrobe
+
+        if user_gender == "男":
+            # 男性用户：仅召回 [male, neutral]
+            if not explore_cross_gender:
+                return [g for g in wardrobe if self._get_garment_gender_label(g) in ["male", "neutral"]]
+
+            # explore_cross_gender=True：小比例混入高中性化的女款
+            male_neutral_items = [
+                g for g in wardrobe if self._get_garment_gender_label(g) in ["male", "neutral"]
+            ]
+            female_items = [
+                g for g in wardrobe
+                if self._get_garment_gender_label(g) == "female"
+                and getattr(g, "neutral_score", 0) >= CROSS_GENDER_CONFIG["min_neutral_score"]
+            ]
+
+            # 计算可混入的女款数量
+            max_female_count = int(len(male_neutral_items) * CROSS_GENDER_CONFIG["max_female_ratio"] / (1 - CROSS_GENDER_CONFIG["max_female_ratio"]))
+            female_items_to_include = female_items[:max_female_count]
+
+            logger.info(
+                f"Cross-gender exploration: including {len(female_items_to_include)} "
+                f"female items (neutral_score >= {CROSS_GENDER_CONFIG['min_neutral_score']})"
+            )
+            return male_neutral_items + female_items_to_include
+
+        # 其他性别：全量召回
+        return wardrobe
+
+    def _get_garment_gender_label(self, garment: Garment) -> str:
+        """获取服装的性别标签"""
+        return getattr(garment, "gender_label", "neutral")
 
     def _filter_by_body_type(
         self,
@@ -482,9 +575,15 @@ class OutfitRecommender3D:
         secondary_scenes: List[str],
         user_body_type: Optional[str] = None,
         avoid_body_parts: Optional[List[str]] = None,
+        # 无性别推荐系统参数（修正版）
+        # 仅对女性生效，None = 男性用户，不应用此评分
+        user_gender_expression: Optional[float] = None,
     ) -> OutfitCard:
         """
-        Score an outfit across 4 dimensions.
+        Score an outfit across 4-5 dimensions（修正版）
+
+        - 女性用户（user_gender_expression != None）：5维评分（含 gender_compatibility）
+        - 男性用户（user_gender_expression == None）：4维评分（不含 gender_compatibility）
         """
         if not garments:
             return self._empty_card()
@@ -508,14 +607,46 @@ class OutfitRecommender3D:
         # Dimension 4: Color harmony (pairwise)
         color_score = self._score_color_pairwise(all_colors)
 
-        # Weighted overall
-        weights = {"scene": 0.30, "category": 0.25, "style": 0.25, "color": 0.20}
-        overall = (
-            scene_score * weights["scene"]
-            + category_score * weights["category"]
-            + style_score * weights["style"]
-            + color_score * weights["color"]
-        )
+        # Dimension 5: 无性别推荐系统 - Gender compatibility（仅对女性生效）
+        if user_gender_expression is not None:
+            # 女性用户：计算性别兼容性
+            total_neutral = sum(
+                getattr(g, 'neutral_score', 1.0) for g in garments
+            )
+            avg_neutral = total_neutral / len(garments) if garments else 0.5
+            # 性别兼容性：用户性别表达与商品中性化程度的匹配度
+            gender_compatibility = 1.0 - abs(user_gender_expression - avg_neutral)
+
+            # 女性用户：5维评分
+            weights = {
+                "scene": 0.28,
+                "category": 0.22,
+                "style": 0.22,
+                "color": 0.18,
+                "gender": 0.10,
+            }
+            overall = (
+                scene_score * weights["scene"]
+                + category_score * weights["category"]
+                + style_score * weights["style"]
+                + color_score * weights["color"]
+                + gender_compatibility * weights["gender"]
+            )
+        else:
+            # 男性用户：4维评分（不应用性别兼容性）
+            gender_compatibility = None  # 不计入评分
+            weights = {
+                "scene": 0.30,
+                "category": 0.25,
+                "style": 0.25,
+                "color": 0.20,
+            }
+            overall = (
+                scene_score * weights["scene"]
+                + category_score * weights["category"]
+                + style_score * weights["style"]
+                + color_score * weights["color"]
+            )
 
         # Description
         description = self._generate_description(garments, all_styles, primary_scene)
@@ -554,6 +685,7 @@ class OutfitRecommender3D:
             category_score=round(category_score, 3),
             style_score=round(style_score, 3),
             color_score=round(color_score, 3),
+            gender_compatibility=round(gender_compatibility, 3) if gender_compatibility is not None else None,
             overall_score=round(overall, 3),
         )
 
@@ -711,6 +843,7 @@ class OutfitRecommender3D:
             category_score=0.0,
             style_score=0.0,
             color_score=0.0,
+            gender_compatibility=None,  # 男性用户不显示此字段
             overall_score=0.0,
         )
 

@@ -68,14 +68,11 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
     Returns:
         Standardized error response
     """
-    logger.error(
-        f"Application error: {exc.message}",
-        extra={
-            "status_code": exc.status_code,
-            "path": request.url.path,
-            "details": exc.details,
-        },
-    )
+    logger.bind(
+        status_code=exc.status_code,
+        path=request.url.path,
+        details=exc.details,
+    ).error("Application error: {}", exc.message)
 
     return create_error_response(
         status_code=exc.status_code,
@@ -97,13 +94,11 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
     Returns:
         Standardized error response
     """
-    logger.warning(
-        f"HTTP error: {exc.detail}",
-        extra={
-            "status_code": exc.status_code,
-            "path": request.url.path,
-        },
-    )
+    # exc.detail 常为 JSON/校验信息，含 {}；勿用 f-string，否则 Loguru 会当作占位符触发 KeyError
+    logger.bind(
+        status_code=exc.status_code,
+        path=request.url.path,
+    ).warning("HTTP error: {}", exc.detail)
 
     return create_error_response(
         status_code=exc.status_code,
@@ -137,12 +132,9 @@ async def validation_exception_handler(
             }
         )
 
-    logger.warning(
-        f"Validation error: {len(errors)} field(s) failed validation",
-        extra={
-            "path": request.url.path,
-            "errors": errors,
-        },
+    logger.bind(path=request.url.path, errors=errors).warning(
+        "Validation error: {} field(s) failed validation",
+        len(errors),
     )
 
     return create_error_response(
@@ -165,15 +157,11 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
     Returns:
         Standardized error response
     """
-    # Log full traceback for debugging
-    logger.error(
-        f"Unexpected error: {str(exc)}",
-        extra={
-            "path": request.url.path,
-            "traceback": traceback.format_exc(),
-        },
-        exc_info=True,
-    )
+    # Log full traceback；异常信息可能含 {}，勿用 f-string 整段拼进 Loguru
+    logger.bind(
+        path=request.url.path,
+        traceback_text=traceback.format_exc(),
+    ).opt(exception=exc).error("Unexpected error: {}", str(exc))
 
     # Don't expose internal error details in production
     return create_error_response(

@@ -6,7 +6,7 @@ import json
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, String, Text, TypeDecorator
+from sqlalchemy import Column, DateTime, Float, ForeignKey, String, Text, TypeDecorator
 from sqlalchemy.dialects.postgresql import ARRAY, FLOAT, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import relationship
@@ -98,7 +98,7 @@ class JSONBCompat(TypeDecorator):
 
 
 class Garment(Base):
-    """Garment model for wardrobe items"""
+    """Garment model for wardrobe items - 无性别推荐系统"""
 
     __tablename__ = "garments"
 
@@ -115,6 +115,9 @@ class Garment(Base):
     secondary_colors = Column(JSONBCompat, default=list)  # List of Color objects
     style_tags = Column(JSONBCompat, default=list)  # List of style tags
     fit_type = Column(String(20))  # 修身/宽松/标准/oversized
+    # 无性别推荐系统新增字段
+    gender_label = Column(String(20), nullable=False, default="neutral")  # male/female/neutral
+    neutral_score = Column(Float, nullable=False, default=1.0)  # 0-1，中性化程度，1=完全中性
     image_path = Column(String(500), nullable=False)
     image_url = Column(String(500), nullable=False)
     feature_vector = Column(JSONEncodedArray, nullable=False)  # 1280-dimensional feature vector
@@ -130,5 +133,6 @@ class Garment(Base):
     def __repr__(self):
         return (
             f"<Garment(garment_id={self.garment_id}, "
-            f"category={self.category}, user_id={self.user_id})>"
+            f"category={self.category}, gender_label={self.gender_label}, "
+            f"neutral_score={self.neutral_score}, user_id={self.user_id})>"
         )

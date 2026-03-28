@@ -59,6 +59,10 @@ class Settings(BaseSettings):
         default=True,
         description="Allow all localhost ports (useful for Flutter Web development)",
     )
+    CORS_ALLOW_PATTERN: str = Field(
+        default="",
+        description="Regex pattern for allowed origins (e.g., https://.*\\.your-domain\\.com). Overrides CORS_ORIGINS when set.",
+    )
 
     @property
     def cors_origins_list(self) -> List[str]:

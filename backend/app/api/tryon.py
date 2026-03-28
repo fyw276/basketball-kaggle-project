@@ -41,14 +41,22 @@ async def try_on_garment(
     garment_file: UploadFile = File(..., alias="garment_file", description="Garment product photo"),
     person_file: UploadFile = File(..., alias="person_file", description="Person photo"),
     prompt: str = "",
+    # 无性别推荐系统新增参数
+    model_gender: str = "neutral",
     current_user: User = Depends(get_current_user),
 ):
     """
     Virtual try-on: Render a garment on a person's photo.
 
+    无性别推荐系统 (Step 4):
+    - model_gender 参数允许用户切换查看效果
+    - 支持 male/female/neutral 三种模式
+    - 同一件衣服可以分别在男女模特上生成上身图
+
     Requires:
     - garment_file: Clean product photo (white/neutral background preferred)
     - person_file: Full-body or half-body photo (front-facing, good lighting)
+    - model_gender: "male" / "female" / "neutral" (默认 neutral)
 
     Returns a generated image showing the garment on the person.
     For best results, use 512x512 or higher resolution images.
@@ -66,6 +74,13 @@ async def try_on_garment(
     if not person_file.content_type or not person_file.content_type.startswith("image/"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="person_file must be an image"
+        )
+
+    # Validate model_gender
+    if model_gender not in ["male", "female", "neutral"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="model_gender must be one of: male, female, neutral",
         )
 
     try:
@@ -95,6 +110,7 @@ async def try_on_garment(
             garment_image=garment_image,
             person_image=person_image,
             prompt=prompt or None,
+            model_gender=model_gender,
         )
 
         # Save result image

@@ -142,9 +142,16 @@ class VirtualTryOnService:
         num_inference_steps: int = DEFAULT_STEPS,
         guidance_scale: float = DEFAULT_GUIDANCE_SCALE,
         seed: Optional[int] = None,
+        # 无性别推荐系统新增参数
+        model_gender: str = "neutral",
     ) -> dict:
         """
         Try on a garment on a person image.
+
+        无性别推荐系统 (Step 4):
+        - model_gender 参数允许用户切换查看效果
+        - 支持 male/female/neutral 三种模式
+        - 同一件衣服可以分别在男女模特上生成上身图
 
         Args:
             garment_image: Clean garment product photo (PIL Image)
@@ -155,18 +162,19 @@ class VirtualTryOnService:
             num_inference_steps: Diffusion steps (25-50 recommended)
             guidance_scale: CFG scale (5-12 recommended)
             seed: Optional random seed for reproducibility
+            model_gender: 模特性别 ("male" / "female" / "neutral")
 
         Returns:
             Dict with:
                 - result_image: PIL Image of the try-on result
                 - status: "success" / "fallback" / "error"
                 - message: Human-readable status message
-                - metadata: Processing info (steps, seed, etc.)
+                - metadata: Processing info (steps, seed, model_gender, etc.)
         """
-        logger.info("Starting virtual try-on")
+        logger.info(f"Starting virtual try-on (model_gender={model_gender})")
 
-        # Check cache
-        cache_key = self._compute_cache_key(garment_image, person_image, prompt)
+        # Check cache (include model_gender in cache key)
+        cache_key = self._compute_cache_key(garment_image, person_image, prompt, model_gender)
         if self.enable_cache and cache_key in self._cache:
             logger.debug("Try-on cache hit")
             return self._cache[cache_key]
@@ -182,9 +190,10 @@ class VirtualTryOnService:
                 guidance_scale,
                 seed,
                 cache_key,
+                model_gender,
             )
         else:
-            return self._tryon_fallback(garment_image, person_image, prompt, cache_key)
+            return self._tryon_fallback(garment_image, person_image, prompt, cache_key, model_gender)
 
     def _tryon_diffusion(
         self,
@@ -196,19 +205,24 @@ class VirtualTryOnService:
         guidance_scale: float,
         seed: Optional[int],
         cache_key: str,
+        model_gender: str = "neutral",
     ) -> dict:
-        """Run SD-based virtual try-on."""
+        """Run SD-based virtual try-on with gender-aware prompts."""
         import torch
 
-        logger.info("Running Stable Diffusion virtual try-on")
+        logger.info(f"Running Stable Diffusion virtual try-on (gender={model_gender})")
 
         # Auto-generate garment mask if not provided
         if garment_mask is None:
             garment_mask = self._generate_garment_mask(garment_image)
 
-        # Build prompt
+        # Build gender-aware prompt
         if prompt is None:
-            prompt = self._build_tryon_prompt(garment_image)
+            prompt = self._build_tryon_prompt(garment_image, model_gender)
+        else:
+            # Inject gender into existing prompt
+            prompt = self._inject_gender_into_prompt(prompt, model_gender)
+
         negative_prompt = (
             "low quality, blurry, distorted, watermark, text, "
             "deformed body, extra limbs, bad anatomy, poorly drawn face"
@@ -238,7 +252,7 @@ class VirtualTryOnService:
         output = {
             "result_image": result,
             "status": "success",
-            "message": "虚拟试穿成功完成",
+            "message": f"虚拟试穿成功完成 (model_gender={model_gender})",
             "metadata": {
                 "model": SD_VTON_MODEL_ID,
                 "prompt": prompt,
@@ -246,6 +260,7 @@ class VirtualTryOnService:
                 "guidance_scale": guidance_scale,
                 "seed": seed,
                 "device": self.device,
+                "model_gender": model_gender,
             },
         }
 
@@ -260,12 +275,13 @@ class VirtualTryOnService:
         person_image: Image.Image,
         prompt: Optional[str],
         cache_key: str,
+        model_gender: str = "neutral",
     ) -> dict:
         """
         Fallback when SD-VTON is not available.
         Returns a composition of garment + person with opacity blending.
         """
-        logger.warning("Using fallback composition mode (no GPU/model)")
+        logger.warning(f"Using fallback composition mode (no GPU/model, gender={model_gender})")
         try:
             # Simple alpha blending as placeholder
             # Resize garment to fit in person image
@@ -331,25 +347,67 @@ class VirtualTryOnService:
 
         return PILImage.fromarray(mask, mode="L").resize((w, h), PILImage.Resampling.BILINEAR)
 
-    def _build_tryon_prompt(self, garment_image: Image.Image) -> str:  # noqa: ARG002
+    def _build_tryon_prompt(self, garment_image: Image.Image, model_gender: str = "neutral") -> str:
         """
-        Build a text prompt for try-on based on garment analysis.
-        For production: use CLIP to analyze garment and generate descriptive prompt.
+        Build a gender-aware text prompt for try-on based on garment analysis.
+        无性别推荐系统: 根据 model_gender 生成适合的提示词
+
+        Args:
+            garment_image: Garment image (unused, for future CLIP analysis)
+            model_gender: "male" / "female" / "neutral"
         """
-        # Simplified: use a generic high-quality try-on prompt
-        return (
-            "a person wearing the garment, full body photo, "
-            "high quality, realistic, natural lighting, "
-            "professional fashion photography"
-        )
+        gender_prompts = {
+            "male": (
+                "a man wearing the garment, full body photo, masculine build, "
+                "high quality, realistic, natural lighting, "
+                "professional fashion photography"
+            ),
+            "female": (
+                "a woman wearing the garment, full body photo, feminine build, "
+                "high quality, realistic, natural lighting, "
+                "professional fashion photography"
+            ),
+            "neutral": (
+                "a person wearing the garment, full body photo, "
+                "high quality, realistic, natural lighting, "
+                "professional fashion photography"
+            ),
+        }
+        return gender_prompts.get(model_gender, gender_prompts["neutral"])
+
+    def _inject_gender_into_prompt(self, prompt: str, model_gender: str) -> str:
+        """
+        Inject gender information into an existing prompt.
+        用于用户自定义 prompt 时注入性别信息
+        """
+        if model_gender == "neutral":
+            return prompt
+
+        gender_phrases = {
+            "male": ["a man", "man wearing", "male model", "he is wearing"],
+            "female": ["a woman", "woman wearing", "female model", "she is wearing"],
+        }
+
+        phrases = gender_phrases.get(model_gender, [])
+        for phrase in phrases:
+            if phrase.lower() not in prompt.lower():
+                # Prepend gender context
+                prefix = {
+                    "male": "A man: ",
+                    "female": "A woman: ",
+                }.get(model_gender, "")
+                return prefix + prompt
+
+        return prompt
 
     def _compute_cache_key(
         self,
         garment_image: Image.Image,
         person_image: Image.Image,
         prompt: Optional[str],
+        model_gender: str = "neutral",
     ) -> str:
-        """Compute cache key from image hashes + prompt."""
+        """Compute cache key from image hashes + prompt + model_gender."""
         import io
 
         buf_g = io.BytesIO()
@@ -357,6 +415,7 @@ class VirtualTryOnService:
         garment_image.save(buf_g, format="PNG")
         person_image.save(buf_p, format="PNG")
         key_str = hashlib.md5(buf_g.getvalue() + buf_p.getvalue()).hexdigest()
+        key_str += hashlib.md5(model_gender.encode()).hexdigest()[:8]
         if prompt:
             key_str += hashlib.md5(prompt.encode()).hexdigest()[:8]
         return key_str

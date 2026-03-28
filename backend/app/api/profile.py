@@ -12,6 +12,7 @@ from app.schemas.user_profile import (
     VALID_BODY_PARTS,
     VALID_BODY_TYPES,
     VALID_BUDGET_RANGES,
+    VALID_GENDERS,
     VALID_SKIN_TONES,
     VALID_STYLE_PREFERENCES,
     UserProfileCreate,
@@ -33,6 +34,14 @@ def validate_profile_data(profile_data: UserProfileCreate | UserProfileUpdate):
     Raises:
         HTTPException: If validation fails
     """
+    # Validate gender
+    if hasattr(profile_data, "gender") and profile_data.gender:
+        if profile_data.gender not in VALID_GENDERS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid gender. Must be one of: {', '.join(VALID_GENDERS)}",
+            )
+
     # Validate body type
     if hasattr(profile_data, "body_type") and profile_data.body_type:
         if profile_data.body_type not in VALID_BODY_TYPES:

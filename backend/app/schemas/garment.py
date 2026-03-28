@@ -19,7 +19,7 @@ class ColorSchema(BaseModel):
 
 
 class GarmentBase(BaseModel):
-    """Base garment schema"""
+    """Base garment schema - 无性别推荐系统"""
 
     name: Optional[str] = Field(None, description="服装名称（如：蓝色条纹衬衫）")
     category: str = Field(..., description="Category: 上衣/裤子/裙子/外套/鞋/包")
@@ -29,6 +29,17 @@ class GarmentBase(BaseModel):
     )
     style_tags: List[str] = Field(default_factory=list, description="Style tags: 通勤/休闲/正式等")
     fit_type: Optional[str] = Field(None, description="Fit type: 修身/宽松/标准/oversized")
+    # 无性别推荐系统新增字段
+    gender_label: str = Field(
+        default="neutral",
+        description="性别标签: male/female/neutral",
+    )
+    neutral_score: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="中性化程度: 0=完全性别化，1=完全中性",
+    )
     notes: Optional[str] = Field(None, description="User notes")
     is_favorite: bool = Field(default=False, description="是否收藏")
     wearing_count: int = Field(default=0, ge=0, description="穿搭次数（用于智能推荐）")
@@ -53,6 +64,8 @@ class GarmentUpdate(BaseModel):
     secondary_colors: Optional[List[ColorSchema]] = None
     style_tags: Optional[List[str]] = None
     fit_type: Optional[str] = None
+    gender_label: Optional[str] = Field(None, description="male/female/neutral")
+    neutral_score: Optional[float] = Field(None, ge=0.0, le=1.0)
     notes: Optional[str] = None
     is_favorite: Optional[bool] = None
 
@@ -81,6 +94,7 @@ class GarmentListResponse(BaseModel):
 
 
 # Valid values
+VALID_GENDER_LABELS = ["male", "female", "neutral"]  # 无性别推荐系统
 VALID_CATEGORIES = [
     # 基础品类
     "上衣",  # T-shirt, 衬衫, 毛衣, 卫衣, 针织衫
@@ -183,7 +197,7 @@ class OutfitCollectionListResponse(BaseModel):
 
 
 class GarmentSearchQuery(BaseModel):
-    """服装搜索查询条件"""
+    """服装搜索查询条件 - 无性别推荐系统"""
 
     keyword: Optional[str] = Field(None, description="关键词（匹配名称/备注）")
     category: Optional[str] = Field(None, description="品类过滤")
@@ -192,8 +206,12 @@ class GarmentSearchQuery(BaseModel):
     is_favorite: Optional[bool] = Field(None, description="仅收藏的服装")
     season: Optional[str] = Field(None, description="季节（春夏/秋冬/全年）")
     min_worn: Optional[int] = Field(None, ge=0, description="最小穿搭次数")
+    # 无性别推荐系统：可按中性化程度过滤
+    min_neutral_score: Optional[float] = Field(
+        None, ge=0.0, le=1.0, description="最小中性化程度（0-1）"
+    )
     sort_by: str = Field(
         default="created_at",
-        description="排序字段：created_at/worn_times/category",
+        description="排序字段：created_at/worn_times/category/neutral_score",
     )
     sort_order: str = Field(default="desc", description="asc或desc")
