@@ -1,4 +1,5 @@
 """Update SQLite database for gender-inclusive system (修正版)"""
+
 import sqlite3
 
 db_path = "outfit_assistant.db"
@@ -26,8 +27,8 @@ neutral_categories = {
     "上衣": 0.6,  # T-shirts can be neutral
     "裤子": 0.5,  # Jeans can be gender-neutral
     "外套": 0.7,  # Coats can be neutral
-    "鞋": 0.7,    # Sneakers are neutral
-    "包": 0.8,    # Bags can be gender-neutral
+    "鞋": 0.7,  # Sneakers are neutral
+    "包": 0.8,  # Bags can be gender-neutral
     "汉服": 0.3,  # Hanfu is traditionally gendered
     "国风": 0.3,  # Chinese style can be gendered
 }
@@ -37,8 +38,7 @@ garments_to_update = cursor.fetchall()
 for garment_id, category in garments_to_update:
     neutral_score = neutral_categories.get(category, 0.5)
     cursor.execute(
-        "UPDATE garments SET neutral_score = ? WHERE garment_id = ?",
-        (neutral_score, garment_id)
+        "UPDATE garments SET neutral_score = ? WHERE garment_id = ?", (neutral_score, garment_id)
     )
 print(f"[OK] Updated neutral_score for {len(garments_to_update)} garments")
 

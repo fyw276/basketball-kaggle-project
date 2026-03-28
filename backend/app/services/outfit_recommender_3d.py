@@ -297,7 +297,7 @@ class OutfitRecommender3D:
         - 男性用户（explore_cross_gender=True）：小比例混入 neutral_score>0.7 的女款
 
         排序公式：
-        - 女性：final_score = w1*scene + w2*category + w3*style + w4*color + w5*(1-|gender_expression-neutral_score|)
+        - 女性：final_score = w1*scene + w2*category + w3*style + w4*color + w5*(1-|gender_expression-neutral_score|)  # noqa: E501
         - 男性：final_score = w1*scene + w2*category + w3*style + w4*color
         """
         logger.info(
@@ -340,9 +340,7 @@ class OutfitRecommender3D:
             logger.info(f"Derived scene: {primary_scene}, Secondary: {secondary_scenes}")
 
         # Step 4: Get outfit templates for primary scene
-        templates = SCENE_OUTFIT_TEMPLATES.get(
-            primary_scene, SCENE_OUTFIT_TEMPLATES["休闲日常"]
-        )
+        templates = SCENE_OUTFIT_TEMPLATES.get(primary_scene, SCENE_OUTFIT_TEMPLATES["休闲日常"])
 
         # Step 5: Generate outfit candidates for each template
         all_candidates: List[Tuple[List[Garment], Dict]] = []
@@ -354,8 +352,11 @@ class OutfitRecommender3D:
                 continue
 
             combos = self._generate_for_template(
-                target_garment, cats, wardrobe_by_cat,
-                user_body_type=user_body_type, avoid_body_parts=avoid_body_parts,
+                target_garment,
+                cats,
+                wardrobe_by_cat,
+                user_body_type=user_body_type,
+                avoid_body_parts=avoid_body_parts,
             )
             for combo in combos:
                 all_candidates.append(
@@ -431,20 +432,27 @@ class OutfitRecommender3D:
         if user_gender == "男":
             # 男性用户：仅召回 [male, neutral]
             if not explore_cross_gender:
-                return [g for g in wardrobe if self._get_garment_gender_label(g) in ["male", "neutral"]]
+                return [
+                    g for g in wardrobe if self._get_garment_gender_label(g) in ["male", "neutral"]
+                ]
 
             # explore_cross_gender=True：小比例混入高中性化的女款
             male_neutral_items = [
                 g for g in wardrobe if self._get_garment_gender_label(g) in ["male", "neutral"]
             ]
             female_items = [
-                g for g in wardrobe
+                g
+                for g in wardrobe
                 if self._get_garment_gender_label(g) == "female"
                 and getattr(g, "neutral_score", 0) >= CROSS_GENDER_CONFIG["min_neutral_score"]
             ]
 
             # 计算可混入的女款数量
-            max_female_count = int(len(male_neutral_items) * CROSS_GENDER_CONFIG["max_female_ratio"] / (1 - CROSS_GENDER_CONFIG["max_female_ratio"]))
+            max_female_count = int(
+                len(male_neutral_items)
+                * CROSS_GENDER_CONFIG["max_female_ratio"]
+                / (1 - CROSS_GENDER_CONFIG["max_female_ratio"])
+            )
             female_items_to_include = female_items[:max_female_count]
 
             logger.info(
@@ -610,9 +618,7 @@ class OutfitRecommender3D:
         # Dimension 5: 无性别推荐系统 - Gender compatibility（仅对女性生效）
         if user_gender_expression is not None:
             # 女性用户：计算性别兼容性
-            total_neutral = sum(
-                getattr(g, 'neutral_score', 1.0) for g in garments
-            )
+            total_neutral = sum(getattr(g, "neutral_score", 1.0) for g in garments)
             avg_neutral = total_neutral / len(garments) if garments else 0.5
             # 性别兼容性：用户性别表达与商品中性化程度的匹配度
             gender_compatibility = 1.0 - abs(user_gender_expression - avg_neutral)
@@ -671,7 +677,11 @@ class OutfitRecommender3D:
 
         # Chinese recommendation reason (Step 8)
         reason = self._generate_chinese_reason(
-            garments, primary_scene, scene_score, style_score, color_score,
+            garments,
+            primary_scene,
+            scene_score,
+            style_score,
+            color_score,
         )
 
         return OutfitCard(
@@ -685,7 +695,9 @@ class OutfitRecommender3D:
             category_score=round(category_score, 3),
             style_score=round(style_score, 3),
             color_score=round(color_score, 3),
-            gender_compatibility=round(gender_compatibility, 3) if gender_compatibility is not None else None,
+            gender_compatibility=(
+                round(gender_compatibility, 3) if gender_compatibility is not None else None
+            ),
             overall_score=round(overall, 3),
         )
 

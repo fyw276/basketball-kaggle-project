@@ -3,6 +3,7 @@ Shared pytest configuration and fixtures for all test modules
 """
 
 import os
+import tempfile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,18 +17,15 @@ from app.main import app
 # Import all models to register them with Base.metadata
 from app.models import garment, outfit_collection, user, user_profile  # noqa: F401
 
-# Use file-based SQLite database for tests (will be deleted after session)
-TEST_DB_PATH = "test_database.db"
-SQLALCHEMY_TEST_DATABASE_URL = f"sqlite:///./{TEST_DB_PATH}"
+# Use a temp file for test DB so Windows doesn't lock it between runs
+_test_db_fd, TEST_DB_PATH = tempfile.mkstemp(suffix=".db")
+os.close(_test_db_fd)
+SQLALCHEMY_TEST_DATABASE_URL = f"sqlite:///{TEST_DB_PATH}"
 
 
 @pytest.fixture(scope="session")
 def test_engine():
     """Create a single test database engine for the entire test session"""
-    # Remove existing test database if it exists
-    if os.path.exists(TEST_DB_PATH):
-        os.remove(TEST_DB_PATH)
-
     engine = create_engine(
         SQLALCHEMY_TEST_DATABASE_URL,
         connect_args={"check_same_thread": False},
@@ -36,10 +34,11 @@ def test_engine():
     yield engine
     Base.metadata.drop_all(bind=engine)
     engine.dispose()
-
-    # Clean up test database file
     if os.path.exists(TEST_DB_PATH):
-        os.remove(TEST_DB_PATH)
+        try:
+            os.remove(TEST_DB_PATH)
+        except PermissionError:
+            pass
 
 
 @pytest.fixture(scope="session")

@@ -193,7 +193,9 @@ class VirtualTryOnService:
                 model_gender,
             )
         else:
-            return self._tryon_fallback(garment_image, person_image, prompt, cache_key, model_gender)
+            return self._tryon_fallback(
+                garment_image, person_image, prompt, cache_key, model_gender
+            )
 
     def _tryon_diffusion(
         self,

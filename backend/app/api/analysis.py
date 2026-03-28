@@ -313,9 +313,13 @@ async def recommend_outfits(
         avoid_body_parts = user_profile.avoid_body_parts if user_profile else []
 
         # 无性别推荐系统（修正版）：从 profile 获取性别信息
-        user_gender = getattr(user_profile, 'gender', None) if user_profile else None
-        profile_gender_expression = getattr(user_profile, 'gender_expression', None) if user_profile else None
-        explore_cross_gender = getattr(user_profile, 'explore_cross_gender', False) if user_profile else False
+        user_gender = getattr(user_profile, "gender", None) if user_profile else None
+        profile_gender_expression = (
+            getattr(user_profile, "gender_expression", None) if user_profile else None
+        )
+        explore_cross_gender = (
+            getattr(user_profile, "explore_cross_gender", False) if user_profile else False
+        )
 
         # API 传参优先；若未传参且用户为女性，使用 profile 中的值
         is_female = user_gender == "女"

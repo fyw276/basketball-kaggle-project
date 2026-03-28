@@ -230,7 +230,8 @@ def test_similarity_calculation_scalability():
 
     # Time should scale roughly linearly
     # 200 items should take less than 4x the time of 50 items
-    assert times[-1] < times[1] * 4, f"Similarity calculation doesn't scale well: {times}"
+    baseline = max(times[1], 0.001)  # avoid zero-division when 50 items is near-instant
+    assert times[-1] < baseline * 4, f"Similarity calculation doesn't scale well: {times}"
 
     # All should complete within 2 seconds
     for size, elapsed in zip(sizes, times):

@@ -5,10 +5,9 @@ SQLite 开发库轻量补丁：模型新增列后，旧表不会自动变更，�
 - 新增 gender_expression, explore_cross_gender (user_profiles)
 """
 
+from loguru import logger
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
-
-from loguru import logger
 
 # (表名, 列名, ALTER 语句片段) — 仅当表中不存在该列时执行
 _GARMENTS_SQLITE_PATCHES: list[tuple[str, str]] = [
@@ -24,7 +23,10 @@ _USER_PROFILES_SQLITE_PATCHES: list[tuple[str, str]] = [
     # gender_expression 改为可空（仅对女性生效）
     ("gender_expression", "ALTER TABLE user_profiles ADD COLUMN gender_expression FLOAT"),
     # 新增 explore_cross_gender
-    ("explore_cross_gender", "ALTER TABLE user_profiles ADD COLUMN explore_cross_gender CHAR(1) DEFAULT '0'"),
+    (
+        "explore_cross_gender",
+        "ALTER TABLE user_profiles ADD COLUMN explore_cross_gender CHAR(1) DEFAULT '0'",
+    ),
 ]
 
 

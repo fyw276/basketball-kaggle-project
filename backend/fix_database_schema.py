@@ -5,6 +5,7 @@ Fix SQLite database schema - Add missing columns
 import sqlite3
 import sys
 
+
 def fix_database():
     db_path = "outfit_assistant.db"
 
@@ -29,7 +30,10 @@ def fix_database():
         patches = [
             ("name", "ALTER TABLE garments ADD COLUMN name VARCHAR(100)"),
             ("is_favorite", "ALTER TABLE garments ADD COLUMN is_favorite CHAR(1) DEFAULT '0'"),
-            ("wearing_count", "ALTER TABLE garments ADD COLUMN wearing_count VARCHAR(10) DEFAULT '0'"),
+            (
+                "wearing_count",
+                "ALTER TABLE garments ADD COLUMN wearing_count VARCHAR(10) DEFAULT '0'",
+            ),
         ]
 
         added = []
@@ -58,6 +62,7 @@ def fix_database():
     except Exception as e:
         print(f"[ERROR] Fix failed: {e}")
         return False
+
 
 if __name__ == "__main__":
     success = fix_database()

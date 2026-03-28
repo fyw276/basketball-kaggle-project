@@ -1,4 +1,5 @@
 """Add gender column to user_profiles table"""
+
 import sqlite3
 
 db_path = "outfit_assistant.db"

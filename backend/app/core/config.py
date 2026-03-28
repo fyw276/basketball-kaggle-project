@@ -61,7 +61,11 @@ class Settings(BaseSettings):
     )
     CORS_ALLOW_PATTERN: str = Field(
         default="",
-        description="Regex pattern for allowed origins (e.g., https://.*\\.your-domain\\.com). Overrides CORS_ORIGINS when set.",
+        description=(
+            "Regex pattern for allowed origins "
+            "(e.g., https://.*\\.your-domain\\.com). "
+            "Overrides CORS_ORIGINS when set."
+        ),
     )
 
     @property

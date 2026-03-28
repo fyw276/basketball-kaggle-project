@@ -161,7 +161,9 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
     logger.bind(
         path=request.url.path,
         traceback_text=traceback.format_exc(),
-    ).opt(exception=exc).error("Unexpected error: {}", str(exc))
+    ).opt(
+        exception=exc
+    ).error("Unexpected error: {}", str(exc))
 
     # Don't expose internal error details in production
     return create_error_response(

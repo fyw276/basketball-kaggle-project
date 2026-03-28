@@ -20,9 +20,9 @@ from app.api import (
     users_router,
     wardrobe_router,
 )
+from app.api.outfit_collections import router as outfit_collections_router
 from app.api.tryon import router as tryon_router
 from app.api.wardrobe_simple import router as wardrobe_simple_router
-from app.api.outfit_collections import router as outfit_collections_router
 from app.core.config import settings
 from app.core.error_handlers import (
     app_exception_handler,
@@ -86,9 +86,7 @@ app = FastAPI(
 _localhost_origin_re = r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
 _env = (settings.ENVIRONMENT or "").lower()
 _cors_permissive = (
-    _env in ("development", "dev", "local")
-    or settings.DEBUG
-    or settings.CORS_ALLOW_ALL_LOCALHOST
+    _env in ("development", "dev", "local") or settings.DEBUG or settings.CORS_ALLOW_ALL_LOCALHOST
 )
 if _cors_permissive:
     app.add_middleware(
@@ -141,7 +139,11 @@ async def startup_event():
     logger.info(f"Debug mode: {settings.DEBUG}")
     logger.info(
         "CORS: {}",
-        "宽松（本机 localhost/127.0.0.1 任意端口，回显 Origin）" if _cors_permissive else "严格（仅 CORS_ORIGINS / 正则）",
+        (
+            "宽松（本机 localhost/127.0.0.1 任意端口，回显 Origin）"
+            if _cors_permissive
+            else "严格（仅 CORS_ORIGINS / 正则）"
+        ),
     )
 
 

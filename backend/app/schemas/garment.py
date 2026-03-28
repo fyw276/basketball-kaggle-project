@@ -148,9 +148,7 @@ class OutfitCollectionCreate(BaseModel):
     name: str = Field(..., description="套装名称（如：通勤商务装）", min_length=1, max_length=50)
     scene: str = Field(..., description="场景标签（如：通勤上班/约会）")
     description: Optional[str] = Field(None, description="套装描述/备注")
-    garment_ids: List[str] = Field(
-        ..., description="服装ID列表", min_length=1
-    )
+    garment_ids: List[str] = Field(..., description="服装ID列表", min_length=1)
 
 
 class OutfitCollectionItem(BaseModel):
