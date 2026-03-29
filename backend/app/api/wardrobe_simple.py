@@ -11,17 +11,40 @@ from app.api.dependencies import get_current_user
 from app.db.session import get_db
 from app.ml.clip_recognizer import get_clip_recognizer
 from app.models.user import User
-from app.schemas.garment import GarmentCreate, GarmentListResponse, GarmentResponse
+from app.schemas.garment import (
+    VALID_CATEGORIES,
+    GarmentCreate,
+    GarmentListResponse,
+    GarmentResponse,
+    GarmentUpdate,
+)
 from app.services.garment import (
     count_garments_by_user,
     create_garment,
     delete_garment,
     get_garment_by_id,
     get_garments_by_user,
+    update_garment,
 )
 from app.services.storage import get_storage_service
 
 router = APIRouter(prefix="/wardrobe/simple", tags=["Wardrobe (Simplified)"])
+
+# 前端侧边栏分类名 → 后端 VALID_CATEGORIES 中的标准品类
+# 只映射前端独有的分类名到后端标准分类
+_SIDEBAR_TO_BACKEND_CATEGORY = {
+    "下装": "裤子",
+    "鞋子": "鞋",
+    "包包": "包",
+    # "连衣裙" 已添加到 VALID_CATEGORIES，直接接受
+}
+
+
+def _normalize_category_for_update(raw: str) -> str:
+    s = (raw or "").strip()
+    if s in _SIDEBAR_TO_BACKEND_CATEGORY:
+        return _SIDEBAR_TO_BACKEND_CATEGORY[s]
+    return s
 
 
 @router.post("/garments", response_model=GarmentResponse, status_code=status.HTTP_201_CREATED)
@@ -166,13 +189,70 @@ def list_garments_simple(
     db: Session = Depends(get_db),
 ):
     """Get user's garments with pagination and filtering (simplified API)"""
+    print(f"[Wardrobe] GET /garments: user={current_user.user_id}, category={category}, page={page}, page_size={page_size}")
+
     skip = (page - 1) * page_size
     garments = get_garments_by_user(
         db, current_user.user_id, skip=skip, limit=page_size, category=category
     )
     total = count_garments_by_user(db, current_user.user_id, category=category)
 
+    # 打印前几件衣物的分类信息用于调试
+    if garments:
+        print(f"[Wardrobe] GET /garments 返回 {len(garments)} 件衣物:")
+        for g in garments[:5]:
+            print(f"  - {g.garment_id}: category={g.category}")
+
     return GarmentListResponse(total=total, page=page, page_size=page_size, items=garments)
+
+
+@router.patch("/garments/{garment_id}", response_model=GarmentResponse)
+def patch_garment_simple(
+    garment_id: str,
+    body: GarmentUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """更新服饰（简化 API，用于拖拽改分类等）"""
+    from uuid import UUID
+
+    try:
+        garment_uuid = UUID(garment_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid garment ID format"
+        )
+
+    garment = get_garment_by_id(db, garment_uuid)
+    if not garment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Garment not found")
+
+    if garment.user_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to update this garment",
+        )
+
+    data = body.model_dump(exclude_unset=True)
+    print(f"[Wardrobe] PATCH 更新衣物: garment_id={garment_id}, data={data}")
+
+    if "category" in data and data["category"] is not None:
+        normalized = _normalize_category_for_update(data["category"])
+        print(f"[Wardrobe] PATCH 分类规范化: {data['category']} -> {normalized}")
+        if normalized not in VALID_CATEGORIES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid category. Must be one of: {', '.join(VALID_CATEGORIES)}",
+            )
+        data["category"] = normalized
+
+    if not data:
+        return garment
+
+    update = GarmentUpdate(**data)
+    result = update_garment(db, garment, update)
+    print(f"[Wardrobe] PATCH 更新完成: category={result.category}")
+    return result
 
 
 @router.delete("/garments/{garment_id}", status_code=status.HTTP_204_NO_CONTENT)
