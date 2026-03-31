@@ -10,7 +10,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# Only ignore Python "lib" at repo root — this does NOT affect mobile/lib/
+/lib/
 lib64/
 parts/
 sdist/

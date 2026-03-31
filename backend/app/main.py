@@ -23,6 +23,7 @@ from app.api import (
 from app.api.outfit_collections import router as outfit_collections_router
 from app.api.tryon import router as tryon_router
 from app.api.wardrobe_simple import router as wardrobe_simple_router
+from app.api.mood import router as mood_router
 from app.core.config import settings
 from app.core.error_handlers import (
     app_exception_handler,
@@ -326,6 +327,7 @@ app.include_router(recognition_router, prefix="/api/v1")
 app.include_router(analysis_router, prefix="/api/v1")
 app.include_router(tryon_router, prefix="/api/v1")  # Virtual Try-On
 app.include_router(outfit_collections_router, prefix="/api/v1")  # Outfit Collections
+app.include_router(mood_router, prefix="/api/v1")  # Mood Recommendation
 
 # Mount static files for uploaded images
 upload_dir = Path(settings.UPLOAD_DIR)

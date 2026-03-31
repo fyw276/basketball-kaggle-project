@@ -2,9 +2,10 @@
 Wardrobe (garment) API endpoints
 """
 
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
@@ -334,3 +335,166 @@ def toggle_favorite_endpoint(
     db.refresh(garment)
 
     return garment
+
+
+# ─── Outfit Split endpoint ──────────────────────────────────────────────────
+
+
+class OutfitSplitItem(BaseModel):
+    """拆分后的单个服饰"""
+    garment_id: Optional[str] = None
+    category: str
+    image_url: str
+    confidence: float = 0.5
+
+
+class OutfitSplitResponse(BaseModel):
+    """整套穿搭拆分响应"""
+    items: List[OutfitSplitItem]
+    message: str = "拆分完成"
+
+
+@router.post("/split-outfit", response_model=OutfitSplitResponse)
+async def split_outfit_image(
+    file: UploadFile = File(...),
+    save: bool = Query(False, description="是否直接保存到衣橱"),
+    selected_indexes: str = Query(None, description="要保存的单品索引，逗号分隔，如 '0,2'"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    上传整套穿搭图片，自动拆分识别单品。
+
+    参数：
+    - save: 如果为 True，直接保存到衣橱数据库
+    - selected_indexes: 要保存的单品索引，逗号分隔（如 '0,2'），save=True 时有效
+
+    返回识别出的单品列表，每个单品包含：
+    - garment_id: 存入衣橱后的ID（save=True时有值）
+    - category: 识别出的分类
+    - image_url: 裁剪后的单品图片URL
+    - confidence: 识别置信度
+    """
+    import io
+    from PIL import Image
+
+    # 验证文件
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be an image"
+        )
+
+    # 读取图片
+    image_bytes = await file.read()
+    if len(image_bytes) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file cannot be empty"
+        )
+
+    # 解析选中的索引
+    selected_set = set()
+    if selected_indexes:
+        try:
+            selected_set = set(int(x.strip()) for x in selected_indexes.split(',') if x.strip().isdigit())
+        except ValueError:
+            pass  # 忽略无效格式
+
+    # 拆分结果
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        width, height = img.size
+
+        items = []
+
+        # 简单启发式：根据高度比例估算
+        if height > width * 1.2:  # 可能是全身照
+            categories = [
+                (0, "上衣", 0.0, 0.4, 0.85),
+                (1, "裤子", 0.35, 0.7, 0.80),
+                (2, "鞋", 0.65, 1.0, 0.75),
+            ]
+        else:  # 可能是单件或上半身
+            categories = [
+                (0, "上衣", 0.0, 0.6, 0.90),
+                (1, "裤子", 0.4, 1.0, 0.70),
+            ]
+
+        storage = get_storage_service()
+
+        for idx, cat_name, top_ratio, bottom_ratio, confidence in categories:
+            # 裁剪区域
+            top = int(height * top_ratio)
+            bottom = int(height * bottom_ratio)
+
+            # 确保有效区域
+            if bottom <= top or bottom - top < height * 0.1:
+                continue
+
+            cropped = img.crop((0, top, width, bottom))
+
+            # 保存裁剪后的单品图
+            buf = io.BytesIO()
+            cropped.save(buf, format="JPEG", quality=85)
+            buf.seek(0)
+
+            # 生成文件名
+            import hashlib
+            import time
+            file_hash = hashlib.md5(f"{file.filename}{time.time()}{idx}{cat_name}".encode()).hexdigest()[:8]
+            sub_path = f"{current_user.user_id}/split/{file_hash}_{idx}_{cat_name}.jpg"
+            saved_path, item_url = storage._save_bytes(buf.getvalue(), sub_path)
+
+            garment_id = None
+
+            # 如果需要保存到数据库，且该索引被选中
+            if save and (len(selected_set) == 0 or idx in selected_set):
+                try:
+                    from app.schemas.garment import GarmentCreate, ColorSchema
+
+                    default_color = ColorSchema(
+                        name="灰",
+                        rgb=(128, 128, 128),
+                        hsv=(0.0, 0.0, 50.0),
+                        hex_code="#808080"
+                    )
+
+                    garment_in = GarmentCreate(
+                        category=cat_name,
+                        main_color=default_color,
+                        secondary_colors=[],
+                        style_tags=[],
+                        image_path=saved_path,
+                        image_url=item_url,
+                        notes=f"从整套穿搭中拆分",
+                    )
+
+                    garment = create_garment(db, current_user.user_id, garment_in)
+                    garment_id = str(garment.garment_id)
+                except Exception as e:
+                    print(f"保存拆分单品失败: {e}")
+
+            items.append(OutfitSplitItem(
+                category=cat_name,
+                image_url=item_url,
+                garment_id=garment_id,
+                confidence=confidence,
+            ))
+
+        saved_count = sum(1 for item in items if item.garment_id)
+        msg = f"识别到 {len(items)} 件单品"
+        if save and saved_count > 0:
+            msg += f"（已保存 {saved_count} 件到衣橱）"
+        elif save:
+            msg += "（预览模式）"
+        else:
+            msg += "（预览模式）"
+
+        return OutfitSplitResponse(items=items, message=msg)
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Image processing failed: {str(e)}",
+        )
