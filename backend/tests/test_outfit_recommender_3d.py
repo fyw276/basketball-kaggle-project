@@ -5,12 +5,10 @@ Tests for OutfitRecommender3D (3D: 场景-品类-风格 + 体型感知)
 
 from uuid import uuid4
 
-import pytest
+from app.models.garment import Garment
 
 # Import OutfitCollection first to resolve SQLAlchemy relationship on User
 from app.models.outfit_collection import OutfitCollection  # noqa: F401
-
-from app.models.garment import Garment
 from app.schemas.garment import ColorSchema
 from app.services.outfit_recommender_3d import (
     BODY_TYPE_CATEGORY_SCORES,
@@ -82,7 +80,6 @@ class TestBodyTypeFiltering:
         ]
 
         filtered = recommender._filter_by_body_type(wardrobe, "微胖", None)
-        categories = {g.category for g in filtered}
         # 修身 top should be removed
         assert "修身" not in {g.fit_type for g in filtered}
 
@@ -136,7 +133,6 @@ class TestSceneAwareRecommendations:
 
     def test_recommend_with_multiple_scenes(self):
         """Multiple scene templates should be available"""
-        recommender = OutfitRecommender3D()
         from app.services.outfit_recommender_3d import SCENE_OUTFIT_TEMPLATES
 
         # All expected scenes should have templates
@@ -316,7 +312,9 @@ class TestOutfitCardSchema:
         item = OutfitItem(
             garment_id=uuid4(),
             category="上衣",
-            main_color=ColorSchema(name="深灰", rgb=[64, 64, 64], hsv=[0, 0, 25], hex_code="#404040"),
+            main_color=ColorSchema(
+                name="深灰", rgb=[64, 64, 64], hsv=[0, 0, 25], hex_code="#404040"
+            ),
             style_tags=["简约", "通勤"],
             image_url="http://example.com/img.jpg",
             role="top",

@@ -16,6 +16,7 @@ Supports Chinese fashion domain with specialized prompt engineering.
 """
 
 import hashlib
+import os
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
@@ -24,6 +25,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 from PIL import Image
 
+from app.core.hf_hub_env import apply_hf_hub_env_defaults
 from app.core.logging import setup_logging
 
 logger = setup_logging()
@@ -52,11 +54,25 @@ CATEGORY_CANDIDATES = [
 # Fashion styles — Extended with Chinese fashion styles
 STYLE_CANDIDATES = [
     # Western styles
-    "通勤", "休闲", "正式", "运动", "街头",
-    "学院", "甜酷", "简约", "复古", "朋克",
-    "民族", "优雅", "度假",
+    "通勤",
+    "休闲",
+    "正式",
+    "运动",
+    "街头",
+    "学院",
+    "甜酷",
+    "简约",
+    "复古",
+    "朋克",
+    "民族",
+    "优雅",
+    "度假",
     # Chinese styles
-    "国风", "汉服", "新中式", "禅意", "古风",
+    "国风",
+    "汉服",
+    "新中式",
+    "禅意",
+    "古风",
 ]
 
 # Fit types
@@ -64,8 +80,16 @@ FIT_CANDIDATES = ["修身", "标准", "宽松", "oversized"]
 
 # Occasions
 OCCASION_CANDIDATES = [
-    "通勤上班", "商务正式", "约会", "休闲日常", "运动健身",
-    "校园", "聚会", "度假旅行", "街头潮流", "正式宴会",
+    "通勤上班",
+    "商务正式",
+    "约会",
+    "休闲日常",
+    "运动健身",
+    "校园",
+    "聚会",
+    "度假旅行",
+    "街头潮流",
+    "正式宴会",
 ]
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -173,6 +197,7 @@ class CLIPRecognizer:
         if device == "auto":
             try:
                 import torch
+
                 return "cuda" if torch.cuda.is_available() else "cpu"
             except ImportError:
                 return "cpu"
@@ -186,14 +211,28 @@ class CLIPRecognizer:
             return self._is_clip_available
 
         try:
+            apply_hf_hub_env_defaults()
             from transformers import CLIPModel, CLIPProcessor
+
             model_id = self._get_huggingface_model_id()
             logger.info(f"Loading CLIP model: {model_id} on {self.device}")
+            if not os.environ.get("HF_ENDPOINT"):
+                logger.info(
+                    "若下载 huggingface.co 超时，可在环境变量中设置 "
+                    "HF_ENDPOINT=https://hf-mirror.com（国内镜像）后重启服务"
+                )
 
-            self._model = CLIPModel.from_pretrained(model_id)
+            # 先尝试仅使用本地缓存（避免在弱网/离线环境下阻塞请求导致前端超时）
+            try:
+                self._model = CLIPModel.from_pretrained(model_id, local_files_only=True)
+                self._processor = CLIPProcessor.from_pretrained(model_id, local_files_only=True)
+                logger.info("CLIP loaded from local cache")
+            except Exception:
+                # 缓存不全时，再走在线下载（由 HF_ENDPOINT / timeout 控制）
+                self._model = CLIPModel.from_pretrained(model_id)
+                self._processor = CLIPProcessor.from_pretrained(model_id)
             self._model.to(self.device)
             self._model.eval()
-            self._processor = CLIPProcessor.from_pretrained(model_id)
             self._is_clip_available = True
             logger.info("CLIP model loaded successfully")
             return True
@@ -205,6 +244,10 @@ class CLIPRecognizer:
             return False
         except Exception as e:
             logger.warning(f"Failed to load CLIP: {e}")
+            logger.warning(
+                "无法从 Hugging Face 拉取模型时：设置环境变量 HF_ENDPOINT=https://hf-mirror.com "
+                "或配置代理后重启；亦可在外网环境先运行一次以缓存到本地。"
+            )
             self._is_clip_available = False
             return False
 
@@ -224,6 +267,7 @@ class CLIPRecognizer:
 
         if self._is_clip_available:
             import torch
+
             inputs = self._processor(images=image, return_tensors="pt")
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
             with torch.no_grad():
@@ -244,6 +288,7 @@ class CLIPRecognizer:
 
         if self._is_clip_available:
             import torch
+
             inputs = self._processor(text=texts, return_tensors="pt", padding=True)
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
             with torch.no_grad():
@@ -305,9 +350,7 @@ class CLIPRecognizer:
         default_template: str = "a {label} style outfit",
     ) -> List[str]:
         """Multi-label classification using enhanced prompts."""
-        _, _, scores = self._classify_zero_shot(
-            image, candidates, prompt_dict, default_template
-        )
+        _, _, scores = self._classify_zero_shot(image, candidates, prompt_dict, default_template)
 
         selected = [label for label, score in scores.items() if score >= threshold]
 
@@ -415,6 +458,7 @@ class CLIPRecognizer:
         """
         try:
             from app.ml.feature_extractor import FeatureExtractor
+
             extractor = FeatureExtractor(enable_cache=False)
             mobilenet_features = extractor.extract(image)  # 1280-dim
 

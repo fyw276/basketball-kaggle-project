@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import '../utils/app_snackbar.dart';
 import 'platform_image.dart';
 
 /// Multi-image picker section for uploading garment or outfit images.
@@ -54,9 +55,7 @@ class _ImagePickerSectionState extends State<ImagePickerSection> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('选择图片失败: $e')),
-        );
+        showAppSnackBar(context, '选择图片失败：${userFacingApiError(e)}');
       }
     }
   }

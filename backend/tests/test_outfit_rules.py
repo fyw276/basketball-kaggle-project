@@ -3,8 +3,6 @@ Tests for outfit rules module
 Tests color matching, style consistency, and category pairing rules
 """
 
-import pytest
-
 from app.schemas.garment import ColorSchema
 from app.services.outfit_rules import CategoryRules, ColorRules, StyleRules
 
@@ -385,7 +383,7 @@ class TestRulesIntegration:
 
         # Check style consistency
         style_score1 = style_rules.calculate_style_consistency(styles[0], styles[1])
-        style_score2 = style_rules.calculate_style_consistency(styles[1], styles[2])
+        style_rules.calculate_style_consistency(styles[1], styles[2])
         assert style_score1 > 0.5  # 简约/通勤 compatible with 正式
         # style_score2 might be lower (正式 and 休闲 less compatible)
 

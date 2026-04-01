@@ -7,17 +7,19 @@
 - ✅ 用户注册和登录
 - ✅ JWT Token 认证
 - ✅ 主页导航
-- 🚧 用户画像管理
-- 🚧 衣橱管理
-- 🚧 相似度分析
-- 🚧 搭配推荐
-- 🚧 适合度评分
+- ✅ 用户画像管理（含性别表达指数）
+- ✅ 衣橱管理（批量上传、筛选、编辑）
+- ✅ 相似度分析
+- ✅ 搭配推荐
+- ✅ 适合度评分
+- ✅ 情绪穿搭（心情 → 配色/风格方向 + 衣橱匹配）
+- ✅ 虚拟试衣（伪 3D 三视角：正/侧/背，支持多视角人物照）
 
 ## 技术栈
 
 - **Flutter**: 3.0+
 - **状态管理**: Provider
-- **网络请求**: Dio
+- **网络请求**: `package:http`（自定义 `ApiClient`）
 - **路由**: GoRouter
 - **本地存储**: SharedPreferences
 - **图片选择**: ImagePicker
@@ -69,18 +71,20 @@ cd mobile
 flutter pub get
 ```
 
-2. **配置后端 API 地址**
+2. **配置后端 API 地址（可选）**
 
-编辑 `lib/core/services/api_client.dart`，修改 `baseUrl`：
+后端地址由 `ApiBaseResolver` 根据平台自动解析（Web/Android/iOS/桌面），一般无需手改。
+如需自定义，请查看：
 
-```dart
-static const String baseUrl = 'http://YOUR_BACKEND_IP:8000/api/v1';
-```
+- `lib/core/services/api_base_resolver.dart`
+- `lib/core/services/api_base_resolver_web.dart`
+- `lib/core/services/api_base_resolver_io.dart`
 
-注意：
-- Android 模拟器使用 `http://10.0.2.2:8000/api/v1`
-- iOS 模拟器使用 `http://localhost:8000/api/v1`
-- 真机使用实际 IP 地址
+常见说明：
+
+- Android 模拟器：`http://10.0.2.2:8000/api/v1`
+- iOS 模拟器：`http://localhost:8000/api/v1`
+- 真机：使用后端所在机器的局域网 IP（同网段）
 
 3. **运行应用**
 
@@ -178,17 +182,11 @@ A: 确保已添加相应权限：
 
 A: Token 默认有效期 24 小时，过期后需要重新登录。
 
-## 下一步开发
+## 下一步建议
 
-- [ ] 完善用户画像表单
-- [ ] 实现衣橱管理功能
-- [ ] 实现图片上传和预览
-- [ ] 实现相似度分析界面
-- [ ] 实现搭配推荐界面
-- [ ] 实现适合度评分界面
-- [ ] 添加加载状态和错误处理
-- [ ] 优化 UI/UX
-- [ ] 添加单元测试和集成测试
+- [ ] 将虚拟试衣从 inpainting 升级为真正 VTON（人体解析/遮挡/几何贴合）
+- [ ] 增加更多情绪与场景模板，丰富解释性文案
+- [ ] 增加端到端/集成测试覆盖（Web/真机）
 
 ## 许可证
 

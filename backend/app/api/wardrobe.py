@@ -298,9 +298,7 @@ def search_garments_endpoint(
     # Apply pagination
     paginated_items = items[skip : skip + page_size]
 
-    return GarmentListResponse(
-        total=total, page=page, page_size=page_size, items=paginated_items
-    )
+    return GarmentListResponse(total=total, page=page, page_size=page_size, items=paginated_items)
 
 
 @router.patch("/garments/{garment_id}/favorite", response_model=GarmentResponse)
@@ -324,9 +322,7 @@ def toggle_favorite_endpoint(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Garment not found")
 
     if garment.user_id != current_user.user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized"
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
     # Toggle favorite
     current_fav = garment.is_favorite == "1"
@@ -342,6 +338,7 @@ def toggle_favorite_endpoint(
 
 class OutfitSplitItem(BaseModel):
     """拆分后的单个服饰"""
+
     garment_id: Optional[str] = None
     category: str
     image_url: str
@@ -350,6 +347,7 @@ class OutfitSplitItem(BaseModel):
 
 class OutfitSplitResponse(BaseModel):
     """整套穿搭拆分响应"""
+
     items: List[OutfitSplitItem]
     message: str = "拆分完成"
 
@@ -357,8 +355,11 @@ class OutfitSplitResponse(BaseModel):
 @router.post("/split-outfit", response_model=OutfitSplitResponse)
 async def split_outfit_image(
     file: UploadFile = File(...),
-    save: bool = Query(False, description="是否直接保存到衣橱"),
-    selected_indexes: str = Query(None, description="要保存的单品索引，逗号分隔，如 '0,2'"),
+    # multipart 与 File 同请求时须用 Form；误用 Query 会导致客户端写在 form 里的 save 无法绑定，恒为 false、永不入库
+    save: bool = Form(False, description="是否直接保存到衣橱"),
+    selected_indexes: Optional[str] = Form(
+        None, description="要保存的单品索引，逗号分隔，如 '0,2'"
+    ),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -376,28 +377,27 @@ async def split_outfit_image(
     - confidence: 识别置信度
     """
     import io
+
     from PIL import Image
 
     # 验证文件
     if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File must be an image"
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File must be an image")
 
     # 读取图片
     image_bytes = await file.read()
     if len(image_bytes) == 0:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Uploaded file cannot be empty"
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file cannot be empty"
         )
 
     # 解析选中的索引
     selected_set = set()
     if selected_indexes:
         try:
-            selected_set = set(int(x.strip()) for x in selected_indexes.split(',') if x.strip().isdigit())
+            selected_set = set(
+                int(x.strip()) for x in selected_indexes.split(",") if x.strip().isdigit()
+            )
         except ValueError:
             pass  # 忽略无效格式
 
@@ -442,7 +442,10 @@ async def split_outfit_image(
             # 生成文件名
             import hashlib
             import time
-            file_hash = hashlib.md5(f"{file.filename}{time.time()}{idx}{cat_name}".encode()).hexdigest()[:8]
+
+            file_hash = hashlib.md5(
+                f"{file.filename}{time.time()}{idx}{cat_name}".encode()
+            ).hexdigest()[:8]
             sub_path = f"{current_user.user_id}/split/{file_hash}_{idx}_{cat_name}.jpg"
             saved_path, item_url = storage._save_bytes(buf.getvalue(), sub_path)
 
@@ -451,36 +454,60 @@ async def split_outfit_image(
             # 如果需要保存到数据库，且该索引被选中
             if save and (len(selected_set) == 0 or idx in selected_set):
                 try:
-                    from app.schemas.garment import GarmentCreate, ColorSchema
+                    from app.ml.color_extractor import ColorExtractor
+                    from app.ml.split_local_features import local_split_feature_vector
+                    from app.schemas.garment import ColorSchema, GarmentCreate
 
+                    crop_bytes = buf.getvalue()
+                    # 不使用 CLIP：避免 Hugging Face 下载阻塞整次请求导致前端超时（弱网/国内常见）
+                    feature_vector = local_split_feature_vector(crop_bytes)
+
+                    color_extractor = ColorExtractor(n_colors=3)
+                    colors = color_extractor.extract_colors(crop_bytes)
                     default_color = ColorSchema(
                         name="灰",
                         rgb=(128, 128, 128),
                         hsv=(0.0, 0.0, 50.0),
-                        hex_code="#808080"
+                        hex_code="#808080",
                     )
+                    main_color = colors[0] if colors else default_color
+                    secondary_colors = colors[1:] if len(colors) > 1 else []
+
+                    final_cat = cat_name.strip()
+                    if final_cat not in VALID_CATEGORIES:
+                        final_cat = "上衣"
+
+                    style_tags = ["休闲"]
+                    fit_type = None
 
                     garment_in = GarmentCreate(
-                        category=cat_name,
-                        main_color=default_color,
-                        secondary_colors=[],
-                        style_tags=[],
+                        category=final_cat,
+                        main_color=main_color,
+                        secondary_colors=secondary_colors,
+                        style_tags=style_tags[:20],
+                        fit_type=fit_type,
                         image_path=saved_path,
                         image_url=item_url,
-                        notes=f"从整套穿搭中拆分",
+                        feature_vector=feature_vector,
+                        notes="从整套穿搭中拆分",
                     )
 
                     garment = create_garment(db, current_user.user_id, garment_in)
                     garment_id = str(garment.garment_id)
                 except Exception as e:
+                    import traceback
+
+                    traceback.print_exc()
                     print(f"保存拆分单品失败: {e}")
 
-            items.append(OutfitSplitItem(
-                category=cat_name,
-                image_url=item_url,
-                garment_id=garment_id,
-                confidence=confidence,
-            ))
+            items.append(
+                OutfitSplitItem(
+                    category=cat_name,
+                    image_url=item_url,
+                    garment_id=garment_id,
+                    confidence=confidence,
+                )
+            )
 
         saved_count = sum(1 for item in items if item.garment_id)
         msg = f"识别到 {len(items)} 件单品"

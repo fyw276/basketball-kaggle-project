@@ -9,11 +9,11 @@ from uuid import uuid4
 import pytest
 from PIL import Image
 
-# Import OutfitCollection first to resolve SQLAlchemy relationship on User
-from app.models.outfit_collection import OutfitCollection  # noqa: F401
-
 from app.ml.clip_recognizer import CLIPRecognizer
 from app.models.garment import Garment
+
+# Import OutfitCollection first to resolve SQLAlchemy relationship on User
+from app.models.outfit_collection import OutfitCollection  # noqa: F401
 from app.schemas.garment import ColorSchema
 from app.services.outfit_recommender_3d import OutfitRecommender3D
 from app.services.storage import StorageService
@@ -81,11 +81,17 @@ class TestOutfitRecommender3DIntegration:
     def test_wardrobe(self):
         """Create a small test wardrobe."""
         return [
-            make_garment(category="上衣", color_name="深灰", styles=["简约", "通勤"], fit_type="标准"),
+            make_garment(
+                category="上衣", color_name="深灰", styles=["简约", "通勤"], fit_type="标准"
+            ),
             make_garment(category="裤子", color_name="黑色", styles=["简约"], fit_type="修身"),
-            make_garment(category="外套", color_name="藏青", styles=["商务", "正式"], fit_type="标准"),
+            make_garment(
+                category="外套", color_name="藏青", styles=["商务", "正式"], fit_type="标准"
+            ),
             make_garment(category="鞋子", color_name="棕色", styles=["休闲"], fit_type="标准"),
-            make_garment(category="裙子", color_name="酒红", styles=["甜美", "优雅"], fit_type="修身"),
+            make_garment(
+                category="裙子", color_name="酒红", styles=["甜美", "优雅"], fit_type="修身"
+            ),
         ]
 
     def test_recommend_with_body_type_filtering(self, test_wardrobe):

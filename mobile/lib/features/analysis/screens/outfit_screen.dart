@@ -4,6 +4,7 @@ import 'package:image_picker/image_picker.dart';
 import 'dart:typed_data';
 import 'package:provider/provider.dart';
 import '../../../core/services/api_client.dart';
+import '../../../core/utils/app_snackbar.dart';
 import '../../../core/providers/theme_provider.dart';
 import '../../../core/theme/style_tokens.dart';
 import '../../../core/theme/theme_model.dart';
@@ -41,11 +42,10 @@ class _OutfitScreenState extends State<OutfitScreen> {
       });
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('选择图片失败: $e'),
-            backgroundColor: Colors.red,
-          ),
+        showAppSnackBar(
+          context,
+          '选择图片失败：${userFacingApiError(e)}',
+          backgroundColor: Colors.red,
         );
       }
     }
@@ -67,11 +67,10 @@ class _OutfitScreenState extends State<OutfitScreen> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('生成失败: $e'),
-            backgroundColor: Colors.red,
-          ),
+        showAppSnackBar(
+          context,
+          '生成失败：${userFacingApiError(e)}',
+          backgroundColor: Colors.red,
         );
       }
     } finally {

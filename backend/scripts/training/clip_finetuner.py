@@ -8,16 +8,16 @@ CLIP 模型微调训练器
 import json
 import os
 import sys
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Callable
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from torch.cuda.amp import autocast, GradScaler
 from PIL import Image
+from torch.cuda.amp import GradScaler, autocast
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 # 添加项目根目录到路径
@@ -36,6 +36,7 @@ logger.info(f"Using device: {device}")
 @dataclass
 class TrainingConfig:
     """训练配置"""
+
     model_name: str = "openai/clip-vit-base-patch32"  # 或 "openai/clip-vit-large-patch14"
     batch_size: int = 8
     num_epochs: int = 10
@@ -62,7 +63,7 @@ class GarmentDataset(Dataset):
         clip_processor,
         categories: List[str],
         styles: List[str],
-        transform: Optional[Callable] = None
+        transform: Optional[Callable] = None,
     ):
         """
         初始化数据集
@@ -134,13 +135,36 @@ class CLIPFineTuner:
         """
         self.config = config or TrainingConfig()
         self.categories = categories or [
-            "上衣", "裤子", "裙子", "外套", "鞋", "包",
-            "汉服", "国风", "马面裙", "上衣(汉)", "下装(汉)"
+            "上衣",
+            "裤子",
+            "裙子",
+            "外套",
+            "鞋",
+            "包",
+            "汉服",
+            "国风",
+            "马面裙",
+            "上衣(汉)",
+            "下装(汉)",
         ]
         self.styles = styles or [
-            "通勤", "休闲", "正式", "运动", "街头", "学院",
-            "甜酷", "简约", "复古", "朋克", "民族", "优雅",
-            "国风", "汉服", "新中式", "禅意", "古风"
+            "通勤",
+            "休闲",
+            "正式",
+            "运动",
+            "街头",
+            "学院",
+            "甜酷",
+            "简约",
+            "复古",
+            "朋克",
+            "民族",
+            "优雅",
+            "国风",
+            "汉服",
+            "新中式",
+            "禅意",
+            "古风",
         ]
 
         # 模型和处理器
@@ -275,12 +299,15 @@ class CLIPFineTuner:
 
         # 分类损失
         category_loss = nn.CrossEntropyLoss()(
-            image_features @ torch.randn(len(self.categories), image_features.shape[1], device=device),
-            category_labels
+            image_features
+            @ torch.randn(len(self.categories), image_features.shape[1], device=device),
+            category_labels,
         )
 
         # 多标签分类损失 (BCE)
-        style_pred = image_features @ torch.randn(len(self.styles), image_features.shape[1], device=device)
+        style_pred = image_features @ torch.randn(
+            len(self.styles), image_features.shape[1], device=device
+        )
         style_loss = nn.BCEWithLogitsLoss()(style_pred, style_labels)
 
         # 总损失
@@ -328,8 +355,7 @@ class CLIPFineTuner:
                 text_features = text_features / text_features.norm(dim=-1, keepdim=True)
 
                 loss, loss_breakdown = self.compute_loss(
-                    image_features, text_features,
-                    category_labels, style_labels
+                    image_features, text_features, category_labels, style_labels
                 )
 
             # 反向传播
@@ -347,8 +373,7 @@ class CLIPFineTuner:
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
 
             loss, loss_breakdown = self.compute_loss(
-                image_features, text_features,
-                category_labels, style_labels
+                image_features, text_features, category_labels, style_labels
             )
 
             loss.backward()
@@ -373,10 +398,17 @@ class CLIPFineTuner:
             for batch in val_data:
                 images = [Image.open(item["image_path"]).convert("RGB") for item in batch]
                 category_texts = [item["category"] for item in batch]
-                category_labels = torch.tensor([
-                    self.categories.index(item["category"]) if item["category"] in self.categories else 0
-                    for item in batch
-                ], device=device)
+                category_labels = torch.tensor(
+                    [
+                        (
+                            self.categories.index(item["category"])
+                            if item["category"] in self.categories
+                            else 0
+                        )
+                        for item in batch
+                    ],
+                    device=device,
+                )
                 style_labels = torch.zeros(len(batch), len(self.styles), device=device)
                 for i, item in enumerate(batch):
                     for style in item.get("style_tags", []):
@@ -399,8 +431,7 @@ class CLIPFineTuner:
                 text_features = text_features / text_features.norm(dim=-1, keepdim=True)
 
                 _, loss_breakdown = self.compute_loss(
-                    image_features, text_features,
-                    category_labels, style_labels
+                    image_features, text_features, category_labels, style_labels
                 )
 
                 total_loss += loss_breakdown["total_loss"]
@@ -444,7 +475,9 @@ class CLIPFineTuner:
                 # 获取样本
                 image = Image.open(item["image_path"]).convert("RGB")
                 category_text = item["category"]
-                category_label = self.categories.index(category_text) if category_text in self.categories else 0
+                category_label = (
+                    self.categories.index(category_text) if category_text in self.categories else 0
+                )
 
                 style_label = torch.zeros(len(self.styles))
                 for style in item.get("style_tags", []):
@@ -462,11 +495,13 @@ class CLIPFineTuner:
                 epoch_losses.append(loss_dict["total_loss"])
 
                 # 更新进度条
-                pbar.set_postfix({
-                    "loss": f"{loss_dict['total_loss']:.4f}",
-                    "clip": f"{loss_dict['clip_loss']:.4f}",
-                    "lr": f"{self.scheduler.get_last_lr()[0]:.2e}",
-                })
+                pbar.set_postfix(
+                    {
+                        "loss": f"{loss_dict['total_loss']:.4f}",
+                        "clip": f"{loss_dict['clip_loss']:.4f}",
+                        "lr": f"{self.scheduler.get_last_lr()[0]:.2e}",
+                    }
+                )
 
                 # 保存检查点
                 if self.global_step % self.config.save_steps == 0:
@@ -548,7 +583,9 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-6, help="学习率")
     parser.add_argument("--model", default="openai/clip-vit-base-patch32", help="CLIP 模型名称")
     parser.add_argument("--freeze-vision", action="store_true", help="冻结视觉编码器")
-    parser.add_argument("--output", default=str(project_root / "models" / "clip_finetuned"), help="输出目录")
+    parser.add_argument(
+        "--output", default=str(project_root / "models" / "clip_finetuned"), help="输出目录"
+    )
     parser.add_argument("--resume", help="从检查点恢复")
 
     args = parser.parse_args()

@@ -1,9 +1,10 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import '../../../core/providers/auth_provider.dart';
+import '../../../core/providers/theme_provider.dart';
+import '../../../core/services/feature_local_store.dart';
+import '../../../core/utils/app_snackbar.dart';
 import '../../../core/widgets/analysis_feature_layout.dart';
 import '../../../core/widgets/analysis_result_display.dart';
 import '../../../core/widgets/image_picker_section.dart';
@@ -22,6 +23,16 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
   bool _isLoading = false;
   String? _selectedScene;
 
+  static const _cacheKey = 'outfit_recommend';
+
+  @override
+  void initState() {
+    super.initState();
+    FeatureLocalStore.loadJson(_cacheKey).then((m) {
+      if (m != null && mounted) setState(() => _result = m);
+    });
+  }
+
   final List<String> _scenes = [
     '日常休闲',
     '职场商务',
@@ -32,9 +43,7 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
 
   Future<void> _analyze() async {
     if (_images.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请先选择图片')),
-      );
+      showAppSnackBar(context, '请先选择图片');
       return;
     }
 
@@ -44,20 +53,40 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
 
     try {
       final authProvider = context.read<AuthProvider>();
+      final ge = context.read<ThemeProvider>().genderExpression;
       final result = await authProvider.apiClient.recommendOutfitsFromXFile(
         _images.first,
         numOutfits: 5,
+        genderExpression: ge,
         scene: _selectedScene,
       );
+
+      if (result.containsKey('error')) {
+        if (mounted) {
+          showAppSnackBar(
+            context,
+            '推荐暂不可用：${userFacingApiError(result['error'])}',
+          );
+        }
+        setState(() {
+          _isLoading = false;
+          _result = null;
+        });
+        return;
+      }
 
       setState(() {
         _result = result;
         _isLoading = false;
       });
+      FeatureLocalStore.saveJson(_cacheKey, result);
     } catch (e) {
+      if (mounted) {
+        showAppSnackBar(context, '网络异常：${userFacingApiError(e)}');
+      }
       setState(() {
         _isLoading = false;
-        _result = {'error': e.toString()};
+        _result = null;
       });
     }
   }
@@ -133,9 +162,7 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
                 result: _result,
                 type: 'outfit',
                 onSaveOutfit: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('已保存到收藏')),
-                  );
+                  showAppSnackBar(context, '已保存到收藏');
                 },
               ),
           ],

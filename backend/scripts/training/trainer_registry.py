@@ -23,10 +23,12 @@ class TrainerRegistry:
     @classmethod
     def register(cls, name: str):
         """注册训练器"""
+
         def decorator(trainer_class: Type):
             cls._trainers[name] = trainer_class
             logger.info(f"Registered trainer: {name}")
             return trainer_class
+
         return decorator
 
     @classmethod

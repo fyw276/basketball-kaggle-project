@@ -330,7 +330,12 @@ class OutfitRecommender3D:
         wardrobe_by_cat = self._group_by_category(filtered_wardrobe)
 
         # Step 3: Derive user's primary scene from style preferences
-        style_prefs = user_style_preferences or target_garment.style_tags
+        raw_tags = getattr(target_garment, "style_tags", None) or []
+        if not isinstance(raw_tags, list):
+            raw_tags = []
+        style_prefs = user_style_preferences or raw_tags
+        if not isinstance(style_prefs, list):
+            style_prefs = []
         if preferred_scene:
             primary_scene = preferred_scene
             secondary_scenes = []
@@ -525,13 +530,31 @@ class OutfitRecommender3D:
 
             # Score each garment for compatibility with target
             scored = []
+            tt = getattr(target, "style_tags", None) or []
+            tm = getattr(target, "main_color", None) or {}
+            if not isinstance(tt, list):
+                tt = []
             for g in cat_garments:
-                style_score = self.style_rules.calculate_style_consistency(
-                    target.style_tags, g.style_tags
-                )
+                gt = getattr(g, "style_tags", None) or []
+                if not isinstance(gt, list):
+                    gt = []
+                gm = getattr(g, "main_color", None) or {}
+                style_score = self.style_rules.calculate_style_consistency(tt, gt)
                 color_score, _ = self.color_rules.calculate_color_harmony(
-                    ColorSchema(**target.main_color),
-                    ColorSchema(**g.main_color),
+                    (
+                        ColorSchema(**tm)
+                        if isinstance(tm, dict)
+                        else ColorSchema(
+                            name="灰", rgb=(128, 128, 128), hsv=(0.0, 0.0, 50.0), hex_code="#808080"
+                        )
+                    ),
+                    (
+                        ColorSchema(**gm)
+                        if isinstance(gm, dict)
+                        else ColorSchema(
+                            name="灰", rgb=(128, 128, 128), hsv=(0.0, 0.0, 50.0), hex_code="#808080"
+                        )
+                    ),
                 )
                 combo_score = style_score * 0.5 + color_score * 0.5
                 scored.append((combo_score, g))
@@ -558,12 +581,24 @@ class OutfitRecommender3D:
                 total = 0.0
                 for i in range(len(combo) - 1):
                     for j in range(i + 1, len(combo)):
-                        style = self.style_rules.calculate_style_consistency(
-                            combo[i].style_tags, combo[j].style_tags
-                        )
+                        ti = getattr(combo[i], "style_tags", None) or []
+                        tj = getattr(combo[j], "style_tags", None) or []
+                        if not isinstance(ti, list):
+                            ti = []
+                        if not isinstance(tj, list):
+                            tj = []
+                        style = self.style_rules.calculate_style_consistency(ti, tj)
+                        mi = getattr(combo[i], "main_color", None) or {}
+                        mj = getattr(combo[j], "main_color", None) or {}
+                        default_c = {
+                            "name": "灰",
+                            "rgb": (128, 128, 128),
+                            "hsv": (0.0, 0.0, 50.0),
+                            "hex_code": "#808080",
+                        }
                         color, _ = self.color_rules.calculate_color_harmony(
-                            ColorSchema(**combo[i].main_color),
-                            ColorSchema(**combo[j].main_color),
+                            ColorSchema(**mi) if isinstance(mi, dict) else ColorSchema(**default_c),
+                            ColorSchema(**mj) if isinstance(mj, dict) else ColorSchema(**default_c),
                         )
                         total += style + color
                 return total / ((len(combo) * (len(combo) - 1)) / 2) if len(combo) > 1 else 0.5
@@ -600,8 +635,12 @@ class OutfitRecommender3D:
         all_styles: Set[str] = set()
         all_colors: List[ColorSchema] = []
         for g in garments:
-            all_styles.update(g.style_tags)
-            all_colors.append(ColorSchema(**g.main_color))
+            tags = getattr(g, "style_tags", None) or []
+            if isinstance(tags, list):
+                all_styles.update(tags)
+            mc = getattr(g, "main_color", None) or {}
+            if isinstance(mc, dict):
+                all_colors.append(ColorSchema(**mc))
 
         # Dimension 1: Scene score
         scene_score = self._score_scene(all_styles, primary_scene, secondary_scenes)
@@ -661,13 +700,23 @@ class OutfitRecommender3D:
         items = []
         for g in garments:
             role = self._determine_role(g)
+            st = getattr(g, "style_tags", None) or []
+            if not isinstance(st, list):
+                st = []
+            mc = getattr(g, "main_color", None) or {}
             items.append(
                 OutfitItem(
                     garment_id=g.garment_id,
                     category=g.category,
-                    main_color=ColorSchema(**g.main_color),
-                    style_tags=g.style_tags,
-                    image_url=g.image_url,
+                    main_color=(
+                        ColorSchema(**mc)
+                        if isinstance(mc, dict)
+                        else ColorSchema(
+                            name="灰", rgb=(128, 128, 128), hsv=(0.0, 0.0, 50.0), hex_code="#808080"
+                        )
+                    ),
+                    style_tags=st,
+                    image_url=getattr(g, "image_url", "") or "",
                     role=role,
                 )
             )
@@ -747,10 +796,13 @@ class OutfitRecommender3D:
         scores = []
         for i in range(len(garments)):
             for j in range(i + 1, len(garments)):
-                score = self.style_rules.calculate_style_consistency(
-                    garments[i].style_tags,
-                    garments[j].style_tags,
-                )
+                ti = getattr(garments[i], "style_tags", None) or []
+                tj = getattr(garments[j], "style_tags", None) or []
+                if not isinstance(ti, list):
+                    ti = []
+                if not isinstance(tj, list):
+                    tj = []
+                score = self.style_rules.calculate_style_consistency(ti, tj)
                 scores.append(score)
 
         return sum(scores) / len(scores) if scores else 0.5
@@ -815,7 +867,13 @@ class OutfitRecommender3D:
         if not garments:
             return "单品展示"
 
-        colors = [ColorSchema(**g.main_color).name for g in garments]
+        colors = []
+        for g in garments:
+            mc = getattr(g, "main_color", None) or {}
+            if isinstance(mc, dict):
+                colors.append(ColorSchema(**mc).name)
+            else:
+                colors.append("单品")
         categories = [g.category for g in garments]
 
         # Build item description
@@ -913,7 +971,9 @@ class OutfitRecommender3D:
         # 特色风格检测
         all_styles: Set[str] = set()
         for g in garments:
-            all_styles.update(g.style_tags)
+            tg = getattr(g, "style_tags", None) or []
+            if isinstance(tg, list):
+                all_styles.update(tg)
 
         style_highlights = {
             "简约": "简约风格，大方得体",

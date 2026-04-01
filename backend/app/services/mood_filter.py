@@ -2,10 +2,10 @@
 情绪筛选器 - 根据情绪推荐筛选衣橱单品
 """
 
-from typing import List, Tuple, Dict
-from app.services.mood_recommender import MoodRecommendation
+from typing import Dict, List, Tuple
 
 from app.core.logging import setup_logging
+from app.services.mood_recommender import MoodRecommendation
 
 logger = setup_logging()
 
@@ -22,11 +22,11 @@ class MoodFilter:
 
     # 颜色到基础分的映射
     COLOR_MATCH_WEIGHTS = {
-        1.0: 1.0,    # 完全匹配
-        0.8: 0.8,    # 高权重
-        0.6: 0.6,    # 中等
-        0.5: 0.4,    # 较低
-        0.4: 0.2,    # 最低
+        1.0: 1.0,  # 完全匹配
+        0.8: 0.8,  # 高权重
+        0.6: 0.6,  # 中等
+        0.5: 0.4,  # 较低
+        0.4: 0.2,  # 最低
     }
 
     def __init__(self):
@@ -142,16 +142,18 @@ class MoodFilter:
             cat = garment.category
             if cat not in by_category:
                 by_category[cat] = []
-            by_category[cat].append({
-                "garment_id": str(garment.garment_id),
-                "category": cat,
-                "main_color": garment.main_color,
-                "style_tags": garment.style_tags,
-                "image_url": garment.image_url,
-                "match_score": score_info["total_score"],
-                "color_score": score_info["color_score"],
-                "style_score": score_info["style_score"],
-            })
+            by_category[cat].append(
+                {
+                    "garment_id": str(garment.garment_id),
+                    "category": cat,
+                    "main_color": garment.main_color,
+                    "style_tags": garment.style_tags,
+                    "image_url": garment.image_url,
+                    "match_score": score_info["total_score"],
+                    "color_score": score_info["color_score"],
+                    "style_score": score_info["style_score"],
+                }
+            )
 
         # 生成建议
         suggestions = {
@@ -193,11 +195,13 @@ class MoodFilter:
             for cat in categories:
                 if cat in by_category and len(by_category[cat]) > i:
                     garment, score = by_category[cat][i]
-                    outfit["items"].append({
-                        "category": cat,
-                        "color": garment.main_color.get("name") if garment.main_color else None,
-                        "match_score": score["total_score"],
-                    })
+                    outfit["items"].append(
+                        {
+                            "category": cat,
+                            "color": garment.main_color.get("name") if garment.main_color else None,
+                            "match_score": score["total_score"],
+                        }
+                    )
 
             if outfit["items"]:
                 ideas.append(outfit)

@@ -34,8 +34,10 @@ logger = setup_logging()
 # Available models on HuggingFace:
 # - "timbeck7/SD-VTON" — Stable Diffusion Virtual Try-On
 # - "lllyasviel/sd-controlnet-openpose" — ControlNet for pose-guided try-on
-# - "stabilityai/stable-diffusion-2-inpainting" — SD 2.0 inpainting for garment swap
-SD_VTON_MODEL_ID = os.environ.get("SD_VTON_MODEL_ID", "stabilityai/stable-diffusion-2-inpainting")
+# - "stabilityai/stable-diffusion-2-inpainting" — SD 2.0 inpainting
+#   (often gated; requires HF auth + acceptance)
+# - "runwayml/stable-diffusion-inpainting" — public inpainting baseline (recommended default)
+SD_VTON_MODEL_ID = os.environ.get("SD_VTON_MODEL_ID", "runwayml/stable-diffusion-inpainting")
 
 # ControlNet model for pose/segmentation guidance
 CONTROLNET_MODEL_ID = os.environ.get("CONTROLNET_MODEL_ID", "lllyasviel/control_v11p_sd15_openpose")

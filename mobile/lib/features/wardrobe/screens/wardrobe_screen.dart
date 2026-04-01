@@ -1,13 +1,15 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
+
 import '../../../core/providers/auth_provider.dart';
 import '../../../core/providers/theme_provider.dart';
 import '../../../core/theme/fashion_palettes.dart';
+import '../../../core/utils/app_snackbar.dart';
+import '../../../core/utils/media_url.dart';
 import '../../../core/widgets/image_picker_section.dart';
 
-/// 我的衣橱
+/// 衣橱：左栏分类 + 右栏 4 列网格；长按 0.5s 拖动改分类 / 底部删除；数据以服务端为准。
 class WardrobeScreen extends StatefulWidget {
   const WardrobeScreen({super.key});
 
@@ -27,19 +29,17 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     _Cat('配饰', Icons.watch),
   ];
 
-  String? _chip;
+  String _chip = '全部';
   final _searchCtrl = TextEditingController();
   List<Map<String, dynamic>> _items = [];
   bool _loading = true;
   bool _editMode = false;
 
-  // 撤销（存储完整数据，含图片路径）
   Map<String, dynamic>? _lastDeletedItem;
 
   @override
   void initState() {
     super.initState();
-    _chip = '全部';
     _refresh();
   }
 
@@ -49,84 +49,19 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     super.dispose();
   }
 
-  /// 全量刷新：从后端拉数据
   Future<void> _refresh() async {
     setState(() => _loading = true);
     final auth = context.read<AuthProvider>();
     try {
-      final items = await auth.apiClient.getGarments();
-      if (items.isNotEmpty) {
-        _items = items;
-      } else {
-        _items = _demo();
-      }
+      _items = await auth.apiClient.getGarments();
     } catch (_) {
-      _items = _demo();
+      _items = [];
     }
     if (mounted) setState(() => _loading = false);
   }
 
-  List<Map<String, dynamic>> _demo() => [
-        {
-          'garment_id': '1',
-          'id': '1',
-          'category': '上衣',
-          'style_tags': '通勤、休闲',
-          'image_url': null
-        },
-        {
-          'garment_id': '2',
-          'id': '2',
-          'category': '上衣',
-          'style_tags': '复古、优雅',
-          'image_url': null
-        },
-        {
-          'garment_id': '3',
-          'id': '3',
-          'category': '裤子',
-          'style_tags': '简约、街头',
-          'image_url': null
-        },
-        {
-          'garment_id': '4',
-          'id': '4',
-          'category': '裙子',
-          'style_tags': '甜美、度假',
-          'image_url': null
-        },
-        {
-          'garment_id': '5',
-          'id': '5',
-          'category': '外套',
-          'style_tags': '通勤、正式',
-          'image_url': null
-        },
-        {
-          'garment_id': '6',
-          'id': '6',
-          'category': '鞋子',
-          'style_tags': '运动、休闲',
-          'image_url': null
-        },
-        {
-          'garment_id': '7',
-          'id': '7',
-          'category': '包包',
-          'style_tags': '商务、简约',
-          'image_url': null
-        },
-        {
-          'garment_id': '8',
-          'id': '8',
-          'category': '配饰',
-          'style_tags': '潮流、个性',
-          'image_url': null
-        },
-      ];
-
   String _gid(Map<String, dynamic> g) =>
-      (g['garment_id'] ?? g['id']).toString();
+      (g['item_id'] ?? g['garment_id'] ?? g['id'] ?? '').toString();
 
   String _cat(Map<String, dynamic> g) => g['category']?.toString() ?? '—';
 
@@ -134,15 +69,6 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     if (g['style_tags'] != null) return g['style_tags'].toString();
     if (g['styles'] is List) return (g['styles'] as List).join('、');
     return g['notes']?.toString() ?? '';
-  }
-
-  /// 获取图片 URL（优先级：image_url > image > local_path）
-  String? _imgUrl(Map<String, dynamic> g) {
-    final u = g['image_url']?.toString();
-    if (u != null && u.isNotEmpty) return u;
-    final i = g['image']?.toString();
-    if (i != null && i.isNotEmpty) return i;
-    return null;
   }
 
   bool _matchCat(String from, String to) {
@@ -165,7 +91,7 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     final q = _searchCtrl.text.trim().toLowerCase();
     return _items.where((g) {
       final c = _cat(g);
-      if (_chip != null && _chip != '全部' && !_matchCat(c, _chip!)) return false;
+      if (_chip != '全部' && !_matchCat(c, _chip)) return false;
       if (q.isNotEmpty) {
         return c.toLowerCase().contains(q) ||
             _styles(g).toLowerCase().contains(q) ||
@@ -181,9 +107,9 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     return _items.where((g) => _matchCat(_cat(g), cat)).length;
   }
 
-  /// 移动分类后全量刷新
   Future<void> _doMove(Map<String, dynamic> g, String newCat) async {
     final id = _gid(g);
+    if (id.isEmpty) return;
     final auth = context.read<AuthProvider>();
     try {
       await auth.apiClient.updateGarmentCategory(id, newCat);
@@ -192,8 +118,8 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     await _refresh();
   }
 
-  /// 删除（弹出确认）后全量刷新
   Future<void> _delete(Map<String, dynamic> g) async {
+    final auth = context.read<AuthProvider>();
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -214,40 +140,39 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     );
     if (confirmed != true) return;
 
-    _lastDeletedItem = Map.from(g);
-    _items.removeWhere((e) => _gid(e) == _gid(g));
-    setState(() {});
-    final auth = context.read<AuthProvider>();
+    _lastDeletedItem = Map<String, dynamic>.from(g);
+    final id = _gid(g);
     try {
-      await auth.apiClient.deleteGarment(_gid(g));
-    } catch (_) {}
+      await auth.apiClient.deleteGarment(id);
+    } catch (_) {
+      _lastDeletedItem = null;
+      if (mounted) {
+        showAppSnackBar(context, '删除失败，请重试');
+      }
+      return;
+    }
+    await _refresh();
     if (!mounted) return;
     ScaffoldMessenger.of(context).clearSnackBars();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: const Text('衣物已删除'),
-        backgroundColor: context.read<ThemeProvider>().palette.successColor,
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 5),
-        action: SnackBarAction(
-          label: '撤销',
-          textColor: Colors.white,
-          onPressed: _undoDelete,
-        ),
+    showAppSnackBar(
+      context,
+      '衣物已删除',
+      backgroundColor: context.read<ThemeProvider>().palette.successColor,
+      action: SnackBarAction(
+        label: '撤销',
+        textColor: Colors.white,
+        onPressed: _undoDelete,
       ),
     );
   }
 
-  /// 撤销：重新上传原衣物（包含图片路径）
   Future<void> _undoDelete() async {
     if (_lastDeletedItem == null) return;
     final item = Map<String, dynamic>.from(_lastDeletedItem!);
     _lastDeletedItem = null;
-
     final auth = context.read<AuthProvider>();
     final palette = context.read<ThemeProvider>().palette;
     try {
-      // 如果有本地图片路径，尝试重新上传
       final localPath = item['local_path']?.toString();
       if (localPath != null && localPath.isNotEmpty) {
         await auth.apiClient.addGarment(
@@ -255,28 +180,14 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
           category: _cat(item),
           style: _styles(item),
         );
-      } else {
-        // 无本地图片，仅记录（无法真实恢复图片）
-        // 重新添加条目到列表
-        _items.add(item);
-        setState(() {});
-        await _refresh();
-        return;
       }
+      await _refresh();
     } catch (_) {}
-
-    await _refresh();
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('已撤销'),
-          backgroundColor: palette.successColor,
-        ),
-      );
+      showAppSnackBar(context, '已尝试撤销', backgroundColor: palette.successColor);
     }
   }
 
-  // ─── 添加单件 ───────────────────────────────────────────────
   void _openAdd() {
     var picked = <XFile>[];
     String? selectedCat;
@@ -350,30 +261,98 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
   }
 
   Future<void> _uploadGarments(List<XFile> images, String? category) async {
+    if (images.isEmpty) return;
+    final progress = ValueNotifier<int>(0);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) {
+        final palette = context.read<ThemeProvider>().palette;
+        return ValueListenableBuilder<int>(
+          valueListenable: progress,
+          builder: (context, idx, _) {
+            return PopScope(
+              canPop: false,
+              child: AlertDialog(
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20)),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: 40,
+                      height: 40,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 3,
+                        color: palette.primary,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      '正在上传第 ${idx + 1} / ${images.length} 张',
+                      style: TextStyle(color: palette.textTitle, fontSize: 15),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 12),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(6),
+                      child: LinearProgressIndicator(
+                        value: (idx + 1) / images.length,
+                        minHeight: 6,
+                        backgroundColor:
+                            palette.primary.withValues(alpha: 0.15),
+                        color: palette.primary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
     final auth = context.read<AuthProvider>();
     final palette = context.read<ThemeProvider>().palette;
+    var ok = 0;
+    var lastErr = '';
     try {
-      for (final img in images) {
-        await auth.apiClient.addGarment(
-          imageFile: img,
+      for (var i = 0; i < images.length; i++) {
+        progress.value = i;
+        final r = await auth.apiClient.addGarment(
+          imageFile: images[i],
           category: category,
         );
+        if (r.containsKey('error')) {
+          lastErr = r['error'].toString();
+        } else {
+          ok++;
+        }
       }
-    } catch (_) {}
+    } finally {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+      progress.dispose();
+    }
+
     await _refresh();
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text('已上传 ${images.length} 件服饰'),
-            backgroundColor: palette.successColor),
+    if (!mounted) return;
+    if (ok > 0) {
+      showAppSnackBar(
+        context,
+        '成功上传 $ok 件${lastErr.isNotEmpty ? '（部分失败）' : ''}',
+        backgroundColor: palette.successColor,
       );
+    }
+    if (lastErr.isNotEmpty && ok < images.length) {
+      showAppSnackBar(context, '上传失败：${userFacingApiError(lastErr)}');
     }
   }
 
-  // ─── 整套上传 ───────────────────────────────────────────────
   void _openSplitUpload() {
     var picked = <XFile>[];
     var splitResult = <Map<String, dynamic>>[];
+    var splitBusy = false;
 
     showModalBottomSheet(
       context: context,
@@ -390,7 +369,7 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
               decoration: BoxDecoration(
                 color: Theme.of(ctx).scaffoldBackgroundColor,
                 borderRadius:
-                    const BorderRadius.vertical(top: Radius.circular(20)),
+                    const BorderRadius.vertical(top: Radius.circular(22)),
               ),
               child: Column(
                 children: [
@@ -399,8 +378,9 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                     width: 40,
                     height: 4,
                     decoration: BoxDecoration(
-                        color: Colors.grey.shade300,
-                        borderRadius: BorderRadius.circular(2)),
+                      color: Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
                   ),
                   Padding(
                     padding: const EdgeInsets.all(16),
@@ -414,7 +394,6 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                           TextButton(
                             onPressed: () async {
                               Navigator.pop(ctx);
-                              // 传入实际图片
                               await _saveSplit(splitResult,
                                   picked.isNotEmpty ? picked.first : null);
                             },
@@ -424,83 +403,148 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                     ),
                   ),
                   Expanded(
-                    child: splitResult.isEmpty
+                    child: splitBusy
                         ? Center(
                             child: Column(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                ImagePickerSection(
-                                  images: picked,
-                                  onImagesChanged: (list) async {
-                                    picked = List.from(list);
-                                    setModal(() {});
-                                    if (picked.isNotEmpty) {
-                                      final auth = context.read<AuthProvider>();
-                                      try {
-                                        final raw = await auth.apiClient
-                                            .splitOutfitImage(
-                                          imageFile: picked.first,
-                                          save: false,
-                                        );
-                                        if (raw is List && raw.isNotEmpty) {
-                                          splitResult = raw
-                                              .map((e) =>
-                                                  Map<String, dynamic>.from(
-                                                      e as Map))
-                                              .toList();
-                                        }
-                                      } catch (_) {
-                                        // 演示数据
-                                        splitResult = [
-                                          {'category': '上衣', 'selected': true},
-                                          {'category': '裤子', 'selected': true},
-                                          {'category': '鞋子', 'selected': true},
-                                        ];
-                                      }
-                                      setModal(() {});
-                                    }
-                                  },
-                                  maxImages: 1,
-                                  hintText: '上传整套穿搭图片',
-                                  allowMultiple: false,
+                                SizedBox(
+                                  width: 44,
+                                  height: 44,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 3,
+                                    color: palette.primary,
+                                  ),
                                 ),
-                                const SizedBox(height: 12),
-                                Text('上传一张全身照，AI 自动识别并拆分为多件单品',
+                                const SizedBox(height: 16),
+                                Text(
+                                  '正在拆分整套图…',
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w600,
+                                    color: palette.textTitle,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 32),
+                                  child: Text(
+                                    '首次拆分需上传并识别，请稍候',
+                                    textAlign: TextAlign.center,
                                     style: TextStyle(
-                                        fontSize: 12,
-                                        color: Colors.grey.shade600)),
+                                        fontSize: 13, color: palette.textBody),
+                                  ),
+                                ),
                               ],
                             ),
                           )
-                        : ListView.builder(
-                            controller: scrollCtrl,
-                            padding: const EdgeInsets.symmetric(horizontal: 16),
-                            itemCount: splitResult.length,
-                            itemBuilder: (_, i) {
-                              final item = splitResult[i];
-                              return Card(
-                                margin: const EdgeInsets.only(bottom: 8),
-                                child: CheckboxListTile(
-                                  value: item['selected'] != false,
-                                  onChanged: (v) =>
-                                      setModal(() => item['selected'] = v),
-                                  title: Text(
-                                      item['category']?.toString() ?? '单品'),
-                                  secondary: Container(
-                                    width: 48,
-                                    height: 48,
-                                    decoration: BoxDecoration(
-                                      color: palette.primary
-                                          .withValues(alpha: 0.1),
-                                      borderRadius: BorderRadius.circular(8),
+                        : splitResult.isEmpty
+                            ? Center(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    ImagePickerSection(
+                                      images: picked,
+                                      onImagesChanged: (list) async {
+                                        picked = List.from(list);
+                                        setModal(() {});
+                                        if (picked.isNotEmpty) {
+                                          splitBusy = true;
+                                          setModal(() {});
+                                          final auth =
+                                              context.read<AuthProvider>();
+                                          try {
+                                            final raw = await auth.apiClient
+                                                .splitOutfitImage(
+                                              imageFile: picked.first,
+                                              save: false,
+                                            );
+                                            if (raw is List && raw.isNotEmpty) {
+                                              splitResult = raw
+                                                  .map((e) =>
+                                                      Map<String, dynamic>.from(
+                                                          e as Map))
+                                                  .toList();
+                                            } else if (raw is Map) {
+                                              if (raw['error'] != null) {
+                                                if (ctx.mounted) {
+                                                  showAppSnackBar(
+                                                    ctx,
+                                                    '拆分失败：${userFacingApiError(raw['error'])}',
+                                                  );
+                                                }
+                                              } else if (raw['items'] is List &&
+                                                  (raw['items'] as List)
+                                                      .isNotEmpty) {
+                                                splitResult = (raw['items']
+                                                        as List)
+                                                    .map((e) => Map<String,
+                                                        dynamic>.from(e as Map))
+                                                    .toList();
+                                              }
+                                            }
+                                          } catch (e) {
+                                            if (ctx.mounted) {
+                                              showAppSnackBar(
+                                                ctx,
+                                                '拆分失败：${userFacingApiError(e)}',
+                                              );
+                                            }
+                                          } finally {
+                                            splitBusy = false;
+                                          }
+                                          setModal(() {});
+                                        }
+                                      },
+                                      maxImages: 1,
+                                      hintText: '上传整套穿搭图片',
+                                      allowMultiple: false,
                                     ),
-                                    child: Icon(Icons.checkroom,
-                                        color: palette.primary),
-                                  ),
+                                    const SizedBox(height: 12),
+                                    Text(
+                                      '上传一张全身照，AI 自动识别并拆分为多件单品',
+                                      style: TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.grey.shade600),
+                                    ),
+                                  ],
                                 ),
-                              );
-                            },
-                          ),
+                              )
+                            : ListView.builder(
+                                controller: scrollCtrl,
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 16),
+                                itemCount: splitResult.length,
+                                itemBuilder: (_, i) {
+                                  final item = splitResult[i];
+                                  return Card(
+                                    margin: const EdgeInsets.only(bottom: 8),
+                                    shape: RoundedRectangleBorder(
+                                        borderRadius:
+                                            BorderRadius.circular(18)),
+                                    child: CheckboxListTile(
+                                      value: item['selected'] != false,
+                                      onChanged: (v) =>
+                                          setModal(() => item['selected'] = v),
+                                      title: Text(
+                                          item['category']?.toString() ?? '单品'),
+                                      secondary: Container(
+                                        width: 48,
+                                        height: 48,
+                                        decoration: BoxDecoration(
+                                          color: palette.primary
+                                              .withValues(alpha: 0.1),
+                                          borderRadius:
+                                              BorderRadius.circular(12),
+                                        ),
+                                        child: Icon(Icons.checkroom,
+                                            color: palette.primary),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
                   ),
                 ],
               ),
@@ -511,68 +555,108 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     );
   }
 
-  /// 保存拆分结果（传入实际图片）
   Future<void> _saveSplit(
       List<Map<String, dynamic>> parts, dynamic imageFile) async {
     final selected = parts.where((p) => p['selected'] != false).toList();
-    if (selected.isEmpty) return;
+    if (selected.isEmpty || imageFile == null) return;
+    final indexes = <int>[];
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i]['selected'] != false) indexes.add(i);
+    }
     final auth = context.read<AuthProvider>();
     final palette = context.read<ThemeProvider>().palette;
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) {
+        return PopScope(
+          canPop: false,
+          child: AlertDialog(
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            content: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 40,
+                  height: 40,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3,
+                    color: palette.primary,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Text(
+                    '正在拆分并保存到衣橱…\n'
+                    '将对每件勾选单品做识别与入库，耗时取决于设备与后端，请耐心等待（最长约 3 分钟）。',
+                    style: TextStyle(
+                        color: palette.textTitle, height: 1.4, fontSize: 14),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
     try {
-      // 调用拆分 API，传入实际图片
-      await auth.apiClient.splitOutfitImage(
+      final raw = await auth.apiClient.splitOutfitImage(
         imageFile: imageFile,
         save: true,
+        selectedIndexes: indexes,
       );
-    } catch (_) {}
-    await _refresh();
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text('已保存 ${selected.length} 件单品到衣橱'),
-            backgroundColor: palette.successColor),
-      );
+      if (raw is Map && raw['error'] != null) {
+        if (mounted) {
+          showAppSnackBar(context, '保存失败：${userFacingApiError(raw['error'])}');
+        }
+        return;
+      }
+      var savedCount = 0;
+      if (raw is Map) {
+        final items = raw['items'];
+        if (items is List) {
+          for (final e in items) {
+            if (e is Map) {
+              final gid = e['garment_id'];
+              if (gid != null && gid.toString().isNotEmpty) savedCount++;
+            }
+          }
+        }
+      }
+      await _refresh();
+      if (!mounted) return;
+      if (savedCount > 0) {
+        showAppSnackBar(
+          context,
+          '已将 $savedCount 件拆分单品保存到衣橱',
+          backgroundColor: palette.successColor,
+        );
+      } else {
+        showAppSnackBar(
+          context,
+          '未能写入衣橱（服务端未返回 garment_id）。请热重载/更新应用后重试；若仍失败请查看后端日志。',
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        showAppSnackBar(context, '保存失败：${userFacingApiError(e)}');
+      }
+      return;
+    } finally {
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
     }
   }
 
-  // ─── 分类操作菜单 ───────────────────────────────────────────────
-  void _showItemMenu(BuildContext ctx, Map<String, dynamic> g) {
-    final palette = context.read<ThemeProvider>().palette;
-    showModalBottomSheet(
-      context: ctx,
-      builder: (ctx2) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: Icon(Icons.delete_outline, color: palette.deleteColor),
-              title: Text('删除', style: TextStyle(color: palette.deleteColor)),
-              onTap: () {
-                Navigator.pop(ctx2);
-                _delete(g);
-              },
-            ),
-            const Divider(),
-            ..._cats.where((c) => c.name != '全部').map((c) => ListTile(
-                  leading: Icon(c.icon, color: palette.textTitle),
-                  title: Text('移动到 ${c.name}',
-                      style: TextStyle(color: palette.textTitle)),
-                  onTap: () {
-                    Navigator.pop(ctx2);
-                    _doMove(g, c.name);
-                  },
-                )),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ─── Build ───────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     final palette = context.watch<ThemeProvider>().palette;
     final filtered = _filtered;
+    final auth = context.watch<AuthProvider>();
 
     return Scaffold(
       backgroundColor: palette.background,
@@ -583,10 +667,13 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
         surfaceTintColor: Colors.transparent,
         foregroundColor: palette.textTitle,
         actions: [
-          IconButton(
-            icon: Icon(_editMode ? Icons.check : Icons.edit, size: 22),
-            onPressed: () => setState(() => _editMode = !_editMode),
-          ),
+          if (_editMode)
+            TextButton(
+              onPressed: () => setState(() => _editMode = false),
+              child: Text('完成',
+                  style: TextStyle(
+                      color: palette.primary, fontWeight: FontWeight.w700)),
+            ),
           IconButton(
             icon: const Icon(Icons.refresh, size: 22),
             onPressed: _loading ? null : _refresh,
@@ -595,14 +682,13 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
       ),
       body: Column(
         children: [
-          // 搜索栏
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
             child: TextField(
               controller: _searchCtrl,
               onChanged: (_) => setState(() {}),
               decoration: InputDecoration(
-                hintText: '搜索衣橱...（品类 / 风格 / 颜色 / 场景）',
+                hintText: '搜索品类、风格、颜色、场景',
                 hintStyle: TextStyle(fontSize: 13, color: palette.textBody),
                 prefixIcon: Icon(Icons.search, color: palette.textBody),
                 suffixIcon: _searchCtrl.text.isNotEmpty
@@ -611,17 +697,21 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                         onPressed: () {
                           _searchCtrl.clear();
                           setState(() {});
-                        })
+                        },
+                      )
                     : null,
                 border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    borderSide: BorderSide(color: palette.divider)),
+                  borderRadius: BorderRadius.circular(20),
+                  borderSide: BorderSide(color: palette.divider),
+                ),
                 enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    borderSide: BorderSide(color: palette.divider)),
+                  borderRadius: BorderRadius.circular(20),
+                  borderSide: BorderSide(color: palette.divider),
+                ),
                 focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    borderSide: BorderSide(color: palette.primary, width: 1.5)),
+                  borderRadius: BorderRadius.circular(20),
+                  borderSide: BorderSide(color: palette.primary, width: 1.5),
+                ),
                 filled: true,
                 fillColor: palette.surface,
                 contentPadding:
@@ -629,15 +719,10 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
               ),
             ),
           ),
-
-          // 左右分栏
           Expanded(
             child: Row(
               children: [
-                // 左侧分类栏
                 _buildLeftBar(palette),
-
-                // 右侧网格
                 Expanded(
                   child: Stack(
                     children: [
@@ -648,17 +733,23 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                           : filtered.isEmpty
                               ? Center(
                                   child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(Icons.checkroom_outlined,
-                                        size: 52, color: palette.textBody),
-                                    const SizedBox(height: 12),
-                                    Text('未找到相关衣物，换个关键词试试~',
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.checkroom_outlined,
+                                          size: 52, color: palette.textBody),
+                                      const SizedBox(height: 12),
+                                      Text(
+                                        _items.isEmpty
+                                            ? '衣橱还是空的，点击右下角添加或整套上传'
+                                            : '未找到相关衣物，换个关键词试试',
+                                        textAlign: TextAlign.center,
                                         style: TextStyle(
                                             color: palette.textBody,
-                                            fontSize: 14)),
-                                  ],
-                                ))
+                                            fontSize: 14),
+                                      ),
+                                    ],
+                                  ),
+                                )
                               : GridView.builder(
                                   padding: const EdgeInsets.all(12),
                                   gridDelegate:
@@ -671,29 +762,30 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                                   itemCount: filtered.length,
                                   itemBuilder: (ctx, i) {
                                     final g = filtered[i];
+                                    final id = _gid(g);
                                     return _GarmentCard(
-                                      key: ValueKey(_gid(g)),
+                                      key: ValueKey('wardrobe_$id'),
                                       g: g,
                                       palette: palette,
+                                      apiBase: auth.apiClient.baseUrl,
                                       editMode: _editMode,
-                                      onLongPress: () {
-                                        setState(() => _editMode = true);
-                                        _showItemMenu(ctx, g);
-                                      },
-                                      onDelete: () => _delete(g),
-                                      onMove: (cat) => _doMove(g, cat),
+                                      onDragStarted: () =>
+                                          setState(() => _editMode = true),
+                                      onDragEnd: () =>
+                                          setState(() => _editMode = false),
+                                      onDelete: _delete,
                                     );
                                   },
                                 ),
-
-                      // 删除区
                       if (_editMode)
                         Positioned(
                           bottom: 0,
                           left: 0,
                           right: 0,
                           child: _DeleteZone(
-                              palette: palette, onDelete: (g) => _delete(g)),
+                            palette: palette,
+                            onDelete: _delete,
+                          ),
                         ),
                     ],
                   ),
@@ -727,59 +819,78 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
   }
 
   Widget _buildLeftBar(Palette palette) {
-    return DragTarget<Map<String, dynamic>>(
-      onWillAcceptWithDetails: (_) => true,
-      onAcceptWithDetails: (d) {
-        final g = d.data;
-        final targetCats = _cats.where((c) => c.name != '全部').toList();
-        if (targetCats.isNotEmpty) _doMove(g, targetCats.first.name);
-      },
-      builder: (ctx, cand, rej) => Container(
-        width: 76,
-        color: cand.isNotEmpty
-            ? palette.primary.withValues(alpha: 0.12)
-            : palette.surface,
-        child: ListView.builder(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          itemCount: _cats.length,
-          itemBuilder: (ctx, i) {
-            final c = _cats[i];
-            final sel = (_chip == c.name) || (_chip == null && c.name == '全部');
+    return Container(
+      width: 88,
+      color: palette.surface,
+      child: ListView.builder(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        itemCount: _cats.length,
+        itemBuilder: (ctx, i) {
+          final c = _cats[i];
+          final sel = _chip == c.name;
+          if (c.name == '全部') {
             return GestureDetector(
-              onTap: () =>
-                  setState(() => _chip = c.name == '全部' ? null : c.name),
-              child: Container(
-                width: 76,
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                decoration: BoxDecoration(
-                  color: sel ? palette.primary.withValues(alpha: 0.12) : null,
-                  border: sel
-                      ? Border(
-                          bottom: BorderSide(color: palette.primary, width: 2))
-                      : null,
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(c.icon,
-                        size: 22,
-                        color: sel ? palette.primary : palette.textBody),
-                    const SizedBox(height: 4),
-                    Text(c.name,
-                        style: TextStyle(
-                            fontSize: 11,
-                            color: sel ? palette.primary : palette.textBody,
-                            fontWeight:
-                                sel ? FontWeight.bold : FontWeight.normal)),
-                    Text('${_catCount(c.name)}',
-                        style:
-                            TextStyle(fontSize: 10, color: palette.textBody)),
-                  ],
-                ),
-              ),
+              onTap: () => setState(() => _chip = '全部'),
+              child: _catCell(c, sel, palette, null),
             );
-          },
-        ),
+          }
+          return DragTarget<Map<String, dynamic>>(
+            onWillAcceptWithDetails: (_) => true,
+            onAcceptWithDetails: (d) => _doMove(d.data, c.name),
+            builder: (ctx, cand, _) {
+              final highlight = cand.isNotEmpty;
+              return GestureDetector(
+                onTap: () => setState(() => _chip = c.name),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  decoration: BoxDecoration(
+                    color: highlight
+                        ? palette.primary.withValues(alpha: 0.2)
+                        : sel
+                            ? palette.primary.withValues(alpha: 0.12)
+                            : null,
+                    border: Border(
+                      bottom: BorderSide(color: palette.divider),
+                    ),
+                  ),
+                  child: _catCell(c, sel, palette, highlight),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _catCell(_Cat c, bool sel, Palette palette, bool? dragHighlight) {
+    return Container(
+      width: 88,
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            c.icon,
+            size: 22,
+            color: dragHighlight == true
+                ? palette.primary
+                : (sel ? palette.primary : palette.textBody),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            c.name,
+            style: TextStyle(
+              fontSize: 11,
+              color: sel ? palette.primary : palette.textBody,
+              fontWeight: sel ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+          Text(
+            '${_catCount(c.name)}',
+            style: TextStyle(fontSize: 10, color: palette.textBody),
+          ),
+        ],
       ),
     );
   }
@@ -794,127 +905,108 @@ class _Cat {
 class _GarmentCard extends StatelessWidget {
   final Map<String, dynamic> g;
   final Palette palette;
+  final String apiBase;
   final bool editMode;
-  final VoidCallback onLongPress;
-  final VoidCallback onDelete;
-  final void Function(String cat) onMove;
+  final VoidCallback onDragStarted;
+  final VoidCallback onDragEnd;
+  final Future<void> Function(Map<String, dynamic>) onDelete;
 
   const _GarmentCard({
     super.key,
     required this.g,
     required this.palette,
+    required this.apiBase,
     required this.editMode,
-    required this.onLongPress,
+    required this.onDragStarted,
+    required this.onDragEnd,
     required this.onDelete,
-    required this.onMove,
   });
 
-  String? get _imgUrl {
-    final u = g['image_url']?.toString();
-    if (u != null && u.isNotEmpty) return u;
-    final i = g['image']?.toString();
-    if (i != null && i.isNotEmpty) return i;
-    return null;
+  String? _resolvedUrl() {
+    final raw = g['image_url']?.toString() ?? g['image']?.toString();
+    return resolveGarmentImageUrl(raw, apiBase);
   }
 
   @override
   Widget build(BuildContext context) {
-    return LongPressDraggable<Map<String, dynamic>>(
-      data: g,
-      feedback: Material(
-        elevation: 8,
-        borderRadius: BorderRadius.circular(12),
-        child: Opacity(
-          opacity: 0.75,
-          child: Transform.scale(
-            scale: 1.08,
-            child: SizedBox(width: 90, height: 90, child: _buildCard()),
-          ),
-        ),
-      ),
-      childWhenDragging: Opacity(opacity: 0.3, child: _buildCard()),
-      delay: const Duration(milliseconds: 500),
-      child: GestureDetector(
-        onLongPress: onLongPress,
-        child: _buildCard(),
-      ),
-    );
-  }
+    final url = _resolvedUrl();
 
-  Widget _buildCard() {
-    final url = _imgUrl;
-    final hasImg = url != null;
-    final catLabel = g['category']?.toString() ?? '';
-
-    return Card(
-      elevation: 0,
-      margin: EdgeInsets.zero,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: palette.divider),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          // 图片（优先网络 URL，再本地路径）
-          if (hasImg)
-            Image.network(
-              url!,
+    Widget cardFace = ClipRRect(
+      borderRadius: BorderRadius.circular(18),
+      child: url != null && url.isNotEmpty
+          ? Image.network(
+              url,
               fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => _placeholder,
-              loadingBuilder: (_, child, progress) {
-                if (progress == null) return child;
+              width: double.infinity,
+              height: double.infinity,
+              errorBuilder: (_, __, ___) => _placeholder(),
+              loadingBuilder: (_, child, prog) {
+                if (prog == null) return child;
                 return Container(
-                  color: palette.primary.withValues(alpha: 0.05),
-                  child: const Center(
-                      child: CircularProgressIndicator(strokeWidth: 2)),
+                  color: palette.primary.withValues(alpha: 0.06),
+                  child: Center(
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: palette.primary),
+                  ),
                 );
               },
             )
-          else
-            _placeholder,
+          : _placeholder(),
+    );
 
-          // 分类标签
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 6),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                    begin: Alignment.bottomCenter,
-                    end: Alignment.topCenter,
-                    colors: [Colors.black54, Colors.transparent]),
-              ),
-              child: Text(catLabel,
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.center),
+    if (editMode) {
+      cardFace = Opacity(
+        opacity: 0.88,
+        child: Transform.scale(scale: 0.96, child: cardFace),
+      );
+    }
+
+    return LongPressDraggable<Map<String, dynamic>>(
+      data: g,
+      delay: const Duration(milliseconds: 500),
+      onDragStarted: onDragStarted,
+      onDragEnd: (_) => onDragEnd(),
+      onDraggableCanceled: (_, __) => onDragEnd(),
+      feedback: Material(
+        elevation: 10,
+        borderRadius: BorderRadius.circular(18),
+        child: Opacity(
+          opacity: 0.85,
+          child: SizedBox(
+            width: 88,
+            height: 88,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(18),
+              child: url != null && url.isNotEmpty
+                  ? Image.network(url, fit: BoxFit.cover)
+                  : _placeholder(),
             ),
           ),
-        ],
+        ),
+      ),
+      childWhenDragging: Opacity(opacity: 0.35, child: cardFace),
+      child: Card(
+        elevation: 0,
+        margin: EdgeInsets.zero,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+          side: BorderSide(color: palette.divider),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: cardFace,
       ),
     );
   }
 
-  Widget get _placeholder => Container(
-        decoration:
-            BoxDecoration(color: palette.primary.withValues(alpha: 0.1)),
-        child: Center(
-          child: Icon(Icons.checkroom, size: 28, color: palette.primary),
-        ),
+  Widget _placeholder() => Container(
+        color: palette.primary.withValues(alpha: 0.08),
+        child: Icon(Icons.checkroom, size: 32, color: palette.primary),
       );
 }
 
 class _DeleteZone extends StatelessWidget {
   final Palette palette;
-  final void Function(Map<String, dynamic>) onDelete;
+  final Future<void> Function(Map<String, dynamic>) onDelete;
 
   const _DeleteZone({required this.palette, required this.onDelete});
 
@@ -923,20 +1015,21 @@ class _DeleteZone extends StatelessWidget {
     return DragTarget<Map<String, dynamic>>(
       onWillAcceptWithDetails: (_) => true,
       onAcceptWithDetails: (d) => onDelete(d.data),
-      builder: (ctx, cand, rej) => AnimatedContainer(
+      builder: (ctx, cand, _) => AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        height: 60,
+        height: 64,
         margin: const EdgeInsets.all(12),
         decoration: BoxDecoration(
           color: cand.isNotEmpty ? Colors.red.shade400 : palette.deleteBg,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(22),
           border: cand.isNotEmpty
-              ? Border.all(color: Colors.red.shade600, width: 2)
+              ? Border.all(color: Colors.red.shade700, width: 2)
               : null,
+          boxShadow: palette.cardShadows,
         ),
         child: Center(
           child: Text(
-            cand.isNotEmpty ? '松开删除' : '拖到这里删除',
+            cand.isNotEmpty ? '松开确认删除' : '拖到此处删除',
             style: const TextStyle(
                 color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
           ),

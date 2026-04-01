@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
@@ -29,15 +28,29 @@ class ApiClient {
     return h;
   }
 
-  // ─── 工具方法 ───────────────────────────────────────────────────
+  // ─── 工具：Web / 移动端统一用字节上传（避免 MultipartFile.fromPath 在 Web 不可用）──
 
-  /// 解析多种图片类型，返回本地路径字符串
-  String? _resolvePath(dynamic imageFile) {
+  static Future<http.MultipartFile?> _multipartImage(
+    String fieldName,
+    dynamic imageFile,
+  ) async {
     if (imageFile == null) return null;
-    if (imageFile is XFile) return imageFile.path;
-    if (imageFile is File) return imageFile.path;
-    if (imageFile is String) return imageFile;
-    return null;
+    final XFile xf;
+    if (imageFile is XFile) {
+      xf = imageFile;
+    } else if (imageFile is String) {
+      xf = XFile(imageFile);
+    } else {
+      return null;
+    }
+    final bytes = await xf.readAsBytes();
+    final name = xf.name;
+    return http.MultipartFile.fromBytes(
+      fieldName,
+      bytes,
+      filename: name.isNotEmpty ? name : 'upload.jpg',
+      contentType: MediaType('image', 'jpeg'),
+    );
   }
 
   // ─── JSON 请求 ──────────────────────────────────────────────────
@@ -95,8 +108,11 @@ class ApiClient {
         Uri.parse('$baseUrl$path'),
         headers: _jsonHeaders,
       );
-      if (response.statusCode == 200) {
-        return json.decode(response.body);
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        if (response.body.isEmpty) {
+          return <String, dynamic>{};
+        }
+        return json.decode(response.body) as Map<String, dynamic>;
       }
       return {'error': 'Request failed with status: ${response.statusCode}'};
     } catch (e) {
@@ -112,8 +128,11 @@ class ApiClient {
         headers: _jsonHeaders,
         body: json.encode(data),
       );
-      if (response.statusCode == 200) {
-        return json.decode(response.body);
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        if (response.body.isEmpty) {
+          return <String, dynamic>{};
+        }
+        return json.decode(response.body) as Map<String, dynamic>;
       }
       return {'error': 'Request failed with status: ${response.statusCode}'};
     } catch (e) {
@@ -162,6 +181,21 @@ class ApiClient {
     return post('/profile/', data);
   }
 
+  // ─── 情绪穿搭（后端已有色彩心理学 + 衣橱匹配）────────────────────
+  Future<Map<String, dynamic>> recommendByMood({
+    required String mood,
+    bool includeWardrobe = true,
+  }) {
+    return post('/mood/recommend', {
+      'mood': mood,
+      'include_wardrobe': includeWardrobe,
+    });
+  }
+
+  Future<dynamic> getMoodQuickRecall() async {
+    return getList('/mood/quick-recall');
+  }
+
   // ─── 衣橱：衣物上传 ─────────────────────────────────────────────
   // 后端路由: POST /wardrobe/simple/garments
   // 后端字段: file=UploadFile, notes=Optional[str]
@@ -183,15 +217,11 @@ class ApiClient {
       request.headers.addAll(_authHeaders);
 
       if (imageFile != null) {
-        final path = _resolvePath(imageFile);
-        if (path == null) {
+        final part = await _multipartImage('file', imageFile);
+        if (part == null) {
           return {'error': 'Unsupported image type: ${imageFile.runtimeType}'};
         }
-        request.files.add(await http.MultipartFile.fromPath(
-          'file',
-          path,
-          contentType: MediaType('image', 'jpeg'),
-        ));
+        request.files.add(part);
       }
 
       if (category != null) request.fields['category'] = category;
@@ -267,13 +297,13 @@ class ApiClient {
   }
 
   Future<Map<String, dynamic>> deleteGarment(String garmentId) async {
-    return delete('/wardrobe/simple/garments/$garmentId/');
+    return delete('/wardrobe/simple/garments/$garmentId');
   }
 
   Future<Map<String, dynamic>> updateGarmentCategory(
       String garmentId, String category) async {
     return patch(
-        '/wardrobe/simple/garments/$garmentId/', {'category': category});
+        '/wardrobe/simple/garments/$garmentId', {'category': category});
   }
 
   // ─── 衣橱：整套拆分上传 ─────────────────────────────────────────
@@ -293,22 +323,20 @@ class ApiClient {
       request.headers.addAll(_authHeaders);
 
       if (imageFile != null) {
-        final path = _resolvePath(imageFile);
-        if (path == null) return {'error': 'Unsupported image type'};
-        request.files.add(await http.MultipartFile.fromPath(
-          'file',
-          path,
-          contentType: MediaType('image', 'jpeg'),
-        ));
+        final part = await _multipartImage('file', imageFile);
+        if (part == null) return {'error': 'Unsupported image type'};
+        request.files.add(part);
       }
 
+      // 与 FastAPI Form 字段对应（勿用 Query + 仅写 form body，否则 save 无法绑定）
       request.fields['save'] = save.toString();
       if (selectedIndexes != null && selectedIndexes.isNotEmpty) {
         request.fields['selected_indexes'] = selectedIndexes.join(',');
       }
 
+      // 拆分预览或 save=true 时后端会对每块裁剪跑 CLIP + 配色 + 入库，CPU 环境易超过 60s
       final streamedResponse = await request.send().timeout(
-            const Duration(seconds: 60),
+            const Duration(seconds: 180),
           );
       final response = await http.Response.fromStream(streamedResponse);
 
@@ -336,13 +364,9 @@ class ApiClient {
       request.headers.addAll(_authHeaders);
 
       if (imageFile != null) {
-        final path = _resolvePath(imageFile);
-        if (path == null) return {'error': 'Unsupported image type'};
-        request.files.add(await http.MultipartFile.fromPath(
-          'file',
-          path,
-          contentType: MediaType('image', 'jpeg'),
-        ));
+        final part = await _multipartImage('file', imageFile);
+        if (part == null) return {'error': 'Unsupported image type'};
+        request.files.add(part);
       }
 
       final streamedResponse = await request.send().timeout(
@@ -380,13 +404,9 @@ class ApiClient {
       request.headers.addAll(_authHeaders);
 
       if (imageFile != null) {
-        final path = _resolvePath(imageFile);
-        if (path == null) return {'error': 'Unsupported image type'};
-        request.files.add(await http.MultipartFile.fromPath(
-          'file',
-          path,
-          contentType: MediaType('image', 'jpeg'),
-        ));
+        final part = await _multipartImage('file', imageFile);
+        if (part == null) return {'error': 'Unsupported image type'};
+        request.files.add(part);
       }
 
       request.fields['num_outfits'] = numOutfits.toString();
@@ -440,13 +460,9 @@ class ApiClient {
       request.headers.addAll(_authHeaders);
 
       if (imageFile != null) {
-        final path = _resolvePath(imageFile);
-        if (path == null) return {'error': 'Unsupported image type'};
-        request.files.add(await http.MultipartFile.fromPath(
-          'file',
-          path,
-          contentType: MediaType('image', 'jpeg'),
-        ));
+        final part = await _multipartImage('file', imageFile);
+        if (part == null) return {'error': 'Unsupported image type'};
+        request.files.add(part);
       }
 
       if (scene != null) request.fields['scene'] = scene;
@@ -473,12 +489,14 @@ class ApiClient {
 
   // ─── 分析：虚拟试衣 ───────────────────────────────────────────────
   // 后端路由: POST /tryon/garment
-  // 后端字段: garment_file=UploadFile, person_file=UploadFile, model_gender=str
+  // 后端字段: garment_file=UploadFile, person_file=UploadFile, prompt=str, model_gender=str
 
   Future<Map<String, dynamic>> virtualTryon({
     dynamic garmentImage,
     dynamic personImage,
-    int numResults = 3,
+    String? prompt,
+    String modelGender = 'neutral',
+    Duration timeout = const Duration(seconds: 180),
   }) async {
     try {
       final request = http.MultipartRequest(
@@ -488,29 +506,24 @@ class ApiClient {
       request.headers.addAll(_authHeaders);
 
       if (garmentImage != null) {
-        final path = _resolvePath(garmentImage);
-        if (path == null) return {'error': 'Unsupported garment image type'};
-        request.files.add(await http.MultipartFile.fromPath(
-          'garment_file',
-          path,
-          contentType: MediaType('image', 'jpeg'),
-        ));
+        final part = await _multipartImage('garment_file', garmentImage);
+        if (part == null) return {'error': 'Unsupported garment image type'};
+        request.files.add(part);
       }
 
       if (personImage != null) {
-        final path = _resolvePath(personImage);
-        if (path == null) return {'error': 'Unsupported person image type'};
-        request.files.add(await http.MultipartFile.fromPath(
-          'person_file',
-          path,
-          contentType: MediaType('image', 'jpeg'),
-        ));
+        final part = await _multipartImage('person_file', personImage);
+        if (part == null) return {'error': 'Unsupported person image type'};
+        request.files.add(part);
       }
 
-      request.fields['model_gender'] = 'neutral';
+      request.fields['model_gender'] = modelGender;
+      if (prompt != null && prompt.trim().isNotEmpty) {
+        request.fields['prompt'] = prompt.trim();
+      }
 
       final streamedResponse = await request.send().timeout(
-            const Duration(seconds: 120),
+            timeout,
           );
       final response = await http.Response.fromStream(streamedResponse);
 

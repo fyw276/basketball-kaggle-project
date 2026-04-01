@@ -11,7 +11,6 @@ Note: Tests marked with @pytest.mark.slow may take longer due to model loading.
 Run with: pytest -m "not slow" to skip slow tests
 """
 
-import asyncio
 import time
 from io import BytesIO
 

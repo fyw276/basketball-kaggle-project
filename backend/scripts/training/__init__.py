@@ -10,8 +10,8 @@
 - data_annotator: 数据标注工具
 """
 
-from .data_preprocessor import DataPreprocessor
 from .clip_finetuner import CLIPFineTuner
+from .data_preprocessor import DataPreprocessor
 from .trainer_registry import TrainerRegistry
 
 __all__ = [

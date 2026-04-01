@@ -29,7 +29,7 @@ class AppTheme {
         color: p.cardBg,
         elevation: 0,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(22),
           side: BorderSide(color: p.divider),
         ),
       ),
@@ -41,7 +41,7 @@ class AppTheme {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
       inputDecorationTheme: InputDecorationTheme(
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(18)),
         filled: true,
         fillColor: p.searchBg,
       ),
@@ -49,7 +49,7 @@ class AppTheme {
         backgroundColor: p.chipUnselectedBg,
         selectedColor: p.chipSelectedBg,
         labelStyle: TextStyle(color: p.textTitle),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
       ),
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: p.surface,
@@ -73,8 +73,10 @@ class AppTheme {
         style: FilledButton.styleFrom(
           backgroundColor: p.primary,
           foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+          minimumSize: const Size(0, 52),
           shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
         ),
       ),
       textButtonTheme: TextButtonThemeData(
@@ -84,9 +86,14 @@ class AppTheme {
         style: OutlinedButton.styleFrom(
           foregroundColor: p.primary,
           side: BorderSide(color: p.primary),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
           shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
         ),
+      ),
+      snackBarTheme: SnackBarThemeData(
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
     );
   }
@@ -98,6 +105,9 @@ class AppTheme {
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF6366F1),
           brightness: Brightness.dark,
+        ),
+        snackBarTheme: const SnackBarThemeData(
+          behavior: SnackBarBehavior.floating,
         ),
       );
 }

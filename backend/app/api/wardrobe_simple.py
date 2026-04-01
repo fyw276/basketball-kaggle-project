@@ -2,9 +2,11 @@
 Simplified wardrobe API for easier frontend integration
 """
 
+import io
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from PIL import Image
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
@@ -64,13 +66,6 @@ async def upload_garment_simple(
 
     No manual input required - everything is automatic!
     """
-    # Validate file type
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File must be an image (JPEG, PNG, WebP)",
-        )
-
     try:
         # Read image bytes
         image_bytes = await file.read()
@@ -80,6 +75,17 @@ async def upload_garment_simple(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Uploaded file is empty",
             )
+
+        # Web 端 multipart 常为 application/octet-stream，用魔数 / PIL 校验真实图片
+        ct = (file.content_type or "").lower()
+        if not ct.startswith("image/"):
+            try:
+                Image.open(io.BytesIO(image_bytes)).verify()
+            except Exception:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="File must be an image (JPEG, PNG, WebP)",
+                )
 
         # Step 1: Recognize image using CLIP (FashionCLIP approach)
         try:
@@ -189,7 +195,10 @@ def list_garments_simple(
     db: Session = Depends(get_db),
 ):
     """Get user's garments with pagination and filtering (simplified API)"""
-    print(f"[Wardrobe] GET /garments: user={current_user.user_id}, category={category}, page={page}, page_size={page_size}")
+    print(
+        f"[Wardrobe] GET /garments: user={current_user.user_id}, category={category}, "
+        f"page={page}, page_size={page_size}"
+    )
 
     skip = (page - 1) * page_size
     garments = get_garments_by_user(

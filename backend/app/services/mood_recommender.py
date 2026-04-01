@@ -4,8 +4,8 @@
 根据心理学和色彩心理学研究，不同情绪适合不同的穿搭风格和颜色。
 """
 
-from typing import Dict, List, Optional
 from enum import Enum
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -16,25 +16,26 @@ logger = setup_logging()
 
 class MoodType(str, Enum):
     """情绪类型枚举"""
+
     # 正面情绪
-    HAPPY = "happy"              # 开心
-    EXCITED = "excited"           # 兴奋
-    CONFIDENT = "confident"       # 自信
-    RELAXED = "relaxed"           # 放松
-    ROMANTIC = "romantic"         # 浪漫
-    ENERGETIC = "energetic"       # 充满活力
+    HAPPY = "happy"  # 开心
+    EXCITED = "excited"  # 兴奋
+    CONFIDENT = "confident"  # 自信
+    RELAXED = "relaxed"  # 放松
+    ROMANTIC = "romantic"  # 浪漫
+    ENERGETIC = "energetic"  # 充满活力
 
     # 中性情绪
-    NEUTRAL = "neutral"           # 平静
-    FOCUSED = "focused"           # 专注
+    NEUTRAL = "neutral"  # 平静
+    FOCUSED = "focused"  # 专注
 
     # 负面情绪
-    SAD = "sad"                   # 难过
-    ANXIOUS = "anxious"           # 焦虑
-    ANGRY = "angry"               # 愤怒
-    TIRED = "tired"               # 疲惫
-    STRESSED = "stressed"         # 压力大
-    LONELY = "lonely"             # 孤独
+    SAD = "sad"  # 难过
+    ANXIOUS = "anxious"  # 焦虑
+    ANGRY = "angry"  # 愤怒
+    TIRED = "tired"  # 疲惫
+    STRESSED = "stressed"  # 压力大
+    LONELY = "lonely"  # 孤独
 
 
 # 情绪 -> 推荐风格映射（基于心理学研究）
@@ -46,18 +47,16 @@ MOOD_STYLE_MAP: Dict[MoodType, List[str]] = {
     MoodType.RELAXED: ["休闲", "简约", "度假", "舒适"],
     MoodType.ROMANTIC: ["甜美", "优雅", "复古", "民族"],
     MoodType.ENERGETIC: ["运动", "街头", "甜酷", "休闲"],
-
     # 中性 - 保持平衡
     MoodType.NEUTRAL: ["简约", "通勤", "学院", "休闲"],
     MoodType.FOCUSED: ["通勤", "正式", "简约", "学院"],
-
     # 负面情绪 - 需要提升心情
-    MoodType.SAD: ["休闲", "甜酷", "甜美", "简约"],      # 暖色调提升情绪
+    MoodType.SAD: ["休闲", "甜酷", "甜美", "简约"],  # 暖色调提升情绪
     MoodType.ANXIOUS: ["简约", "通勤", "休闲", "舒适"],  # 简洁减少压力
-    MoodType.ANGRY: ["运动", "街头", "简约", "舒适"],   # 释放能量
-    MoodType.TIRED: ["舒适", "休闲", "简约", "运动"],    # 舒适为主
-    MoodType.STRESSED: ["舒适", "简约", "通勤", "休闲"], # 减少决策负担
-    MoodType.LONELY: ["甜酷", "甜美", "优雅", "复古"],   # 温暖的颜色和风格
+    MoodType.ANGRY: ["运动", "街头", "简约", "舒适"],  # 释放能量
+    MoodType.TIRED: ["舒适", "休闲", "简约", "运动"],  # 舒适为主
+    MoodType.STRESSED: ["舒适", "简约", "通勤", "休闲"],  # 减少决策负担
+    MoodType.LONELY: ["甜酷", "甜美", "优雅", "复古"],  # 温暖的颜色和风格
 }
 
 
@@ -65,56 +64,110 @@ MOOD_STYLE_MAP: Dict[MoodType, List[str]] = {
 MOOD_COLOR_MAP: Dict[MoodType, Dict[str, float]] = {
     # 开心 - 保持明亮
     MoodType.HAPPY: {
-        "黄": 0.8, "橙": 0.7, "白": 0.6, "红": 0.5, "粉": 0.5,
+        "黄": 0.8,
+        "橙": 0.7,
+        "白": 0.6,
+        "红": 0.5,
+        "粉": 0.5,
     },
     MoodType.EXCITED: {
-        "红": 0.9, "橙": 0.8, "黄": 0.7, "黑": 0.5, "白": 0.4,
+        "红": 0.9,
+        "橙": 0.8,
+        "黄": 0.7,
+        "黑": 0.5,
+        "白": 0.4,
     },
     MoodType.CONFIDENT: {
-        "黑": 0.9, "白": 0.7, "红": 0.6, "蓝": 0.5, "灰": 0.5,
+        "黑": 0.9,
+        "白": 0.7,
+        "红": 0.6,
+        "蓝": 0.5,
+        "灰": 0.5,
     },
     MoodType.RELAXED: {
-        "蓝": 0.8, "绿": 0.7, "白": 0.7, "黄": 0.5, "灰": 0.4,
+        "蓝": 0.8,
+        "绿": 0.7,
+        "白": 0.7,
+        "黄": 0.5,
+        "灰": 0.4,
     },
     MoodType.ROMANTIC: {
-        "粉": 0.9, "红": 0.7, "白": 0.6, "紫": 0.5, "黑": 0.3,
+        "粉": 0.9,
+        "红": 0.7,
+        "白": 0.6,
+        "紫": 0.5,
+        "黑": 0.3,
     },
     MoodType.ENERGETIC: {
-        "红": 0.9, "橙": 0.8, "黄": 0.7, "绿": 0.6, "黑": 0.5,
+        "红": 0.9,
+        "橙": 0.8,
+        "黄": 0.7,
+        "绿": 0.6,
+        "黑": 0.5,
     },
-
     # 中性
     MoodType.NEUTRAL: {
-        "蓝": 0.7, "灰": 0.7, "白": 0.7, "黑": 0.6, "棕": 0.5,
+        "蓝": 0.7,
+        "灰": 0.7,
+        "白": 0.7,
+        "黑": 0.6,
+        "棕": 0.5,
     },
     MoodType.FOCUSED: {
-        "蓝": 0.8, "灰": 0.7, "白": 0.7, "黑": 0.6, "绿": 0.5,
+        "蓝": 0.8,
+        "灰": 0.7,
+        "白": 0.7,
+        "黑": 0.6,
+        "绿": 0.5,
     },
-
     # 负面情绪 - 需要特别注意
     MoodType.SAD: {
         # 暖色提升情绪！避免冷色调
-        "橙": 0.9, "黄": 0.8, "粉": 0.7, "红": 0.6, "白": 0.5,
+        "橙": 0.9,
+        "黄": 0.8,
+        "粉": 0.7,
+        "红": 0.6,
+        "白": 0.5,
     },
     MoodType.ANXIOUS: {
         # 蓝色和绿色有镇静作用
-        "蓝": 0.9, "绿": 0.8, "白": 0.7, "灰": 0.6, "紫": 0.4,
+        "蓝": 0.9,
+        "绿": 0.8,
+        "白": 0.7,
+        "灰": 0.6,
+        "紫": 0.4,
     },
     MoodType.ANGRY: {
         # 冷色调镇静，避免红色
-        "蓝": 0.9, "绿": 0.8, "白": 0.7, "灰": 0.6, "紫": 0.5,
+        "蓝": 0.9,
+        "绿": 0.8,
+        "白": 0.7,
+        "灰": 0.6,
+        "紫": 0.5,
     },
     MoodType.TIRED: {
         # 活力颜色提神
-        "橙": 0.8, "黄": 0.8, "红": 0.6, "绿": 0.6, "白": 0.5,
+        "橙": 0.8,
+        "黄": 0.8,
+        "红": 0.6,
+        "绿": 0.6,
+        "白": 0.5,
     },
     MoodType.STRESSED: {
         # 柔和、低饱和度颜色
-        "蓝": 0.8, "绿": 0.7, "白": 0.7, "灰": 0.6, "紫": 0.5,
+        "蓝": 0.8,
+        "绿": 0.7,
+        "白": 0.7,
+        "灰": 0.6,
+        "紫": 0.5,
     },
     MoodType.LONELY: {
         # 温暖、有归属感的颜色
-        "红": 0.8, "橙": 0.7, "黄": 0.7, "粉": 0.7, "棕": 0.5,
+        "红": 0.8,
+        "橙": 0.7,
+        "黄": 0.7,
+        "粉": 0.7,
+        "棕": 0.5,
     },
 }
 
@@ -148,7 +201,7 @@ MOOD_ADVICE_MAP: Dict[MoodType, str] = {
     MoodType.ENERGETIC: "活力满满！运动风和亮色让你更加精神",
     MoodType.NEUTRAL: "平衡舒适！简约穿搭让你保持专注",
     MoodType.FOCUSED: "专注高效！干净利落的穿搭减少干扰",
-    MoodType.SAD: "试试暖色调吧！橙色和黄色能有效提升心情",
+    MoodType.SAD: "今天心情不好时，优先选暖色（橙、黄、粉）和柔软休闲的单品，有助于情绪回暖；下面也从你衣橱里挑了更搭这一状态的衣服。",
     MoodType.ANXIOUS: "需要放松！柔和的蓝色和绿色有镇静作用",
     MoodType.ANGRY: "冷静一下！深蓝色和绿色能帮助你平复情绪",
     MoodType.TIRED: "需要提神！黄色和橙色能让你精神起来",
@@ -159,6 +212,7 @@ MOOD_ADVICE_MAP: Dict[MoodType, str] = {
 
 class MoodRecommendation(BaseModel):
     """情绪推荐结果"""
+
     mood: str = Field(..., description="用户情绪")
     mood_cn: str = Field(..., description="情绪中文名")
     recommended_styles: List[str] = Field(..., description="推荐风格")
@@ -294,20 +348,20 @@ class MoodRecommender:
             str: 十六进制颜色代码
         """
         intensity_colors = {
-            MoodType.HAPPY.value: "#FFD700",      # 金色
-            MoodType.EXCITED.value: "#FF4500",    # 橙红
-            MoodType.CONFIDENT.value: "#000000",   # 黑色
-            MoodType.RELAXED.value: "#87CEEB",     # 天蓝
-            MoodType.ROMANTIC.value: "#FF69B4",   # 粉红
+            MoodType.HAPPY.value: "#FFD700",  # 金色
+            MoodType.EXCITED.value: "#FF4500",  # 橙红
+            MoodType.CONFIDENT.value: "#000000",  # 黑色
+            MoodType.RELAXED.value: "#87CEEB",  # 天蓝
+            MoodType.ROMANTIC.value: "#FF69B4",  # 粉红
             MoodType.ENERGETIC.value: "#FF6347",  # 番茄红
-            MoodType.NEUTRAL.value: "#808080",    # 灰色
-            MoodType.FOCUSED.value: "#4169E1",    # 皇家蓝
-            MoodType.SAD.value: "#6A5ACD",        # 灰紫
-            MoodType.ANXIOUS.value: "#9370DB",    # 中紫
-            MoodType.ANGRY.value: "#DC143C",      # 深红
-            MoodType.TIRED.value: "#DDA0DD",      # 淡紫
-            MoodType.STRESSED.value: "#778899",   # 灰蓝
-            MoodType.LONELY.value: "#DDA0DD",     # 淡紫
+            MoodType.NEUTRAL.value: "#808080",  # 灰色
+            MoodType.FOCUSED.value: "#4169E1",  # 皇家蓝
+            MoodType.SAD.value: "#6A5ACD",  # 灰紫
+            MoodType.ANXIOUS.value: "#9370DB",  # 中紫
+            MoodType.ANGRY.value: "#DC143C",  # 深红
+            MoodType.TIRED.value: "#DDA0DD",  # 淡紫
+            MoodType.STRESSED.value: "#778899",  # 灰蓝
+            MoodType.LONELY.value: "#DDA0DD",  # 淡紫
         }
         return intensity_colors.get(mood.lower(), "#808080")
 

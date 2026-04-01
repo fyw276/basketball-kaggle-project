@@ -6,7 +6,7 @@ import '../core/providers/theme_provider.dart';
 import '../core/services/api_client.dart';
 import 'features/auth/screens/auth_screen.dart';
 import 'features/shell/app_shell_screen.dart';
-import 'features/home/screens/outfit_hub_screen.dart';
+import 'features/home/screens/app_home_screen.dart';
 import 'features/wardrobe/screens/wardrobe_screen.dart';
 import 'features/analysis/screens/outfit_screen.dart';
 import 'features/analysis/screens/similarity_screen.dart';
@@ -74,7 +74,7 @@ final GoRouter _router = GoRouter(
     ),
     GoRoute(
       path: '/home',
-      builder: (context, state) => const OutfitHubScreen(),
+      builder: (context, state) => const AppHomeScreen(),
     ),
     GoRoute(
       path: '/wardrobe',

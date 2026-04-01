@@ -70,6 +70,7 @@ class DeepFashionDownloader:
         """
         try:
             import gdown
+
             print(f"[Download] Downloading from {url}...")
             gdown.download(url, str(output_path), quiet=False)
             return True
@@ -216,9 +217,7 @@ class DeepFashionDownloader:
         return stats
 
     def convert_to_training_format(
-        self,
-        min_samples_per_category: int = 50,
-        max_samples_per_category: int = 1000
+        self, min_samples_per_category: int = 50, max_samples_per_category: int = 1000
     ) -> str:
         """
         转换为训练格式
@@ -266,6 +265,7 @@ class DeepFashionDownloader:
             # 限制样本数
             if len(images) > max_samples_per_category:
                 import random
+
                 images = random.sample(images, max_samples_per_category)
 
             categories.append(cat_name)
@@ -325,17 +325,11 @@ class FashionNetDownloader:
             transform = transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor()])
 
             train_dataset = datasets.FashionMNIST(
-                root=str(self.data_dir),
-                train=True,
-                download=True,
-                transform=transform
+                root=str(self.data_dir), train=True, download=True, transform=transform
             )
 
             test_dataset = datasets.FashionMNIST(
-                root=str(self.data_dir),
-                train=False,
-                download=True,
-                transform=transform
+                root=str(self.data_dir), train=False, download=True, transform=transform
             )
 
             print(f"[OK] Fashion-MNIST downloaded")
@@ -357,21 +351,35 @@ class FashionNetDownloader:
             print("[Convert] Converting Fashion-MNIST...")
 
             train_dataset = datasets.FashionMNIST(
-                root=str(self.data_dir),
-                train=True,
-                download=False
+                root=str(self.data_dir), train=True, download=False
             )
 
             # 类别映射
             class_names = [
-                "T-shirt/top", "Trouser", "Pullover", "Dress", "Coat",
-                "Sandal", "Shirt", "Sneaker", "Bag", "Ankle boot"
+                "T-shirt/top",
+                "Trouser",
+                "Pullover",
+                "Dress",
+                "Coat",
+                "Sandal",
+                "Shirt",
+                "Sneaker",
+                "Bag",
+                "Ankle boot",
             ]
 
             # 映射到我们的类别
             category_map = {
-                0: "上衣", 1: "裤子", 2: "上衣", 3: "裙子", 4: "外套",
-                5: "鞋", 6: "上衣", 7: "鞋", 8: "包", 9: "鞋"
+                0: "上衣",
+                1: "裤子",
+                2: "上衣",
+                3: "裙子",
+                4: "外套",
+                5: "鞋",
+                6: "上衣",
+                7: "鞋",
+                8: "包",
+                9: "鞋",
             }
 
             training_data = []
@@ -419,11 +427,15 @@ def main():
     parser.add_argument("--prepare", action="store_true", help="Prepare downloaded data")
     parser.add_argument("--convert", action="store_true", help="Convert to training format")
     parser.add_argument("--all", action="store_true", help="Run all steps")
-    parser.add_argument("--dataset", default="category_attribute",
-                        choices=["category_attribute", "inshop", "consumer2shop"],
-                        help="Dataset to download")
-    parser.add_argument("--use-fashion-mnist", action="store_true",
-                        help="Use Fashion-MNIST instead (faster)")
+    parser.add_argument(
+        "--dataset",
+        default="category_attribute",
+        choices=["category_attribute", "inshop", "consumer2shop"],
+        help="Dataset to download",
+    )
+    parser.add_argument(
+        "--use-fashion-mnist", action="store_true", help="Use Fashion-MNIST instead (faster)"
+    )
     parser.add_argument("--output", default="./training_data.json", help="Output file")
 
     args = parser.parse_args()

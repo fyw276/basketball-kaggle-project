@@ -75,7 +75,7 @@ repos:
     hooks:
       - id: dart-format
         name: dart-format
-        entry: bash -c 'dart format --set-exit-if-changed mobile/lib mobile/test 2>/dev/null || true'
+        entry: powershell -NoProfile -ExecutionPolicy Bypass -Command "dart format --set-exit-if-changed mobile/lib mobile/test"
         language: system
         files: \.dart$
         stages: [pre-commit]
@@ -87,7 +87,7 @@ repos:
     hooks:
       - id: dart-analyze
         name: dart-analyze
-        entry: bash -c 'cd mobile && dart analyze lib --no-fatal-infos 2>/dev/null || true'
+        entry: powershell -NoProfile -ExecutionPolicy Bypass -Command "dart analyze --no-fatal-warnings mobile/lib"
         language: system
         files: \.dart$
         stages: [pre-commit]
@@ -108,7 +108,7 @@ repos:
     hooks:
       - id: flutter-test
         name: flutter-test
-        entry: bash -c 'cd mobile && flutter test --no-pub 2>/dev/null || true'
+        entry: powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-Location mobile; flutter test --no-pub"
         language: system
         pass_filenames: false
         always_run: false
@@ -119,7 +119,7 @@ repos:
     hooks:
       - id: pytest-check
         name: pytest-check
-        entry: bash -c 'cd backend && python -m pytest -v --tb=short -x'
+        entry: powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-Location backend; python -m pytest -v --tb=short -x"
         language: system
         pass_filenames: false
         always_run: true

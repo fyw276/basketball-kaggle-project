@@ -28,6 +28,7 @@ import torch
 os.environ["PYTHONIOENCODING"] = "utf-8"
 if sys.platform == "win32":
     import io
+
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
@@ -55,11 +56,13 @@ def check_gpu() -> dict:
         info["device"] = torch.cuda.get_device_name(0)
         info["device_count"] = torch.cuda.device_count()
         for i in range(torch.cuda.device_count()):
-            info["devices"].append({
-                "id": i,
-                "name": torch.cuda.get_device_name(i),
-                "memory_total": torch.cuda.get_device_properties(i).total_memory,
-            })
+            info["devices"].append(
+                {
+                    "id": i,
+                    "name": torch.cuda.get_device_name(i),
+                    "memory_total": torch.cuda.get_device_properties(i).total_memory,
+                }
+            )
         logger.info(f"GPU available: {info['device']}")
     else:
         logger.warning("No GPU available, will use CPU")
@@ -71,7 +74,7 @@ def task_reextract_features():
     """Re-extract feature vectors"""
     logger.info("Starting feature reextraction task")
     preprocessor = DataPreprocessor()
-    
+
     # First analyze data
     report = preprocessor.analyze_data_quality()
     print(f"\nData Quality Report:")
@@ -81,13 +84,13 @@ def task_reextract_features():
     print(f"  Images found: {report['images_found']}")
     print(f"  Images missing: {report['images_missing']}")
 
-    if report['zero_features'] == 0:
+    if report["zero_features"] == 0:
         print("\nAll feature vectors are valid. No re-extraction needed.")
         return
 
     print(f"\nStarting re-extraction for {report['zero_features']} zero feature vectors...")
     result = preprocessor.reextract_all_features()
-    
+
     print(f"\nExtraction complete:")
     print(f"  Success: {result['success']}")
     print(f"  Failed: {result['failed']}")
@@ -110,13 +113,13 @@ def task_analyze_data():
     print(f"  No category label: {report['invalid_categories']}")
 
     print(f"\n[Category] Category Distribution:")
-    for cat, count in sorted(report['valid_categories'].items(), key=lambda x: -x[1]):
+    for cat, count in sorted(report["valid_categories"].items(), key=lambda x: -x[1]):
         print(f"  {cat}: {count}")
 
     print(f"\n[Style] Style Distribution:")
-    for style, count in sorted(report['valid_styles'].items(), key=lambda x: -x[1])[:10]:
+    for style, count in sorted(report["valid_styles"].items(), key=lambda x: -x[1])[:10]:
         print(f"  {style}: {count}")
-    if len(report['valid_styles']) > 10:
+    if len(report["valid_styles"]) > 10:
         print(f"  ... and {len(report['valid_styles']) - 10} more styles")
 
 
@@ -124,24 +127,24 @@ def task_export_data(output_path: str = "./training_data.json"):
     """Export training data"""
     logger.info(f"Starting data export to {output_path}")
     preprocessor = DataPreprocessor()
-    
+
     # Only export data with valid features
     garments = preprocessor.get_all_garments()
     project_root = Path(__file__).parent.parent.parent
-    
+
     training_data = []
     for g in garments:
         img_path = g.get("image_path", "")
         if not img_path:
             continue
-            
+
         full_path = project_root / img_path.replace("\\", "/")
         if not full_path.exists():
             continue
-            
+
         if not g.get("category"):
             continue
-            
+
         if not any(g["feature_vector"] != 0):
             continue
 
@@ -154,18 +157,18 @@ def task_export_data(output_path: str = "./training_data.json"):
             "gender_label": g.get("gender_label"),
         }
         training_data.append(entry)
-    
+
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(training_data, f, ensure_ascii=False, indent=2)
-    
+
     print(f"\nExported {len(training_data)} training samples to: {output_path}")
-    
+
     # Statistics
     categories = {}
     for item in training_data:
         cat = item["category"]
         categories[cat] = categories.get(cat, 0) + 1
-    
+
     print("\nCategory Distribution:")
     for cat, count in sorted(categories.items(), key=lambda x: -x[1]):
         print(f"  {cat}: {count}")
@@ -174,35 +177,37 @@ def task_export_data(output_path: str = "./training_data.json"):
 def task_finetune_clip(data_path: str, epochs: int = 10, batch_size: int = 8):
     """Fine-tune CLIP model"""
     logger.info("Starting CLIP fine-tuning task")
-    
+
     from scripts.training.clip_finetuner import CLIPFineTuner, TrainingConfig
-    
+
     # Check data
     if not Path(data_path).exists():
         print(f"Error: Training data file not found: {data_path}")
         print("Please run export task first: python scripts/training/main_train.py --task export")
         return
-    
+
     with open(data_path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    
+
     if len(data) < 5:
-        print(f"Warning: Training data is limited ({len(data)} samples). Recommend at least 50 for better results.")
-    
+        print(
+            f"Warning: Training data is limited ({len(data)} samples). Recommend at least 50 for better results."
+        )
+
     print(f"\nStarting CLIP fine-tuning")
     print(f"  Training data: {len(data)} samples")
     print(f"  Epochs: {epochs}")
     print(f"  Batch size: {batch_size}")
     print(f"  Device: {'GPU' if torch.cuda.is_available() else 'CPU'}")
-    
+
     config = TrainingConfig(
         num_epochs=epochs,
         batch_size=batch_size,
     )
-    
+
     trainer = CLIPFineTuner(config=config)
     trainer.train(train_data_path=data_path)
-    
+
     print("\nTraining complete! Model saved to: models/clip_finetuned/")
 
 
@@ -223,35 +228,35 @@ def task_train_style():
 def task_full_pipeline(data_path: Optional[str] = None):
     """Full training pipeline"""
     logger.info("Starting full training pipeline")
-    
-    print("\n" + "="*50)
+
+    print("\n" + "=" * 50)
     print("[CLOTHING] Outfit Recognition Model Full Training")
-    print("="*50)
-    
+    print("=" * 50)
+
     start_time = time.time()
-    
+
     # Step 1: Analyze data
     print("\n[Step 1/4] Analyzing data quality...")
     task_analyze_data()
-    
+
     # Step 2: Re-extract features
     print("\n[Step 2/4] Re-extracting feature vectors...")
     task_reextract_features()
-    
+
     # Step 3: Export training data
     print("\n[Step 3/4] Exporting training data...")
     if data_path is None:
         data_path = str(project_root / "training_data.json")
     task_export_data(data_path)
-    
+
     # Step 4: Fine-tune CLIP
     print("\n[Step 4/4] Fine-tuning CLIP model...")
     task_finetune_clip(data_path)
-    
+
     elapsed = time.time() - start_time
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print(f"[OK] Training pipeline completed! Time: {elapsed:.1f}s")
-    print("="*50)
+    print("=" * 50)
 
 
 def main():
@@ -275,26 +280,26 @@ Examples:
   python scripts/training/main_train.py --task export --output training_data.json
   python scripts/training/main_train.py --task reextract
   python scripts/training/main_train.py --task full
-        """
+        """,
     )
-    
+
     parser.add_argument(
         "--task",
         choices=["reextract", "analyze", "export", "finetune", "category", "style", "full", "list"],
         default="list",
-        help="Task to execute"
+        help="Task to execute",
     )
     parser.add_argument("--data", default="./training_data.json", help="Training data path")
     parser.add_argument("--output", default="./training_data.json", help="Output path")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size")
-    
+
     args = parser.parse_args()
-    
+
     # Show GPU info
     gpu_info = check_gpu()
     print(f"\n[GPU] Status: {gpu_info['device'] if gpu_info['cuda_available'] else 'CPU'}")
-    
+
     if args.task == "list":
         # List all tasks
         info = list_available_training_tasks()

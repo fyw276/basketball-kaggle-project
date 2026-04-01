@@ -5,10 +5,11 @@ import '../../analysis/screens/outfit_recommend_screen.dart';
 import '../../analysis/screens/similarity_analysis_screen.dart';
 import '../../analysis/screens/suitability_analysis_screen.dart';
 import '../../analysis/screens/body_shape_insight_screen.dart';
+import '../../analysis/screens/mood_outfit_screen.dart';
 import '../../analysis/screens/virtual_tryon_screen.dart';
 
-/// 智能穿搭：五个功能入口（列表 + 右侧箭头）。
-/// 顺序：智能推荐 → 虚拟试衣 → 相似检测 → 适合度分析 → 体型感知。
+/// 智能穿搭：功能入口（列表 + 右侧箭头）。
+/// 顺序：智能推荐 → 情绪穿搭 → 虚拟试衣 → …
 class OutfitHubScreen extends StatelessWidget {
   const OutfitHubScreen({super.key});
 
@@ -32,6 +33,12 @@ class OutfitHubScreen extends StatelessWidget {
             title: '智能推荐',
             subtitle: '上传服装图片，智能推荐搭配方案',
             onTap: () => _pushPage(context, const OutfitRecommendScreen()),
+          ),
+          _HubTile(
+            icon: Icons.favorite_outline,
+            title: '情绪穿搭',
+            subtitle: '根据心情推荐颜色与风格，并匹配衣橱单品',
+            onTap: () => _pushPage(context, const MoodOutfitScreen()),
           ),
           _HubTile(
             icon: Icons.view_in_ar,

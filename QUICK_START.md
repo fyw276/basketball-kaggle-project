@@ -63,6 +63,16 @@ flutter run -d chrome
 2. 上传服饰图片
 3. 查看推荐的搭配方案
 
+#### 情绪穿搭（心情 → 穿搭方向）
+1. 点击"情绪穿搭"
+2. 选择当前心情（例如「心情不好 · 想暖一点」）
+3. 查看风格/颜色建议与衣橱匹配单品
+
+#### 虚拟试衣（伪 3D 三视角）
+1. 点击"虚拟试衣"
+2. 上传衣服图 + 人物正面照（侧面/背面可选）
+3. 点击生成，左右滑动查看正/侧/背三视角（可点进全屏缩放）
+
 #### 适合度评分
 1. 点击"适合度评分"
 2. 上传服饰图片
@@ -118,14 +128,14 @@ flutter run -d chrome
 - FastAPI (Python)
 - SQLite 数据库
 - JWT 认证
-- MobileNetV2 图像识别
+- CLIP（transformers + torch）图像理解（弱网/离线可回退轻量方案）
 - Redis 缓存（可选）
 
 ### 前端
 - Flutter Web
 - Provider 状态管理
 - GoRouter 路由
-- Dio 网络请求
+- `package:http` 网络请求（自定义 `ApiClient`）
 - Material Design 3
 
 ## 📂 项目结构

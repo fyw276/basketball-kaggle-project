@@ -9,11 +9,8 @@ Tests verify:
 """
 
 import pytest
-from sqlalchemy.orm import Session
 
-from app.schemas.user import UserCreate
 from app.services.auth import hash_password, verify_password
-from app.services.user import create_user, delete_user, get_user_by_id
 
 
 def test_password_encryption():

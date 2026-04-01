@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, List
 
 # 项目根目录
-PROJECT_ROOT = Path(__file__).parent.parent.parent if '__file__' in dir() else Path(".")
+PROJECT_ROOT = Path(__file__).parent.parent.parent if "__file__" in dir() else Path(".")
 
 
 class AnyDressingEvaluator:
@@ -163,27 +163,31 @@ def print_report():
     print(f"\n【技术对比】")
     print("\n  AnyDressing:")
     print(f"    核心: {REPORT['technical_summary']['architecture']['anydressing']['core']}")
-    print(f"    网络: {', '.join(REPORT['technical_summary']['architecture']['anydressing']['networks'])}")
+    print(
+        f"    网络: {', '.join(REPORT['technical_summary']['architecture']['anydressing']['networks'])}"
+    )
     print("    特点:")
-    for feat in REPORT['technical_summary']['architecture']['anydressing']['features']:
+    for feat in REPORT["technical_summary"]["architecture"]["anydressing"]["features"]:
         print(f"      - {feat}")
 
     print("\n  本项目:")
     print(f"    核心: {REPORT['technical_summary']['architecture']['our_project']['core']}")
-    print(f"    网络: {', '.join(REPORT['technical_summary']['architecture']['our_project']['networks'])}")
+    print(
+        f"    网络: {', '.join(REPORT['technical_summary']['architecture']['our_project']['networks'])}"
+    )
 
     print(f"\n【集成评估】")
     print(f"  可行性: {REPORT['integration_evaluation']['feasibility']}")
     print(f"  复杂度: {REPORT['integration_evaluation']['complexity']}")
     print(f"  收益: {REPORT['integration_evaluation']['benefit']}")
     print("  风险:")
-    for risk in REPORT['integration_evaluation']['risks']:
+    for risk in REPORT["integration_evaluation"]["risks"]:
         print(f"    - {risk}")
 
-    print(REPORT['recommendation'])
+    print(REPORT["recommendation"])
 
     print("\n【实施建议】")
-    for suggestion in REPORT['implementation_suggestions']:
+    for suggestion in REPORT["implementation_suggestions"]:
         print(f"  {suggestion}")
 
     print("\n" + "=" * 60)

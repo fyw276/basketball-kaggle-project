@@ -84,6 +84,7 @@ async def try_on_garment(
         )
 
     try:
+        import hashlib
         import os
         from io import BytesIO
 
@@ -120,10 +121,19 @@ async def try_on_garment(
             result["result_image"].save(output, format="JPEG", quality=90)
             output.seek(0)
 
-            # Use a temporary UploadFile-like object for storage
-            result_path = os.path.join(
-                str(current_user.user_id), "tryon", f"result_{hash(garment_bytes) % 100000:05d}.jpg"
+            # Use a stable, collision-resistant key so different inputs never overwrite each other.
+            # NOTE: built-in `hash()` is salted per-process and the old modulo could collide easily.
+            key_src = (
+                garment_bytes
+                + b"||"
+                + person_bytes
+                + b"||"
+                + (prompt or "").encode("utf-8", errors="ignore")
+                + b"||"
+                + model_gender.encode("utf-8", errors="ignore")
             )
+            key = hashlib.sha256(key_src).hexdigest()[:16]
+            result_path = os.path.join(str(current_user.user_id), "tryon", f"result_{key}.jpg")
 
             storage_service = get_storage_service()
             saved_path, result_url = storage_service._save_bytes(output.getvalue(), result_path)

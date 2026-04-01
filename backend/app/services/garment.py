@@ -3,7 +3,6 @@ Garment service
 Handles garment CRUD operations
 """
 
-from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
@@ -95,7 +94,12 @@ def search_garments(
     # 穿搭次数过滤
     if query.min_worn is not None:
         try:
-            q = q.filter(Garment.wearing_count.cast(db.bind.dialect.name == "postgresql" and __import__("sqlalchemy").Integer) >= query.min_worn)
+            q = q.filter(
+                Garment.wearing_count.cast(
+                    db.bind.dialect.name == "postgresql" and __import__("sqlalchemy").Integer
+                )
+                >= query.min_worn
+            )
         except Exception:
             pass
 

@@ -5,11 +5,8 @@ Tests outfit generation, scoring, and recommendation logic
 
 from uuid import uuid4
 
-import pytest
-
 from app.models.garment import Garment
-from app.schemas.garment import ColorSchema
-from app.services.outfit_recommender import OutfitCard, OutfitItem, OutfitRecommender
+from app.services.outfit_recommender import OutfitCard, OutfitRecommender
 from app.services.outfit_rules import CategoryRules, ColorRules, StyleRules
 
 

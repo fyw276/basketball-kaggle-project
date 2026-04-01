@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/providers/auth_provider.dart';
 import '../../../core/providers/theme_provider.dart';
+import '../../../core/utils/app_snackbar.dart';
 import '../../../core/theme/fashion_palettes.dart';
 
 /// 个人设置页
@@ -102,18 +103,15 @@ class _PersonalSettingsScreenState extends State<PersonalSettingsScreen> {
         await auth.apiClient.updateProfile(data);
       }
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text('已保存'),
-            backgroundColor: context.read<ThemeProvider>().palette.successColor,
-          ),
+        showAppSnackBar(
+          context,
+          '已保存',
+          backgroundColor: context.read<ThemeProvider>().palette.successColor,
         );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('保存失败: $e')),
-        );
+        showAppSnackBar(context, '保存失败：${userFacingApiError(e)}');
       }
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -190,7 +188,7 @@ class _PersonalSettingsScreenState extends State<PersonalSettingsScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text('偏男性化穿搭',
+                      Text('偏男性风格',
                           style:
                               TextStyle(fontSize: 12, color: palette.textBody)),
                       Container(
@@ -209,14 +207,14 @@ class _PersonalSettingsScreenState extends State<PersonalSettingsScreen> {
                               fontWeight: FontWeight.bold),
                         ),
                       ),
-                      Text('偏女性化穿搭',
+                      Text('偏女性风格',
                           style:
                               TextStyle(fontSize: 12, color: palette.textBody)),
                     ],
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    '拖动滑块实时切换全局配色（0 = 偏男性化穿搭，1 = 偏女性化穿搭）',
+                    '拖动滑块实时切换全局配色（0 = 偏男性风格，1 = 偏女性风格）',
                     style: TextStyle(
                         fontSize: 11,
                         color: palette.textBody.withValues(alpha: 0.7)),

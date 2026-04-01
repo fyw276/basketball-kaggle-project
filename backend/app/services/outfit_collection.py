@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.outfit_collection import OutfitCollection, OutfitCollectionItem

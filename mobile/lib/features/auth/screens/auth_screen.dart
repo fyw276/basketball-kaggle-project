@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
-import '../../../core/providers/auth_provider.dart';
 
-/// 登录页
-/// - 渐变背景：#F9F4FB → #F6EFF7
-/// - 主标语：AI 穿搭，自由表达
-/// - 副标语：智能衣橱・虚拟试衣・风格自由
-/// - 按钮主色：#D9A8E5 / 文字：白色
+import '../../../core/providers/auth_provider.dart';
+import '../../../core/utils/app_snackbar.dart';
+import '../../../core/providers/theme_provider.dart';
+import '../../../core/widgets/chinese_fret_ring.dart';
+
+const _kAuthTextMuted = Color(0xFF2C2C2C);
+
+/// 登录 / 注册：主副标语固定；页面配色随全局性别表达指数；大圆角与轻阴影。
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
 
@@ -20,8 +22,8 @@ class _AuthScreenState extends State<AuthScreen>
   late TabController _tabController;
   bool _isLogin = true;
 
-  static const _btnColor = Color(0xFFD9A8E5);
-  static const _textDark = Color(0xFF3A3A3A);
+  static const _radiusLarge = 28.0;
+  static const _radiusField = 20.0;
 
   @override
   void initState() {
@@ -40,113 +42,137 @@ class _AuthScreenState extends State<AuthScreen>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Color(0xFFF9F4FB), Color(0xFFF6EFF7)],
-          ),
-        ),
-        child: SafeArea(
-          child: Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(28),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 380),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // Logo
-                    Center(
-                      child: Container(
-                        width: 72,
-                        height: 72,
-                        decoration: BoxDecoration(
-                          color: _btnColor.withValues(alpha: 0.2),
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(Icons.checkroom,
-                            size: 36, color: _btnColor),
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    // 主标语
-                    const Text(
-                      'AI 穿搭，自由表达',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        color: _textDark,
-                        height: 1.3,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    // 副标语
-                    Text(
-                      '智能衣橱 · 虚拟试衣 · 风格自由',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: _textDark.withValues(alpha: 0.6),
-                      ),
-                    ),
-                    const SizedBox(height: 36),
-                    // Tab 切换
-                    Container(
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(14),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.06),
-                            blurRadius: 12,
-                            offset: const Offset(0, 4),
+    return Consumer<ThemeProvider>(
+      builder: (context, tp, _) {
+        final p = tp.palette;
+        return Scaffold(
+          backgroundColor: p.background,
+          body: SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(28),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 400),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Center(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(_radiusLarge),
+                          child: Container(
+                            width: 100,
+                            height: 100,
+                            color: p.primary.withValues(alpha: 0.12),
+                            alignment: Alignment.center,
+                            child: ChineseFretRing(
+                              size: 76,
+                              color: p.primary,
+                              strokeWidth: 2,
+                            ),
                           ),
-                        ],
-                      ),
-                      child: TabBar(
-                        controller: _tabController,
-                        indicator: BoxDecoration(
-                          color: _btnColor,
-                          borderRadius: BorderRadius.circular(12),
                         ),
-                        indicatorSize: TabBarIndicatorSize.tab,
-                        labelColor: Colors.white,
-                        unselectedLabelColor: _textDark.withValues(alpha: 0.6),
-                        dividerColor: Colors.transparent,
-                        tabs: const [
-                          Tab(text: '登录'),
-                          Tab(text: '注册'),
-                        ],
                       ),
-                    ),
-                    const SizedBox(height: 24),
-                    // 表单
-                    AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 250),
-                      child: _isLogin
-                          ? const _LoginForm(key: ValueKey('login'))
-                          : const _RegisterForm(key: ValueKey('register')),
-                    ),
-                  ],
+                      const SizedBox(height: 22),
+                      Text(
+                        'AI 穿搭，自由表达',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w800,
+                          color: p.textTitle,
+                          height: 1.35,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '智能衣橱・虚拟试衣・风格自由',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: p.textBody.withValues(alpha: 0.85),
+                          height: 1.4,
+                        ),
+                      ),
+                      const SizedBox(height: 32),
+                      Container(
+                        padding: const EdgeInsets.all(5),
+                        decoration: BoxDecoration(
+                          color: p.surface,
+                          borderRadius: BorderRadius.circular(_radiusLarge),
+                          boxShadow: p.cardShadows,
+                          border: Border.all(color: p.divider),
+                        ),
+                        child: TabBar(
+                          controller: _tabController,
+                          indicator: BoxDecoration(
+                            color: p.primary,
+                            borderRadius:
+                                BorderRadius.circular(_radiusLarge - 4),
+                          ),
+                          indicatorSize: TabBarIndicatorSize.tab,
+                          labelColor: Colors.white,
+                          unselectedLabelColor:
+                              p.textBody.withValues(alpha: 0.55),
+                          dividerColor: Colors.transparent,
+                          labelStyle: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 15,
+                          ),
+                          unselectedLabelStyle: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 15,
+                          ),
+                          tabs: const [
+                            Tab(text: '登录'),
+                            Tab(text: '注册'),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 250),
+                        child: _isLogin
+                            ? _LoginForm(
+                                key: const ValueKey('login'),
+                                mist: p.primary,
+                                pageBg: p.background,
+                                radiusLarge: _radiusLarge,
+                                radiusField: _radiusField,
+                              )
+                            : _RegisterForm(
+                                key: const ValueKey('register'),
+                                mist: p.primary,
+                                pageBg: p.background,
+                                radiusLarge: _radiusLarge,
+                                radiusField: _radiusField,
+                              ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }
 
-// ─── 登录表单 ────────────────────────────────────────────────────────
-
 class _LoginForm extends StatefulWidget {
-  const _LoginForm({super.key});
+  final Color mist;
+  final Color pageBg;
+  final double radiusLarge;
+  final double radiusField;
+
+  const _LoginForm({
+    super.key,
+    required this.mist,
+    required this.pageBg,
+    required this.radiusLarge,
+    required this.radiusField,
+  });
+
   @override
   State<_LoginForm> createState() => _LoginFormState();
 }
@@ -183,82 +209,117 @@ class _LoginFormState extends State<_LoginForm> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _input('用户名 / 手机号', _userCtrl,
-              prefix: Icons.person_outline, validator: _req),
+          _AuthField(
+            label: '用户名 / 手机号',
+            ctrl: _userCtrl,
+            mist: widget.mist,
+            radius: widget.radiusField,
+            prefix: Icons.person_outline_rounded,
+            validator: _req,
+          ),
           const SizedBox(height: 14),
-          _input('密码', _pwdCtrl,
-              prefix: Icons.lock_outline,
-              obscure: _obscure,
-              suffix: IconButton(
-                icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility),
-                onPressed: () => setState(() => _obscure = !_obscure),
+          _AuthField(
+            label: '密码',
+            ctrl: _pwdCtrl,
+            mist: widget.mist,
+            radius: widget.radiusField,
+            prefix: Icons.lock_outline_rounded,
+            obscure: _obscure,
+            suffix: IconButton(
+              tooltip: _obscure ? '显示密码' : '隐藏密码',
+              icon: Icon(
+                _obscure
+                    ? Icons.visibility_off_outlined
+                    : Icons.visibility_outlined,
+                color: _kAuthTextMuted.withValues(alpha: 0.45),
               ),
-              validator: _req),
-          const SizedBox(height: 8),
+              onPressed: () => setState(() => _obscure = !_obscure),
+            ),
+            validator: _req,
+          ),
+          const SizedBox(height: 6),
           Align(
             alignment: Alignment.centerRight,
             child: TextButton(
               onPressed: () {},
-              child: const Text('忘记密码？',
-                  style: TextStyle(color: Color(0xFF666666), fontSize: 13)),
+              child: Text(
+                '忘记密码？',
+                style: TextStyle(
+                  color: _kAuthTextMuted.withValues(alpha: 0.45),
+                  fontSize: 13,
+                ),
+              ),
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 4),
           Consumer<AuthProvider>(
             builder: (ctx, auth, _) {
               if (auth.errorMessage != null) {
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 10),
-                  child: Text(auth.errorMessage!,
-                      style: const TextStyle(color: Colors.red, fontSize: 13),
-                      textAlign: TextAlign.center),
+                  child: Text(
+                    auth.errorMessage!,
+                    style: const TextStyle(color: Colors.red, fontSize: 13),
+                    textAlign: TextAlign.center,
+                  ),
                 );
               }
               return const SizedBox.shrink();
             },
           ),
-          _submitBtn(),
+          SizedBox(
+            height: 56,
+            child: Consumer<AuthProvider>(
+              builder: (ctx, auth, _) {
+                return FilledButton(
+                  onPressed: auth.isLoading ? null : _submit,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: widget.mist,
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: widget.mist.withValues(alpha: 0.4),
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(widget.radiusLarge),
+                    ),
+                  ),
+                  child: auth.isLoading
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text(
+                          '登录',
+                          style: TextStyle(
+                              fontSize: 17, fontWeight: FontWeight.w800),
+                        ),
+                );
+              },
+            ),
+          ),
         ],
       ),
     );
   }
-
-  Widget _submitBtn() {
-    return Consumer<AuthProvider>(
-      builder: (ctx, auth, _) {
-        return SizedBox(
-          height: 52,
-          child: ElevatedButton(
-            onPressed: auth.isLoading ? null : _submit,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFD9A8E5),
-              foregroundColor: Colors.white,
-              elevation: 0,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
-              ),
-            ),
-            child: auth.isLoading
-                ? const SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 2, color: Colors.white),
-                  )
-                : const Text('登录',
-                    style:
-                        TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-          ),
-        );
-      },
-    );
-  }
 }
 
-// ─── 注册表单 ────────────────────────────────────────────────────────
-
 class _RegisterForm extends StatefulWidget {
-  const _RegisterForm({super.key});
+  final Color mist;
+  final Color pageBg;
+  final double radiusLarge;
+  final double radiusField;
+
+  const _RegisterForm({
+    super.key,
+    required this.mist,
+    required this.pageBg,
+    required this.radiusLarge,
+    required this.radiusField,
+  });
+
   @override
   State<_RegisterForm> createState() => _RegisterFormState();
 }
@@ -300,9 +361,7 @@ class _RegisterFormState extends State<_RegisterForm> {
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
     if (_pwdCtrl.text != _repCtrl.text) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('两次密码不一致')),
-      );
+      showAppSnackBar(context, '两次密码不一致');
       return;
     }
     final auth = context.read<AuthProvider>();
@@ -321,66 +380,108 @@ class _RegisterFormState extends State<_RegisterForm> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _input('用户名', _userCtrl,
-              prefix: Icons.person_outline, validator: _req),
+          _AuthField(
+            label: '用户名',
+            ctrl: _userCtrl,
+            mist: widget.mist,
+            radius: widget.radiusField,
+            prefix: Icons.person_outline_rounded,
+            validator: _req,
+          ),
           const SizedBox(height: 12),
-          _input('邮箱', _emailCtrl,
-              prefix: Icons.email_outlined, validator: _email),
+          _AuthField(
+            label: '邮箱',
+            ctrl: _emailCtrl,
+            mist: widget.mist,
+            radius: widget.radiusField,
+            prefix: Icons.email_outlined,
+            validator: _email,
+          ),
           const SizedBox(height: 12),
-          _input('密码', _pwdCtrl,
-              prefix: Icons.lock_outline,
-              obscure: _obscure,
-              suffix: IconButton(
-                icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility),
-                onPressed: () => setState(() => _obscure = !_obscure),
+          _AuthField(
+            label: '密码',
+            ctrl: _pwdCtrl,
+            mist: widget.mist,
+            radius: widget.radiusField,
+            prefix: Icons.lock_outline_rounded,
+            obscure: _obscure,
+            suffix: IconButton(
+              icon: Icon(
+                _obscure
+                    ? Icons.visibility_off_outlined
+                    : Icons.visibility_outlined,
+                color: _kAuthTextMuted.withValues(alpha: 0.45),
               ),
-              validator: _pwd),
+              onPressed: () => setState(() => _obscure = !_obscure),
+            ),
+            validator: _pwd,
+          ),
           const SizedBox(height: 12),
-          _input('确认密码', _repCtrl,
-              prefix: Icons.lock_outline,
-              obscure: _obscure2,
-              suffix: IconButton(
-                icon: Icon(_obscure2 ? Icons.visibility_off : Icons.visibility),
-                onPressed: () => setState(() => _obscure2 = !_obscure2),
+          _AuthField(
+            label: '确认密码',
+            ctrl: _repCtrl,
+            mist: widget.mist,
+            radius: widget.radiusField,
+            prefix: Icons.lock_outline_rounded,
+            obscure: _obscure2,
+            suffix: IconButton(
+              icon: Icon(
+                _obscure2
+                    ? Icons.visibility_off_outlined
+                    : Icons.visibility_outlined,
+                color: _kAuthTextMuted.withValues(alpha: 0.45),
               ),
-              validator: _req),
-          const SizedBox(height: 20),
+              onPressed: () => setState(() => _obscure2 = !_obscure2),
+            ),
+            validator: _req,
+          ),
+          const SizedBox(height: 18),
           Consumer<AuthProvider>(
             builder: (ctx, auth, _) {
               if (auth.errorMessage != null) {
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 10),
-                  child: Text(auth.errorMessage!,
-                      style: const TextStyle(color: Colors.red, fontSize: 13),
-                      textAlign: TextAlign.center),
+                  child: Text(
+                    auth.errorMessage!,
+                    style: const TextStyle(color: Colors.red, fontSize: 13),
+                    textAlign: TextAlign.center,
+                  ),
                 );
               }
               return const SizedBox.shrink();
             },
           ),
           SizedBox(
-            height: 52,
-            child: ElevatedButton(
-              onPressed: () =>
-                  context.read<AuthProvider>().isLoading ? null : _submit(),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFD9A8E5),
-                foregroundColor: Colors.white,
-                elevation: 0,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-              ),
-              child: context.watch<AuthProvider>().isLoading
-                  ? const SizedBox(
-                      width: 22,
-                      height: 22,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Colors.white),
-                    )
-                  : const Text('注册',
-                      style:
-                          TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+            height: 56,
+            child: Consumer<AuthProvider>(
+              builder: (ctx, auth, _) {
+                return FilledButton(
+                  onPressed: auth.isLoading ? null : _submit,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: widget.mist,
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: widget.mist.withValues(alpha: 0.4),
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(widget.radiusLarge),
+                    ),
+                  ),
+                  child: auth.isLoading
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text(
+                          '注册',
+                          style: TextStyle(
+                              fontSize: 17, fontWeight: FontWeight.w800),
+                        ),
+                );
+              },
             ),
           ),
         ],
@@ -389,39 +490,54 @@ class _RegisterFormState extends State<_RegisterForm> {
   }
 }
 
-// ─── 通用输入框 ──────────────────────────────────────────────────────
+class _AuthField extends StatelessWidget {
+  final String label;
+  final TextEditingController ctrl;
+  final Color mist;
+  final double radius;
+  final IconData prefix;
+  final Widget? suffix;
+  final bool obscure;
+  final String? Function(String?)? validator;
 
-Widget _input(
-  String label,
-  TextEditingController ctrl, {
-  IconData? prefix,
-  Widget? suffix,
-  bool obscure = false,
-  String? Function(String?)? validator,
-}) {
-  return TextFormField(
-    controller: ctrl,
-    obscureText: obscure,
-    validator: validator,
-    decoration: InputDecoration(
-      labelText: label,
-      prefixIcon: prefix != null ? Icon(prefix) : null,
-      suffixIcon: suffix,
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: Colors.grey.shade300),
+  const _AuthField({
+    required this.label,
+    required this.ctrl,
+    required this.mist,
+    required this.radius,
+    required this.prefix,
+    this.suffix,
+    this.obscure = false,
+    this.validator,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TextFormField(
+      controller: ctrl,
+      obscureText: obscure,
+      validator: validator,
+      decoration: InputDecoration(
+        labelText: label,
+        prefixIcon: Icon(prefix, color: mist.withValues(alpha: 0.85)),
+        suffixIcon: suffix,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(radius),
+          borderSide: BorderSide(color: Colors.grey.shade300),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(radius),
+          borderSide: BorderSide(color: Colors.grey.shade300),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(radius),
+          borderSide: BorderSide(color: mist, width: 1.8),
+        ),
+        filled: true,
+        fillColor: Colors.white,
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
       ),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: Colors.grey.shade300),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: const BorderSide(color: Color(0xFFD9A8E5), width: 1.5),
-      ),
-      filled: true,
-      fillColor: Colors.white,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-    ),
-  );
+    );
+  }
 }

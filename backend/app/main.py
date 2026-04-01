@@ -20,10 +20,10 @@ from app.api import (
     users_router,
     wardrobe_router,
 )
+from app.api.mood import router as mood_router
 from app.api.outfit_collections import router as outfit_collections_router
 from app.api.tryon import router as tryon_router
 from app.api.wardrobe_simple import router as wardrobe_simple_router
-from app.api.mood import router as mood_router
 from app.core.config import settings
 from app.core.error_handlers import (
     app_exception_handler,
@@ -32,7 +32,11 @@ from app.core.error_handlers import (
     validation_exception_handler,
 )
 from app.core.exceptions import AppException
+from app.core.hf_hub_env import apply_hf_hub_env_defaults
 from app.core.logging import setup_logging
+
+# 须在首次下载 HF 模型前生效（CLIP 等）
+apply_hf_hub_env_defaults()
 
 # Setup logging
 logger = setup_logging()

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/services/api_client.dart';
+import '../../../core/utils/app_snackbar.dart';
 import '../../../core/providers/theme_provider.dart';
 import '../../../core/theme/style_tokens.dart';
 import '../../../core/theme/theme_model.dart';
@@ -109,11 +110,10 @@ class _ProfileFormScreenState extends State<ProfileFormScreen> {
 
     // 验证至少选择一个风格偏好
     if (_stylePreference.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('请至少选择一个风格偏好'),
-          backgroundColor: Colors.orange,
-        ),
+      showAppSnackBar(
+        context,
+        '请至少选择一个风格偏好',
+        backgroundColor: Colors.orange,
       );
       return;
     }
@@ -137,21 +137,15 @@ class _ProfileFormScreenState extends State<ProfileFormScreen> {
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('保存成功！'),
-            backgroundColor: Colors.green,
-          ),
-        );
+        showAppSnackBar(context, '保存成功！', backgroundColor: Colors.green);
         Navigator.pop(context);
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('保存失败: $e'),
-            backgroundColor: Colors.red,
-          ),
+        showAppSnackBar(
+          context,
+          '保存失败：${userFacingApiError(e)}',
+          backgroundColor: Colors.red,
         );
       }
     } finally {

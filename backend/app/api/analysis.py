@@ -2,9 +2,12 @@
 Analysis API endpoints (similarity, recommendations, suitability)
 """
 
+import io
+import json
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from PIL import Image
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -18,6 +21,55 @@ from app.services.similarity import SimilarityAnalyzer, SimilarityMatch
 from app.services.user_profile import get_profile_by_user_id
 
 router = APIRouter(prefix="/analysis", tags=["Analysis"])
+
+
+def _coerce_str_list(val) -> List[str]:
+    """画像里 JSON 字段在 SQLite 下偶发为 str，统一为 List[str]，避免推荐引擎迭代 None。"""
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return [str(x) for x in val]
+    if isinstance(val, str):
+        try:
+            parsed = json.loads(val)
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed]
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return [val] if val.strip() else []
+    return []
+
+
+def _map_ui_scene_to_engine(scene: Optional[str]) -> Optional[str]:
+    """前端「穿搭推荐」场景 chip 与 SCENE_OUTFIT_TEMPLATES 键对齐。"""
+    if not scene:
+        return None
+    from app.services.outfit_recommender_3d import SCENE_OUTFIT_TEMPLATES
+
+    ui_to_engine = {
+        "日常休闲": "休闲日常",
+        "职场商务": "通勤上班",
+        "约会聚会": "约会",
+        "运动健身": "运动健身",
+        "正式场合": "商务正式",
+    }
+    mapped = ui_to_engine.get(scene.strip(), scene.strip())
+    if mapped in SCENE_OUTFIT_TEMPLATES:
+        return mapped
+    if scene.strip() in SCENE_OUTFIT_TEMPLATES:
+        return scene.strip()
+    return None
+
+
+# 复用识别器，避免每次请求重新加载分类器/特征提取器（首次后显著加快相似度检测）
+_image_recognizer_instance: Optional[ImageRecognizer] = None
+
+
+def _get_image_recognizer() -> ImageRecognizer:
+    global _image_recognizer_instance
+    if _image_recognizer_instance is None:
+        _image_recognizer_instance = ImageRecognizer()
+    return _image_recognizer_instance
 
 
 class SimilarGarmentInfo(BaseModel):
@@ -82,21 +134,22 @@ async def analyze_similarity(
     3. Compares with all garments in user's wardrobe
     4. Returns similarity matches and duplicate warning
     """
-    # Validate file type
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File must be an image (JPEG, PNG, WebP)",
-        )
-
     try:
         # Read image file
         image_bytes = await file.read()
 
-        # Initialize image recognizer
-        recognizer = ImageRecognizer()
+        ct = (file.content_type or "").lower()
+        if not ct.startswith("image/"):
+            try:
+                Image.open(io.BytesIO(image_bytes)).verify()
+            except Exception:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="File must be an image (JPEG, PNG, WebP)",
+                )
 
-        # Recognize image
+        # Recognize image（单例，避免重复初始化模型）
+        recognizer = _get_image_recognizer()
         recognition_result: RecognitionResult = recognizer.recognize(image_bytes)
 
         # Get user's wardrobe
@@ -308,9 +361,10 @@ async def recommend_outfits(
 
         # Get user's profile for scene and body type inference
         user_profile = get_profile_by_user_id(db, current_user.user_id)
-        user_style_prefs = user_profile.style_preference if user_profile else []
+        user_style_prefs = _coerce_str_list(user_profile.style_preference if user_profile else [])
         user_body_type = user_profile.body_type if user_profile else None
-        avoid_body_parts = user_profile.avoid_body_parts if user_profile else []
+        avoid_body_parts = _coerce_str_list(user_profile.avoid_body_parts if user_profile else [])
+        engine_scene = _map_ui_scene_to_engine(scene)
 
         # 无性别推荐系统（修正版）：从 profile 获取性别信息
         user_gender = getattr(user_profile, "gender", None) if user_profile else None
@@ -384,7 +438,7 @@ async def recommend_outfits(
             user_style_preferences=user_style_prefs,
             user_body_type=user_body_type,
             avoid_body_parts=avoid_body_parts,
-            preferred_scene=scene,
+            preferred_scene=engine_scene,
             # 无性别推荐系统参数（修正版）
             user_gender=user_gender,
             user_gender_expression=final_gender_expression,

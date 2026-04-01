@@ -83,6 +83,11 @@ copy .env.example .env  # Windows
 # 暂时使用默认配置即可
 ```
 
+> 模型相关提示：
+> - CLIP / 虚拟试衣首次运行可能会下载权重（弱网易超时）。
+> - 国内网络建议设置：`HF_ENDPOINT=https://hf-mirror.com`
+> - 虚拟试衣默认模型为公开的 `runwayml/stable-diffusion-inpainting`；若改用 gated 模型（例如 stabilityai/*），需要配置 `HF_TOKEN` 并在 HF 网站同意条款。
+
 ### 4. 启动开发服务器
 
 ```bash
@@ -180,16 +185,11 @@ pre-commit run --all-files
 
 - `GET /` - 根端点，返回 API 信息
 - `GET /health` - 健康检查
+ - `POST /api/v1/mood/recommend` - 情绪穿搭推荐（可选包含衣橱匹配）
+ - `GET /api/v1/mood/quick-recall` - 心情快捷入口列表
+ - `POST /api/v1/tryon/garment` - 虚拟试衣（FormData：garment_file/person_file，可选 prompt）
 
-### 即将添加的端点
-
-- `POST /api/v1/auth/register` - 用户注册
-- `POST /api/v1/auth/login` - 用户登录
-- `POST /api/v1/wardrobe/garments` - 添加服饰
-- `GET /api/v1/wardrobe/garments` - 查询衣橱
-- `POST /api/v1/analysis/similarity` - 相似度分析
-- `POST /api/v1/recommendations/outfits` - 搭配推荐
-- `POST /api/v1/analysis/suitability` - 适合度评分
+> 说明：本项目 API 以 `http://localhost:8000/docs`（Swagger）为准；仓库内历史规范文档可能存在版本差异。
 
 ## 环境变量
 

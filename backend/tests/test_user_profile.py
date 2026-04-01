@@ -3,7 +3,6 @@ Tests for user profile module
 Tests profile creation, update, validation, and permission control
 """
 
-import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
 

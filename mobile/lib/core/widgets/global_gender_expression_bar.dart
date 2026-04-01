@@ -45,26 +45,40 @@ class GlobalGenderExpressionBar extends StatelessWidget {
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8),
                     child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          '性别表达指数',
-                          style:
-                              Theme.of(context).textTheme.bodySmall?.copyWith(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
+                        Expanded(
+                          child: Text(
+                            '性别表达指数',
+                            style:
+                                Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurfaceVariant,
+                                    ),
+                          ),
                         ),
                         Text(
-                          FashionPalettes.genderLabel(currentValue),
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
-                              ?.copyWith(
-                                color: Theme.of(context).colorScheme.primary,
-                                fontWeight: FontWeight.bold,
-                              ),
+                          currentValue.toStringAsFixed(2),
+                          style:
+                              Theme.of(context).textTheme.titleSmall?.copyWith(
+                            color: Theme.of(context).colorScheme.primary,
+                            fontWeight: FontWeight.w800,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Flexible(
+                          child: Text(
+                            FashionPalettes.genderLabel(currentValue),
+                            textAlign: TextAlign.end,
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(
+                                  color: Theme.of(context).colorScheme.primary,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                          ),
                         ),
                       ],
                     ),
@@ -95,21 +109,21 @@ class GlobalGenderExpressionBar extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
-                        '偏男性化',
+                        '偏男性风格',
                         style: Theme.of(context).textTheme.labelSmall?.copyWith(
                               color: gradient[0],
                               fontWeight: FontWeight.w600,
                             ),
                       ),
                       Text(
-                        '中性',
+                        '中性风格',
                         style: Theme.of(context).textTheme.labelSmall?.copyWith(
                               color: gradient[1],
                               fontWeight: FontWeight.w600,
                             ),
                       ),
                       Text(
-                        '偏女性化',
+                        '偏女性风格',
                         style: Theme.of(context).textTheme.labelSmall?.copyWith(
                               color: gradient[2],
                               fontWeight: FontWeight.w600,

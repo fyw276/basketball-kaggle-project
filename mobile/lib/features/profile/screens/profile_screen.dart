@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../../../core/providers/auth_provider.dart';
+import '../../../core/utils/app_snackbar.dart';
 import '../../../core/providers/theme_provider.dart';
 import '../../../core/theme/fashion_palettes.dart';
 import '../../../core/widgets/global_gender_expression_bar.dart';
@@ -106,18 +107,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final result = await authProvider.apiClient.createProfile(data);
 
       if (!result.containsKey('error') && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('资料保存成功')),
-        );
+        showAppSnackBar(context, '资料保存成功');
         context.pop();
       } else {
         throw Exception(result['error'] ?? '保存失败');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('保存失败: $e')),
-        );
+        showAppSnackBar(context, '保存失败：${userFacingApiError(e)}');
       }
     } finally {
       setState(() {

@@ -2,7 +2,7 @@
 Outfit Collection API — 套装收藏管理
 """
 
-from typing import List, Optional
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -23,7 +23,6 @@ from app.services.outfit_collection import (
     get_collection_by_id,
     get_collections_by_user,
     record_worn,
-    update_collection,
 )
 
 router = APIRouter(prefix="/outfits", tags=["Outfit Collections"])
@@ -70,10 +69,14 @@ def _build_collection_response(collection, db: Session) -> OutfitCollectionRespo
     )
 
 
-@router.post("/collections", response_model=OutfitCollectionResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/collections", response_model=OutfitCollectionResponse, status_code=status.HTTP_201_CREATED
+)
 async def save_outfit_collection(
     data: OutfitCollectionCreate,
-    overall_score: Optional[float] = Query(None, ge=0, le=1, description="可选：推荐系统给定的综合评分"),
+    overall_score: Optional[float] = Query(
+        None, ge=0, le=1, description="可选：推荐系统给定的综合评分"
+    ),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -112,9 +115,7 @@ def list_outfit_collections(
         db, current_user.user_id, skip=skip, limit=page_size, scene=scene
     )
     items = [_build_collection_response(c, db) for c in collections]
-    return OutfitCollectionListResponse(
-        total=total, page=page, page_size=page_size, items=items
-    )
+    return OutfitCollectionListResponse(total=total, page=page, page_size=page_size, items=items)
 
 
 @router.get("/collections/{collection_id}", response_model=OutfitCollectionResponse)

@@ -1,21 +1,22 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-03-28
-**项目版本**: v1.1.0
-**状态**: ✅ 核心功能完成，可用于演示和测试
+**最后更新**: 2026-04-01
+**状态**: ✅ 可用于演示与迭代（后端 FastAPI + Flutter Web/移动端）
 
 ## 项目简介
 
-智能穿搭助手是一个多端协同的智能穿搭决策系统，通过轻量级图像识别技术和多维度推荐算法，为用户提供：
+智能穿搭助手是一个多端协同的智能穿搭决策系统，通过图像理解（CLIP）与多维度推荐算法，为用户提供：
 
-- 🔍 **相似度分析与重复预警** - 避免重复购买相似服饰
-- 👔 **智能搭配推荐** - 基于个人衣橱生成搭配方案
-- ⭐ **适合度评分** - 评估服饰是否适合用户的肤色、身材和风格
+- 🔍 **相似度分析与重复预警**：找出相似单品，避免重复购买
+- 👔 **智能搭配推荐**：基于衣橱与画像生成场景穿搭方案
+- ⭐ **适合度评分**：颜色 / 风格 / 体型友好度建议
+- 🧠 **情绪穿搭**：根据心情给出更“治愈/更冷静/更有能量”的配色与风格方向，并匹配衣橱单品
+- 🧥 **虚拟试衣（伪 3D 多视角）**：正面 / 侧面 / 背面三视角生成与轮播预览（支持多视角人物照）
 
 ## 核心功能
 
 ### 1. 重复购买预警
-- 使用 MobileNetV2 提取服饰特征向量（1280维）
+- 优先使用 CLIP 提取服饰特征向量（transformers + torch），弱网/离线可回退轻量方案
 - 基于余弦相似度计算与衣橱中服饰的相似度
 - 高/中/低三级相似度分级，自动标记重复购买风险
 
@@ -30,19 +31,28 @@
 - 风格适合度：基于用户风格偏好
 - 综合评分并提供个性化改进建议
 
+### 4. 情绪穿搭（Mood → Outfit）
+- 快捷心情选择（例如「心情不好 · 想暖一点」）
+- 后端输出：风格建议、适用场景、配色倾向（权重）、衣橱单品匹配列表
+
+### 5. 虚拟试衣（Try-on）
+- 前端自动 3 次请求生成 `front/side/back view`
+- 支持人物 3 视角上传：正面必填，侧面/背面可选（未上传则复用正面照）
+- 轮播与全屏预览：等比例完整显示（`contain`），支持缩放/拖拽
+
 ## 技术架构
 
 ### 后端服务
-- **框架**: FastAPI (Python 3.9+)
+- **框架**: FastAPI（推荐 Python 3.12+）
 - **数据库**: PostgreSQL + Redis
-- **AI 模型**: MobileNetV2 (轻量级 CNN)
-- **图像处理**: TensorFlow Lite / PyTorch
+- **AI**:
+  - CLIP（`transformers` + `torch`）用于类别/风格/场景与相似检索特征
+  - 虚拟试衣：diffusers inpainting pipeline（可选，需下载模型；未就绪时 fallback）
 
 ### 移动端 (Flutter)
-- **框架**: Flutter 3.x + Dart
-- **平台**: iOS + Android + Web
-- **状态管理**: Provider / Riverpod
-- **HTTP 客户端**: Dio
+- **框架**: Flutter 3.x + Dart（iOS / Android / Web）
+- **状态管理**: Provider
+- **HTTP 客户端**: `package:http`（自定义 `ApiClient`）
 
 ### 设计系统
 - **Material Design 3** 全局统一主题
@@ -127,6 +137,18 @@ flutter run -d chrome
 # 3. 访问应用
 # 前端: 浏览器自动打开
 # API 文档: http://localhost:8000/docs
+```
+
+### 模型下载/离线提示（重要）
+
+- CLIP / Try-on 首次运行可能需要从 Hugging Face 下载权重（弱网易超时）。
+- 国内网络建议设置镜像：`HF_ENDPOINT=https://hf-mirror.com`
+- 可用脚本一次性预下载（用于离线/加速）：
+
+```bash
+cd backend
+python scripts/prefetch_models.py --clip vit_l14
+python scripts/prefetch_models.py --tryon
 ```
 
 ### Git Hooks 设置
@@ -287,7 +309,7 @@ flutter test
 
 ## 致谢
 
-- MobileNetV2 模型来自 TensorFlow
+- CLIP / Diffusers 等模型组件来自开源社区
 - 感谢所有开源项目的贡献者
 
 ---

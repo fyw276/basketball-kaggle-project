@@ -5,7 +5,6 @@ Unit tests for image recognition module (Tasks 6.3, 7.3, 8.3, 9.2, 11.3)
 import io
 
 import numpy as np
-import pytest
 from PIL import Image
 
 from app.ml.category_classifier import CategoryClassifier

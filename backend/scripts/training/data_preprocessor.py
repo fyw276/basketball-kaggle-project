@@ -53,7 +53,8 @@ class DataPreprocessor:
         """
         with self.engine.connect() as conn:
             result = conn.execute(
-                text("""
+                text(
+                    """
                     SELECT
                         garment_id, user_id, category, main_color,
                         secondary_colors, style_tags, fit_type,
@@ -61,7 +62,8 @@ class DataPreprocessor:
                         name, gender_label, neutral_score
                     FROM garments
                     ORDER BY created_at DESC
-                """)
+                """
+                )
             )
 
             garments = []
@@ -197,13 +199,15 @@ class DataPreprocessor:
 
             with self.engine.connect() as conn:
                 conn.execute(
-                    text("""
+                    text(
+                        """
                         UPDATE garments
                         SET feature_vector = :vector,
                             updated_at = datetime('now')
                         WHERE garment_id = :garment_id
-                    """),
-                    {"vector": vector_json, "garment_id": garment_id}
+                    """
+                    ),
+                    {"vector": vector_json, "garment_id": garment_id},
                 )
                 conn.commit()
 

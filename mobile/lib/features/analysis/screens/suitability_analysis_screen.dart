@@ -1,10 +1,9 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import '../../../core/providers/auth_provider.dart';
+import '../../../core/services/feature_local_store.dart';
 import '../../../core/providers/theme_provider.dart';
-import '../../../core/theme/fashion_palettes.dart';
 import '../../../core/widgets/analysis_feature_layout.dart';
 import '../../../core/widgets/analysis_result_display.dart';
 import '../../../core/widgets/image_picker_section.dart';
@@ -24,6 +23,16 @@ class _SuitabilityAnalysisScreenState extends State<SuitabilityAnalysisScreen> {
   String? _selectedScene;
   final _scenes = ['日常通勤', '正式场合', '休闲娱乐', '约会聚会', '运动健身', '旅行出游'];
 
+  static const _cacheKey = 'suitability_analysis';
+
+  @override
+  void initState() {
+    super.initState();
+    FeatureLocalStore.loadJson(_cacheKey).then((m) {
+      if (m != null && mounted) setState(() => _result = m);
+    });
+  }
+
   Future<void> _analyze() async {
     if (_image == null) return;
     setState(() {
@@ -42,10 +51,13 @@ class _SuitabilityAnalysisScreenState extends State<SuitabilityAnalysisScreen> {
     } catch (_) {
       _result = _demoResult();
     }
-    if (mounted)
+    if (mounted) {
       setState(() {
         _loading = false;
       });
+      final r = _result;
+      if (r != null) FeatureLocalStore.saveJson(_cacheKey, r);
+    }
   }
 
   Map<String, dynamic> _demoResult() => {

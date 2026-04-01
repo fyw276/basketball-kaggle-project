@@ -20,7 +20,7 @@ class AnalysisFeatureLayout extends StatelessWidget {
     required this.body,
     this.floatingActionButton,
     this.actions,
-    this.showGenderBar = true,
+    this.showGenderBar = false,
     this.showBackButton = true,
   });
 
@@ -57,7 +57,7 @@ class AnalysisFeatureLayout extends StatelessWidget {
           ),
           floatingActionButton: floatingActionButton,
           bottomNavigationBar:
-              showGenderBar ? GlobalGenderExpressionBar() : null,
+              showGenderBar ? const GlobalGenderExpressionBar() : null,
         );
       },
     );

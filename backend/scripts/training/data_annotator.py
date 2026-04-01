@@ -26,17 +26,40 @@ sys.path.insert(0, str(project_root))
 
 from PIL import Image
 
-
 # 标注类别
 CATEGORIES = [
-    "上衣", "裤子", "裙子", "外套", "鞋", "包",
-    "汉服", "国风", "马面裙", "上衣(汉)", "下装(汉)", "连衣裙"
+    "上衣",
+    "裤子",
+    "裙子",
+    "外套",
+    "鞋",
+    "包",
+    "汉服",
+    "国风",
+    "马面裙",
+    "上衣(汉)",
+    "下装(汉)",
+    "连衣裙",
 ]
 
 STYLES = [
-    "通勤", "休闲", "正式", "运动", "街头",
-    "学院", "甜酷", "简约", "复古", "朋克",
-    "民族", "优雅", "国风", "汉服", "新中式", "禅意", "古风"
+    "通勤",
+    "休闲",
+    "正式",
+    "运动",
+    "街头",
+    "学院",
+    "甜酷",
+    "简约",
+    "复古",
+    "朋克",
+    "民族",
+    "优雅",
+    "国风",
+    "汉服",
+    "新中式",
+    "禅意",
+    "古风",
 ]
 
 GENDERS = ["男", "女", "中性"]
@@ -137,7 +160,9 @@ class AnnotationTool:
                 </div>
             </body>
             </html>
-            """.format(total=len(self.annotations))
+            """.format(
+                total=len(self.annotations)
+            )
             return html
 
         current_image = pending_images[0]
@@ -293,20 +318,26 @@ class AnnotationTool:
         """
 
         # 生成选项
-        category_options = "\n".join([
-            f'<div class="radio-item"><input type="radio" name="category" id="cat_{i}" value="{cat}" required><label for="cat_{i}">{cat}</label></div>'
-            for i, cat in enumerate(CATEGORIES)
-        ])
+        category_options = "\n".join(
+            [
+                f'<div class="radio-item"><input type="radio" name="category" id="cat_{i}" value="{cat}" required><label for="cat_{i}">{cat}</label></div>'
+                for i, cat in enumerate(CATEGORIES)
+            ]
+        )
 
-        style_options = "\n".join([
-            f'<div class="checkbox-item"><input type="checkbox" name="style" id="style_{i}" value="{style}"><label for="style_{i}">{style}</label></div>'
-            for i, style in enumerate(STYLES)
-        ])
+        style_options = "\n".join(
+            [
+                f'<div class="checkbox-item"><input type="checkbox" name="style" id="style_{i}" value="{style}"><label for="style_{i}">{style}</label></div>'
+                for i, style in enumerate(STYLES)
+            ]
+        )
 
-        gender_options = "\n".join([
-            f'<div class="radio-item"><input type="radio" name="gender" id="gender_{i}" value="{g}"><label for="gender_{i}">{g}</label></div>'
-            for i, g in enumerate(GENDERS)
-        ])
+        gender_options = "\n".join(
+            [
+                f'<div class="radio-item"><input type="radio" name="gender" id="gender_{i}" value="{g}"><label for="gender_{i}">{g}</label></div>'
+                for i, g in enumerate(GENDERS)
+            ]
+        )
 
         return html.format(
             image_data=image_data,
@@ -316,7 +347,9 @@ class AnnotationTool:
             total=len(pending_images),
             remaining=remaining,
             total_annotated=len(self.annotations),
-            num_categories=len(set(a.get("category") for a in self.annotations.values() if a.get("category"))),
+            num_categories=len(
+                set(a.get("category") for a in self.annotations.values() if a.get("category"))
+            ),
             category_options=category_options,
             style_options=style_options,
             gender_options=gender_options,
@@ -325,8 +358,8 @@ class AnnotationTool:
     def run_server(self, host: str = "localhost", port: int = 5000):
         """启动标注服务"""
         try:
-            from flask import Flask, request, redirect, send_file, Response
             import cv2
+            from flask import Flask, Response, redirect, request, send_file
         except ImportError:
             print("[Error] Flask is required. Install: pip install flask")
             return
@@ -386,13 +419,15 @@ class AnnotationTool:
             data = []
             for path, ann in self.annotations.items():
                 if Path(path).exists():
-                    data.append({
-                        "image_path": path,
-                        "category": ann.get("category"),
-                        "style_tags": ann.get("styles", []),
-                        "gender": ann.get("gender"),
-                        "fit_type": ann.get("fit_type"),
-                    })
+                    data.append(
+                        {
+                            "image_path": path,
+                            "category": ann.get("category"),
+                            "style_tags": ann.get("styles", []),
+                            "gender": ann.get("gender"),
+                            "fit_type": ann.get("fit_type"),
+                        }
+                    )
 
             export_file = self.output_dir / "exported_annotations.json"
             with open(export_file, "w", encoding="utf-8") as f:
@@ -463,17 +498,19 @@ class AnnotationTool:
                         count += 1
             return f"<h2>Uploaded {count} images</h2><a href='/'>Start Annotating</a>"
 
-        print(f"""
+        print(
+            f"""
         =========================================
         [Annotation Tool] Starting Server
         =========================================
         URL: http://{host}:{port}
-        
+
         Open this URL in your browser to start annotating!
-        
+
         Keyboard shortcut: Press 's' to save
         =========================================
-        """)
+        """
+        )
 
         webbrowser.open(f"http://{host}:{port}")
         app.run(host=host, port=port, debug=False)
@@ -515,13 +552,15 @@ def export_annotations(output_dir: str = "./annotations"):
     data = []
     for path, ann in annotations.items():
         if Path(path).exists():
-            data.append({
-                "image_path": path,
-                "category": ann.get("category"),
-                "style_tags": ann.get("styles", []),
-                "gender": ann.get("gender"),
-                "fit_type": ann.get("fit_type"),
-            })
+            data.append(
+                {
+                    "image_path": path,
+                    "category": ann.get("category"),
+                    "style_tags": ann.get("styles", []),
+                    "gender": ann.get("gender"),
+                    "fit_type": ann.get("fit_type"),
+                }
+            )
 
     with open(export_file, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)

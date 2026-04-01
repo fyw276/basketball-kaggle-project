@@ -10,7 +10,9 @@ dist/
 downloads/
 eggs/
 .eggs/
-# Only ignore Python "lib" at repo root — this does NOT affect mobile/lib/
+# Python: virtualenv / setuptools layout at REPO ROOT ONLY.
+# CRITICAL: Do NOT use bare `lib/` here — it matches every `lib/` in the tree (e.g. mobile/lib/) and
+# Flutter/Dart sources will disappear from `git status` and never get committed.
 /lib/
 lib64/
 parts/
@@ -144,3 +146,7 @@ temp/
 # Documentation build
 docs/_build/
 site/
+
+# Flutter: always track app Dart sources. Keep this block LAST so it wins if anyone re-adds a broad `lib/` rule.
+!mobile/lib/
+!mobile/lib/**

@@ -1,153 +1,151 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+
 import '../../../core/providers/auth_provider.dart';
 import '../../../core/providers/theme_provider.dart';
+import '../../../core/theme/fashion_palettes.dart';
 import '../../../core/widgets/gender_decoration.dart';
+import '../../analysis/screens/body_shape_insight_screen.dart';
+import '../../analysis/screens/mood_outfit_screen.dart';
+import '../../analysis/screens/outfit_recommend_screen.dart';
+import '../../analysis/screens/similarity_analysis_screen.dart';
+import '../../analysis/screens/suitability_analysis_screen.dart';
+import '../../analysis/screens/virtual_tryon_screen.dart';
 
-/// App home screen with 4 feature entry cards.
+/// 主页：自上而下固定 5 项；配色随全局性别表达指数；底部滑块仅在 Shell 中展示。
 class AppHomeScreen extends StatelessWidget {
   const AppHomeScreen({super.key});
 
+  static const _radius = 26.0;
+
+  void _push(BuildContext context, Widget page) {
+    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => page));
+  }
+
   @override
   Widget build(BuildContext context) {
+    final palette = context.watch<ThemeProvider>().palette;
+
     return Scaffold(
+      backgroundColor: palette.background,
       appBar: AppBar(
         title: const Text('智能穿搭助手'),
-        backgroundColor: Theme.of(context).colorScheme.surface,
+        backgroundColor: palette.background,
+        foregroundColor: palette.textTitle,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
         actions: [
           IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () => context.push('/settings/style'),
-          ),
-          IconButton(
-            icon: const Icon(Icons.logout),
+            tooltip: '退出登录',
+            icon: Icon(Icons.logout_rounded, color: palette.textBody),
             onPressed: () {
-              final authProvider = context.read<AuthProvider>();
-              authProvider.logout();
-              context.go('/login');
+              context.read<AuthProvider>().logout();
+              context.go('/auth');
             },
           ),
         ],
       ),
       body: Stack(
         children: [
-          // Background decoration
           Positioned(
-            right: -80,
-            bottom: 100,
+            right: -64,
+            bottom: 96,
             child: Opacity(
-              opacity: 0.06,
+              opacity: 0.1,
               child: Consumer<ThemeProvider>(
-                builder: (context, themeProvider, _) {
+                builder: (context, tp, _) {
                   return GenderDecoration(
-                    genderExpression: themeProvider.genderExpression,
-                    size: 350,
+                    genderExpression: tp.genderExpression,
+                    size: 300,
                   );
                 },
               ),
             ),
           ),
-          // Content
-          SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Welcome section
-                Consumer<AuthProvider>(
-                  builder: (context, authProvider, _) {
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '你好, ${authProvider.username ?? '用户'}',
-                          style: Theme.of(context)
-                              .textTheme
-                              .headlineSmall
-                              ?.copyWith(
-                                fontWeight: FontWeight.bold,
-                              ),
+          ListView(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+            children: [
+              Text(
+                'AI 穿搭，自由表达',
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      color: palette.textTitle,
+                      fontWeight: FontWeight.w800,
+                    ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '智能衣橱・虚拟试衣・风格自由',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: palette.textBody,
+                    ),
+              ),
+              const SizedBox(height: 8),
+              Consumer<AuthProvider>(
+                builder: (context, auth, _) {
+                  return Text(
+                    '你好，${auth.username ?? '用户'}',
+                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          color: palette.textBody,
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '今天想穿什么风格?',
-                          style:
-                              Theme.of(context).textTheme.bodyLarge?.copyWith(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-                const SizedBox(height: 24),
-                // Feature grid
-                GridView.count(
-                  crossAxisCount: 2,
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  mainAxisSpacing: 16,
-                  crossAxisSpacing: 16,
-                  childAspectRatio: 1.1,
-                  children: [
-                    _FeatureCard(
-                      icon: Icons.checkroom,
-                      title: '我的衣橱',
-                      subtitle: '管理你的服饰',
-                      color: Colors.blue,
-                      onTap: () => context.push('/wardrobe'),
-                    ),
-                    _FeatureCard(
-                      icon: Icons.style,
-                      title: '穿搭推荐',
-                      subtitle: '智能搭配建议',
-                      color: Colors.purple,
-                      onTap: () => context.push('/analysis/outfit'),
-                    ),
-                    _FeatureCard(
-                      icon: Icons.compare,
-                      title: '相似度检测',
-                      subtitle: '避免重复穿搭',
-                      color: Colors.orange,
-                      onTap: () => context.push('/analysis/similarity'),
-                    ),
-                    _FeatureCard(
-                      icon: Icons.grade,
-                      title: '适合度分析',
-                      subtitle: '评估穿搭场景',
-                      color: Colors.green,
-                      onTap: () => context.push('/analysis/suitability'),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 24),
-                // Quick actions
-                Text(
-                  '快捷操作',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                ),
-                const SizedBox(height: 12),
-                _QuickActionTile(
-                  icon: Icons.person_outline,
-                  title: '完善个人资料',
-                  subtitle: '设置体型、肤色等信息',
-                  onTap: () => context.push('/profile/create'),
-                ),
-                _QuickActionTile(
-                  icon: Icons.tune,
-                  title: '风格偏好设置',
-                  subtitle: '调整性别表达指数',
-                  onTap: () => context.push('/settings/style'),
-                ),
-              ],
-            ),
+                  );
+                },
+              ),
+              const SizedBox(height: 22),
+              _HomeRow(
+                palette: palette,
+                radius: _radius,
+                icon: Icons.auto_awesome_rounded,
+                title: '智能推荐',
+                subtitle: '基于衣橱与画像生成搭配方案',
+                onTap: () => _push(context, const OutfitRecommendScreen()),
+              ),
+              const SizedBox(height: 12),
+              _HomeRow(
+                palette: palette,
+                radius: _radius,
+                icon: Icons.favorite_outline_rounded,
+                title: '情绪穿搭',
+                subtitle: '心情不好时也能给你更暖的配色与衣橱匹配',
+                onTap: () => _push(context, const MoodOutfitScreen()),
+              ),
+              const SizedBox(height: 12),
+              _HomeRow(
+                palette: palette,
+                radius: _radius,
+                icon: Icons.view_in_ar_rounded,
+                title: '虚拟试衣',
+                subtitle: '伪 3D 多角度（正面 / 侧面 / 背面）',
+                onTap: () => _push(context, const VirtualTryonScreen()),
+              ),
+              const SizedBox(height: 12),
+              _HomeRow(
+                palette: palette,
+                radius: _radius,
+                icon: Icons.layers_outlined,
+                title: '相似衣物检测',
+                subtitle: '对比衣橱，避免重复购买',
+                onTap: () => _push(context, const SimilarityAnalysisScreen()),
+              ),
+              const SizedBox(height: 12),
+              _HomeRow(
+                palette: palette,
+                radius: _radius,
+                icon: Icons.bar_chart_rounded,
+                title: '适合度分析',
+                subtitle: '肤色、体型与风格匹配度',
+                onTap: () => _push(context, const SuitabilityAnalysisScreen()),
+              ),
+              const SizedBox(height: 12),
+              _HomeRow(
+                palette: palette,
+                radius: _radius,
+                icon: Icons.accessibility_new_rounded,
+                title: '体型感知',
+                subtitle: '结合画像的穿搭建议',
+                onTap: () => _push(context, const BodyShapeInsightScreen()),
+              ),
+            ],
           ),
         ],
       ),
@@ -155,109 +153,77 @@ class AppHomeScreen extends StatelessWidget {
   }
 }
 
-class _FeatureCard extends StatelessWidget {
+class _HomeRow extends StatelessWidget {
+  final Palette palette;
+  final double radius;
   final IconData icon;
   final String title;
   final String subtitle;
-  final Color color;
   final VoidCallback onTap;
 
-  const _FeatureCard({
+  const _HomeRow({
+    required this.palette,
+    required this.radius,
     required this.icon,
     required this.title,
     required this.subtitle,
-    required this.color,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Card(
+    return Material(
+      color: palette.cardBg,
+      borderRadius: BorderRadius.circular(radius),
+      clipBehavior: Clip.antiAlias,
       elevation: 0,
-      color: color.withOpacity(0.1),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(
-          color: color.withOpacity(0.3),
-          width: 1,
-        ),
-      ),
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+        borderRadius: BorderRadius.circular(radius),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(radius),
+            border: Border.all(color: palette.divider),
+            boxShadow: palette.cardShadows,
+          ),
+          child: Row(
             children: [
               Container(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
-                  color: color.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(12),
+                  color: palette.primary.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(20),
                 ),
-                child: Icon(
-                  icon,
-                  color: color,
-                  size: 28,
+                child: Icon(icon, size: 28, color: palette.primary),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w800,
+                            color: palette.textTitle,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: palette.textBody,
+                            height: 1.35,
+                          ),
+                    ),
+                  ],
                 ),
               ),
-              const Spacer(),
-              Text(
-                title,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: color.withOpacity(0.8),
-                    ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                subtitle,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-              ),
+              Icon(Icons.chevron_right_rounded, color: palette.textBody),
             ],
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _QuickActionTile extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final VoidCallback onTap;
-
-  const _QuickActionTile({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        leading: Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.primaryContainer,
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Icon(
-            icon,
-            color: Theme.of(context).colorScheme.primary,
-          ),
-        ),
-        title: Text(title),
-        subtitle: Text(subtitle),
-        trailing: const Icon(Icons.chevron_right),
-        onTap: onTap,
       ),
     );
   }

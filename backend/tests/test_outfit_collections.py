@@ -5,7 +5,6 @@ Tests for outfit collection API endpoints
 import io
 from uuid import uuid4
 
-import pytest
 from PIL import Image
 
 

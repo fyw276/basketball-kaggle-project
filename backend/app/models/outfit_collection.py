@@ -5,7 +5,7 @@ Outfit Collection model for saving user-curated outfit sets
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CHAR, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base
