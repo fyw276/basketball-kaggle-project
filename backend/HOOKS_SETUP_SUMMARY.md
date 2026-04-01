@@ -4,7 +4,7 @@
 
 ### 1. 更新和优化 Pre-commit 配置
 
-**文件：** `backend/.pre-commit-config.yaml`
+**文件：** 仓库根目录 `.pre-commit-config.yaml`（不再放在 `backend/`）
 
 **改进：**
 - ✅ 更新所有 hooks 到最新版本
