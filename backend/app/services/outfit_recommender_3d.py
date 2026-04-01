@@ -15,17 +15,43 @@ This module provides gender-inclusive outfit recommendations:
 4. Gender dimension (女性专用) — 仅女性用户应用 gender_compatibility 评分
 """
 
+from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.config import settings
 from app.core.logging import setup_logging
 from app.models.garment import Garment
 from app.schemas.garment import ColorSchema
 from app.services.outfit_rules import CategoryRules, ColorRules, StyleRules
 
 logger = setup_logging()
+
+
+def _public_image_url_for_garment(g: Garment) -> str:
+    """
+    Prefer persisted image_url; if missing, derive /uploads/... URL from image_path.
+    (Older rows may have empty image_url.)
+    """
+    u = (getattr(g, "image_url", None) or "").strip()
+    if u:
+        return u
+    p = (getattr(g, "image_path", None) or "").strip()
+    if not p:
+        return ""
+    p_norm = p.replace("\\", "/")
+    low = p_norm.lower()
+    idx = low.find("/uploads/")
+    if idx >= 0:
+        tail = p_norm[idx + len("/uploads/") :]
+        return f"http://127.0.0.1:{settings.PORT}/uploads/{tail}"
+    uid = str(getattr(g, "user_id", "") or "")
+    name = Path(p_norm).name
+    if uid and name:
+        return f"http://127.0.0.1:{settings.PORT}/uploads/{uid}/{name}"
+    return ""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -657,7 +683,14 @@ class OutfitRecommender3D:
         # Dimension 5: 无性别推荐系统 - Gender compatibility（仅对女性生效）
         if user_gender_expression is not None:
             # 女性用户：计算性别兼容性
-            total_neutral = sum(getattr(g, "neutral_score", 1.0) for g in garments)
+            # Some historical garment rows may have neutral_score=None; treat as neutral (1.0)
+            # rather than crashing the whole recommendation flow.
+            total_neutral = 0.0
+            for g in garments:
+                v = getattr(g, "neutral_score", 1.0)
+                if v is None:
+                    v = 1.0
+                total_neutral += float(v)
             avg_neutral = total_neutral / len(garments) if garments else 0.5
             # 性别兼容性：用户性别表达与商品中性化程度的匹配度
             gender_compatibility = 1.0 - abs(user_gender_expression - avg_neutral)
@@ -716,7 +749,7 @@ class OutfitRecommender3D:
                         )
                     ),
                     style_tags=st,
-                    image_url=getattr(g, "image_url", "") or "",
+                    image_url=_public_image_url_for_garment(g),
                     role=role,
                 )
             )

@@ -488,7 +488,15 @@ class CLIPRecognizer:
             return Image.open(Path(source)).convert("RGB")
 
         if isinstance(source, bytes):
-            return Image.open(BytesIO(source)).convert("RGB")
+            # Web uploads occasionally arrive with truncated buffers (e.g. interrupted read).
+            # Be permissive and try to decode anyway; downstream logic can still work with
+            # a partially decoded image better than failing the whole request with 500.
+            from PIL import ImageFile
+
+            ImageFile.LOAD_TRUNCATED_IMAGES = True
+            img = Image.open(BytesIO(source))
+            img.load()
+            return img.convert("RGB")
 
         raise ValueError(f"Unsupported image source type: {type(source)}")
 

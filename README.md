@@ -1,6 +1,6 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-04-01
+**最后更新**: 2026-04-02
 **状态**: ✅ 可用于演示与迭代（后端 FastAPI + Flutter Web/移动端）
 
 ## 项目简介
@@ -23,6 +23,7 @@
 ### 2. 搭配推荐
 - 基于品类搭配规则生成搭配方案（颜色和谐 + 风格一致）
 - 支持场景指定（正式/休闲/约会/运动）
+- 支持 **多张服饰图** 同次请求（最多 5 张）：服务端合并特征与标签后以第一张为主图预览
 - 考虑用户性别表达指数，智能推荐中性风或跨性别穿搭
 
 ### 3. 适合度评分
@@ -85,7 +86,7 @@ clothing-assistant/
 │   │   ├── models/                # ORM 模型
 │   │   ├── schemas/               # Pydantic schemas
 │   │   └── services/              # 业务逻辑
-│   ├── tests/                     # ✅ 324 个测试（全部通过）
+│   ├── tests/                     # ✅ pytest 套件（见 backend/tests）
 │   └── uploads/                   # 上传的图片
 ├── mobile/                         # ✅ Flutter 前端（已完成）
 │   └── lib/
@@ -114,7 +115,7 @@ clothing-assistant/
 
 ## 快速开始
 
-详细的启动指南请查看 [QUICK_START.md](QUICK_START.md)
+详细的启动指南请查看 [QUICK_START.md](QUICK_START.md)。搭配推荐多图上传说明见 [docs/OUTFIT_MULTI_IMAGE_UPLOAD.md](docs/OUTFIT_MULTI_IMAGE_UPLOAD.md)。
 
 ### 环境要求
 

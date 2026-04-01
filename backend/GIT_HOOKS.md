@@ -6,21 +6,23 @@
 
 ### 一键安装（推荐）
 
-**Windows PowerShell（推荐）:**
+从**仓库根目录**（存在 `.git` 与 `.pre-commit-config.yaml` 的目录）执行：
+
+**Windows PowerShell:**
 ```powershell
-cd backend
+cd D:\path\to\clothing-assistant
 .\setup-hooks.ps1
 ```
 
 **Windows CMD:**
-```bash
-cd backend
+```cmd
+cd D:\path\to\clothing-assistant
 setup-hooks.bat
 ```
 
 **Linux/Mac:**
 ```bash
-cd backend
+cd /path/to/clothing-assistant
 chmod +x setup-hooks.sh
 ./setup-hooks.sh
 ```
@@ -28,6 +30,7 @@ chmod +x setup-hooks.sh
 ### 手动安装
 
 ```bash
+# 在仓库根目录
 # 1. 安装 pre-commit
 pip install pre-commit==4.0.1 detect-secrets==1.5.0
 
@@ -36,8 +39,8 @@ pre-commit install --hook-type pre-commit
 pre-commit install --hook-type commit-msg
 pre-commit install --hook-type pre-push
 
-# 3. 初始化密钥检测
-detect-secrets scan > backend/.secrets.baseline
+# 3. 密钥基线（根目录 .secrets.baseline，与 .pre-commit-config.yaml 中 detect-secrets 一致）
+detect-secrets scan > .secrets.baseline
 
 # 4. 验证安装
 pre-commit run --all-files
@@ -182,7 +185,7 @@ pre-commit install --hook-type pre-push
 
 主配置文件，定义所有 hooks 和规则。
 
-**位置：** `backend/.pre-commit-config.yaml`
+**位置：** 仓库根目录 `.pre-commit-config.yaml`
 
 **修改后：**
 ```bash
@@ -194,11 +197,11 @@ pre-commit install --hook-type pre-commit --overwrite
 
 密钥检测基线文件，记录已知的"假阳性"。
 
-**位置：** `backend/.secrets.baseline`
+**位置：** 仓库根目录 `.secrets.baseline`（与 pre-commit 配置中的 `--baseline` 一致）
 
 **更新基线：**
 ```bash
-detect-secrets scan --baseline backend/.secrets.baseline
+detect-secrets scan --baseline .secrets.baseline
 ```
 
 ### pyproject.toml
@@ -343,4 +346,4 @@ repos:
 
 ---
 
-**最后更新：** 2026-03-21
+**最后更新：** 2026-04-02

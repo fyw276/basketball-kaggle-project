@@ -40,6 +40,73 @@ def _coerce_str_list(val) -> List[str]:
     return []
 
 
+MAX_OUTFIT_UPLOAD_IMAGES = 5
+
+
+def _merge_clip_like_results(results: List[dict]) -> dict:
+    """多张图：特征向量取平均，风格标签合并去重，品类取第一张（主图）。"""
+    if not results:
+        raise ValueError("empty clip results")
+    if len(results) == 1:
+        return results[0]
+    vecs = [list(r["feature_vector"]) for r in results]
+    max_len = max(len(v) for v in vecs)
+    padded = [v + [0.0] * (max_len - len(v)) for v in vecs]
+    n0 = max_len
+    avg = [sum(padded[i][j] for i in range(len(padded))) / len(padded) for j in range(n0)]
+    tag_seen = set()
+    tags: List[str] = []
+    for r in results:
+        for t in r.get("style_tags") or []:
+            if t not in tag_seen:
+                tag_seen.add(t)
+                tags.append(t)
+    cat = results[0]["category"]
+    confs = [float(r.get("category_confidence", 0.5)) for r in results]
+    conf = sum(confs) / len(confs)
+    occ_seen = set()
+    occasions: List[str] = []
+    for r in results:
+        for o in r.get("occasions") or []:
+            if o not in occ_seen:
+                occ_seen.add(o)
+                occasions.append(o)
+    out = dict(results[0])
+    out.update(
+        {
+            "feature_vector": avg,
+            "style_tags": tags,
+            "category": cat,
+            "category_confidence": conf,
+            "occasions": occasions,
+        }
+    )
+    return out
+
+
+def _recognize_image_bytes_to_clip_dict(image_bytes: bytes) -> dict:
+    """单张图 → CLIP 结果 dict；失败则 MobileNet 兜底。"""
+    try:
+        from app.ml.clip_recognizer import get_clip_recognizer
+
+        recognizer = get_clip_recognizer()
+        return recognizer.recognize(image_bytes)
+    except Exception as e:
+        from app.core.logging import setup_logging
+
+        logger = setup_logging()
+        logger.warning(f"CLIP recognition failed, fallback to ImageRecognizer: {e}")
+        legacy = ImageRecognizer().recognize(image_bytes)
+        return {
+            "category": legacy.category,
+            "category_confidence": getattr(legacy, "category_confidence", 0.5),
+            "style_tags": legacy.style_tags,
+            "fit_type": None,
+            "feature_vector": list(legacy.feature_vector),
+            "main_color": legacy.main_color.model_dump(),
+        }
+
+
 def _map_ui_scene_to_engine(scene: Optional[str]) -> Optional[str]:
     """前端「穿搭推荐」场景 chip 与 SCENE_OUTFIT_TEMPLATES 键对齐。"""
     if not scene:
@@ -291,7 +358,14 @@ class OutfitRecommendationResponse(BaseModel):
 
 @router.post("/outfits", response_model=OutfitRecommendationResponse)
 async def recommend_outfits(
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(
+        None,
+        description="单张图片（兼容旧客户端，字段名 file）",
+    ),
+    files: Optional[List[UploadFile]] = File(
+        None,
+        description="多张图片（字段名 files，可重复；优先于 file）",
+    ),
     num_outfits: int = 3,
     scene: Optional[str] = None,
     # 无性别推荐系统参数（修正版）
@@ -307,16 +381,27 @@ async def recommend_outfits(
     """
     Generate outfit recommendations (3D: 场景-品类-风格 + 无性别推荐)
 
+    支持 **多张上传**：对每张图做识别后合并特征（向量平均、标签合并），主图（预览）为第一张。
+
     无性别推荐系统（修正版）：
     - 女性用户（gender == "女"）：全量召回，应用 gender_compatibility 评分
     - 男性用户（gender == "男"）：默认仅召回 [male, neutral]，不应用 gender_compatibility
     - 男性用户（explore_cross_gender=True）：小比例混入 neutral_score>0.7 的女款
     """
-    # Validate file type
-    if not file.content_type or not file.content_type.startswith("image/"):
+    upload_list: List[UploadFile] = []
+    if files:
+        upload_list = [f for f in files if f is not None]
+    if not upload_list and file is not None:
+        upload_list = [file]
+    if not upload_list:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File must be an image (JPEG, PNG, WebP)",
+            detail="请至少上传一张图片（file 或 files）",
+        )
+    if len(upload_list) > MAX_OUTFIT_UPLOAD_IMAGES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"最多上传 {MAX_OUTFIT_UPLOAD_IMAGES} 张图片",
         )
 
     # Validate num_outfits
@@ -327,23 +412,26 @@ async def recommend_outfits(
         )
 
     try:
-        # Read image file
-        image_bytes = await file.read()
+        all_bytes: List[bytes] = []
+        filenames: List[str] = []
+        for uf in upload_list:
+            if not uf.content_type or not uf.content_type.startswith("image/"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="所有文件必须是图片（JPEG, PNG, WebP）",
+                )
+            all_bytes.append(await uf.read())
+            filenames.append((uf.filename or "upload.jpg").strip() or "upload.jpg")
 
-        # Recognize image using CLIP (FashionCLIP approach)
-        try:
-            from app.ml.clip_recognizer import get_clip_recognizer
+        # 每张图识别，再合并为一次推荐用的「虚拟目标」
+        per_image: List[dict] = []
+        for b in all_bytes:
+            per_image.append(_recognize_image_bytes_to_clip_dict(b))
+        clip_result = _merge_clip_like_results(per_image)
 
-            recognizer = get_clip_recognizer()
-            clip_result = recognizer.recognize(image_bytes)
-        except Exception as e:
-            import traceback
-
-            traceback.print_exc()
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Image recognition failed: {str(e)}",
-            )
+        # 主图：第一张（预览与颜色提取）
+        image_bytes = all_bytes[0]
+        preview_name = filenames[0]
 
         # Get user's wardrobe
         wardrobe_garments = get_garments_by_user(db, current_user.user_id)
@@ -384,12 +472,21 @@ async def recommend_outfits(
             # API 未传参：女性使用 profile 值，男性不使用
             final_gender_expression = profile_gender_expression if is_female else None
 
-        # Create a temporary garment object for the target
+        # Persist upload so target garment has a real /uploads URL
+        # (否则组合里「上衣」常为当前图但 image_url 为空，前端无法显示)
         from uuid import uuid4
 
         from app.ml.color_extractor import ColorExtractor
         from app.models.garment import Garment
         from app.schemas.garment import ColorSchema
+        from app.services.storage import StorageService
+
+        storage = StorageService()
+        target_image_path, target_image_url = storage.save_image_bytes(
+            image_bytes,
+            str(current_user.user_id),
+            original_name=preview_name,
+        )
 
         color_extractor = ColorExtractor(n_colors=3)
         colors = color_extractor.extract_colors(image_bytes)
@@ -420,8 +517,8 @@ async def recommend_outfits(
             secondary_colors=[c.model_dump() for c in secondary_colors],
             style_tags=clip_result["style_tags"],
             fit_type=clip_result.get("fit_type"),
-            image_path="",
-            image_url="",
+            image_path=target_image_path,
+            image_url=target_image_url,
             feature_vector=feature_vector,
         )
 
@@ -451,7 +548,7 @@ async def recommend_outfits(
         return OutfitRecommendationResponse(
             target_garment={
                 "category": clip_result["category"],
-                "category_confidence": clip_result["category_confidence"],
+                "category_confidence": clip_result.get("category_confidence", 0.5),
                 "main_color": main_color.model_dump(),
                 "secondary_colors": [c.model_dump() for c in secondary_colors],
                 "style_tags": clip_result["style_tags"],

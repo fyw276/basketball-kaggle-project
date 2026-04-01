@@ -250,7 +250,7 @@ flutter test
 
 #### 分析功能
 - `POST /api/v1/analysis/similarity` - 相似度分析
-- `POST /api/v1/analysis/outfits` - 搭配推荐
+- `POST /api/v1/analysis/outfits` - 搭配推荐（单图字段 `file`；多图字段 `files` 可重复，最多 5 张，合并识别后一次推荐；详见 [docs/OUTFIT_MULTI_IMAGE_UPLOAD.md](docs/OUTFIT_MULTI_IMAGE_UPLOAD.md)）
 - `POST /api/v1/analysis/suitability` - 适合度评分
 
 ## 🐛 故障排查

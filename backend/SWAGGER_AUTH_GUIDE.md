@@ -80,9 +80,10 @@
 
 1. 找到 `POST /api/v1/analysis/outfits` 端点
 2. 点击 "Try it out"
-3. 上传图片，设置 `num_outfits` 参数（默认 3）
-4. 点击 "Execute"
-5. 应该返回 200 OK 和搭配推荐结果
+3. 上传图片：单图用 `file`；多图用 `files` 字段多次添加（最多 5 张），合并识别后一次返回推荐
+4. 设置 `num_outfits` 等参数（默认 3）
+5. 点击 "Execute"
+6. 应该返回 200 OK 和搭配推荐结果
 
 #### 测试适合度评分 API
 

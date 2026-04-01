@@ -24,6 +24,19 @@ class FeatureLocalStore {
     await file.writeAsString(json);
   }
 
+  static Future<void> clear(String featureId) async {
+    if (kIsWeb) {
+      final p = await SharedPreferences.getInstance();
+      await p.remove('$_webPrefix$featureId');
+      return;
+    }
+    final dir = await getApplicationDocumentsDirectory();
+    final file = File('${dir.path}/feature_$featureId.json');
+    if (await file.exists()) {
+      await file.delete();
+    }
+  }
+
   static Future<Map<String, dynamic>?> loadJson(String featureId) async {
     try {
       if (kIsWeb) {

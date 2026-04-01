@@ -90,6 +90,29 @@ class StorageService:
 
         return str(file_path), file_url
 
+    def save_image_bytes(
+        self,
+        data: bytes,
+        user_id: str,
+        original_name: str = "upload.jpg",
+    ) -> tuple[str, str]:
+        """
+        Save raw image bytes (e.g. analysis upload preview for target_garment).
+        Returns (absolute file_path, public http URL under /uploads/).
+        """
+        ext = Path(original_name).suffix.lower()
+        if not ext or ext not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+            ext = ".jpg"
+        filename = self._generate_filename(f"preview{ext}", user_id)
+        user_dir = self._get_user_directory(user_id)
+        file_path = user_dir / filename
+        with open(file_path, "wb") as buffer:
+            buffer.write(data)
+        relative_path = f"{user_id}/{filename}"
+        base_url = f"http://127.0.0.1:{settings.PORT}"
+        file_url = f"{base_url}/uploads/{relative_path}"
+        return str(file_path), file_url
+
     def delete_image(self, file_path: str) -> bool:
         """
         Delete image file

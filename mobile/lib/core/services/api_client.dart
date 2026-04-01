@@ -388,10 +388,11 @@ class ApiClient {
 
   // ─── 分析：穿搭推荐 ─────────────────────────────────────────────
   // 后端路由: POST /analysis/outfits
-  // 后端字段: file=UploadFile, num_outfits=int, gender_expression=Optional[float], scene=Optional[str]
+  // 后端字段: file=单图（兼容）或 files=多图（字段名 files，可重复）, num_outfits, gender_expression?, scene?
 
   Future<Map<String, dynamic>> recommendOutfits({
     dynamic imageFile,
+    List<dynamic>? imageFiles,
     int numOutfits = 5,
     double? genderExpression,
     String? scene,
@@ -403,10 +404,26 @@ class ApiClient {
       );
       request.headers.addAll(_authHeaders);
 
-      if (imageFile != null) {
-        final part = await _multipartImage('file', imageFile);
+      final List<dynamic> parts = <dynamic>[];
+      if (imageFiles != null && imageFiles.isNotEmpty) {
+        parts.addAll(imageFiles);
+      } else if (imageFile != null) {
+        parts.add(imageFile);
+      }
+      if (parts.isEmpty) {
+        return {'error': 'No image provided'};
+      }
+      // 多图：multipart 字段名 files（每张重复一次）；单图仍用 file 兼容旧调用
+      if (parts.length == 1) {
+        final part = await _multipartImage('file', parts.first);
         if (part == null) return {'error': 'Unsupported image type'};
         request.files.add(part);
+      } else {
+        for (final img in parts) {
+          final part = await _multipartImage('files', img);
+          if (part == null) return {'error': 'Unsupported image type'};
+          request.files.add(part);
+        }
       }
 
       request.fields['num_outfits'] = numOutfits.toString();
@@ -439,6 +456,20 @@ class ApiClient {
   }) =>
       recommendOutfits(
         imageFile: imageFile,
+        numOutfits: numOutfits,
+        genderExpression: genderExpression,
+        scene: scene,
+      );
+
+  /// 多图穿搭推荐（同一请求内合并识别结果）。
+  Future<Map<String, dynamic>> recommendOutfitsFromXFiles(
+    List<dynamic> imageFiles, {
+    int numOutfits = 5,
+    double? genderExpression,
+    String? scene,
+  }) =>
+      recommendOutfits(
+        imageFiles: imageFiles,
         numOutfits: numOutfits,
         genderExpression: genderExpression,
         scene: scene,

@@ -572,14 +572,16 @@ curl -X POST "http://localhost:8000/api/v1/recognition/category" \
 
 ### 5.2 搭配推荐
 
-**端点**: `POST /analysis/outfits`
+**端点**: `POST /api/v1/analysis/outfits`
 
-**描述**: 为上传的服饰生成搭配方案
+**描述**: 为上传的服饰生成搭配方案；支持单图或多图（多图合并识别后一次推荐）
 
 **请求头**: 需要认证
 
 **请求体**: `multipart/form-data`
-- `file`: 图片文件
+- `file`: 单张图片（可选，兼容旧客户端）
+- `files`: 多张图片（可选；同一字段名多次，最多 5 张；若 `files` 非空则忽略单独的 `file`）
+- 至少提供 `file` 或 `files` 之一
 
 **查询参数**:
 - `num_outfits`: 推荐数量（1-10，默认 3）

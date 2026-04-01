@@ -86,7 +86,7 @@
 - ✅ OpenAPI 文档（Swagger UI + ReDoc）
 
 #### 9. 测试覆盖 (100%)
-- ✅ 324 个单元测试全部通过（无失败）
+- ✅ 后端 `pytest` 套件通过（`backend/tests`，数量随版本变化）
 - ✅ pytest 可用 tempfile 解决 Windows 文件锁问题
 
 ### 前端应用 (Flutter Web)
@@ -156,7 +156,7 @@
 
 ### 后端测试
 ```
-✅ 324 个测试全部通过（无失败）
+✅ 后端 `pytest` 测试通过（无失败）
 ✅ 覆盖率: 85%+
 ✅ 所有核心功能已测试
 ```
@@ -364,7 +364,7 @@ clothing-assistant/
 
 ### 分析功能 (3个端点)
 - `POST /api/v1/analysis/similarity` - 相似度分析
-- `POST /api/v1/analysis/outfits` - 搭配推荐
+- `POST /api/v1/analysis/outfits` - 搭配推荐（单图 `file`，多图重复 `files`，最多 5 张）
 - `POST /api/v1/analysis/suitability` - 适合度评分
 
 **总计**: 22 个 API 端点
@@ -500,7 +500,7 @@ clothing-assistant/
 **已完成**:
 - ✅ 后端 API 完整实现（22个端点）
 - ✅ 前端 Flutter Web 应用（6个功能模块）
-- ✅ 324 个后端测试全部通过
+- ✅ 后端 `pytest` 全部通过
 - ✅ 完整的 API 文档
 - ✅ 性别表达指数动态主题系统
 - ✅ 衣橱页左右分栏 + 批量上传 + 虚拟滚动网格

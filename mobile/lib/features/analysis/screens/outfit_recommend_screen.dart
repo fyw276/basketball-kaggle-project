@@ -23,14 +23,12 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
   bool _isLoading = false;
   String? _selectedScene;
 
-  static const _cacheKey = 'outfit_recommend';
+  static const _cacheKey = 'outfit_recommend_v2';
 
   @override
   void initState() {
     super.initState();
-    FeatureLocalStore.loadJson(_cacheKey).then((m) {
-      if (m != null && mounted) setState(() => _result = m);
-    });
+    // 不在此恢复缓存：否则会一直显示「上一次的推荐」，换图后也容易误以为没更新。
   }
 
   final List<String> _scenes = [
@@ -47,15 +45,19 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
       return;
     }
 
+    final authProvider = context.read<AuthProvider>();
+    final ge = context.read<ThemeProvider>().genderExpression;
+
     setState(() {
       _isLoading = true;
+      _result = null;
     });
+    await FeatureLocalStore.clear(_cacheKey);
+    if (!mounted) return;
 
     try {
-      final authProvider = context.read<AuthProvider>();
-      final ge = context.read<ThemeProvider>().genderExpression;
-      final result = await authProvider.apiClient.recommendOutfitsFromXFile(
-        _images.first,
+      final result = await authProvider.apiClient.recommendOutfitsFromXFiles(
+        List<dynamic>.from(_images),
         numOutfits: 5,
         genderExpression: ge,
         scene: _selectedScene,
@@ -135,11 +137,13 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
                 setState(() {
                   _images.clear();
                   _images.addAll(images);
+                  _result = null;
                 });
+                FeatureLocalStore.clear(_cacheKey);
               },
-              maxImages: 1,
-              hintText: '选择一张图片',
-              allowMultiple: false,
+              maxImages: 5,
+              hintText: '可选多张（将合并识别后一起推荐）',
+              allowMultiple: true,
             ),
             const SizedBox(height: 24),
             // Analyze button
@@ -161,6 +165,7 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
               AnalysisResultDisplay(
                 result: _result,
                 type: 'outfit',
+                apiBaseUrl: context.read<AuthProvider>().apiClient.baseUrl,
                 onSaveOutfit: () {
                   showAppSnackBar(context, '已保存到收藏');
                 },

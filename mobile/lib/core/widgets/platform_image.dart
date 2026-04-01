@@ -145,11 +145,15 @@ class _PlatformImageState extends State<PlatformImage> {
   Widget build(BuildContext context) {
     // 1. 网络 URL
     if (widget.networkUrl != null && widget.networkUrl!.isNotEmpty) {
+      // Web：默认 NetworkImage 走 fetch，跨端口常触发 CORS；用 HTML <img> 可正常显示本机后端 /uploads
       return Image.network(
         widget.networkUrl!,
         width: widget.width,
         height: widget.height,
         fit: widget.fit,
+        webHtmlElementStrategy: kIsWeb
+            ? WebHtmlElementStrategy.prefer
+            : WebHtmlElementStrategy.never,
         loadingBuilder: (_, child, progress) {
           if (progress == null) return child;
           return _buildLoading();

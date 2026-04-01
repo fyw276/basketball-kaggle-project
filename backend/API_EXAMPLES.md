@@ -513,6 +513,8 @@ for garment in result["similar_garments"]:
 
 ### 15. 搭配推荐
 
+**单图**（`file`，兼容旧客户端）：
+
 **curl**:
 ```bash
 curl -X POST "http://localhost:8000/api/v1/analysis/outfits?num_outfits=3" \
@@ -520,22 +522,49 @@ curl -X POST "http://localhost:8000/api/v1/analysis/outfits?num_outfits=3" \
   -F "file=@/path/to/shirt.jpg"
 ```
 
-**Python**:
+**多图**（`files` 重复字段，最多 5 张；合并识别后一次推荐，第一张为主图预览）：
+
+**curl**:
+```bash
+curl -X POST "http://localhost:8000/api/v1/analysis/outfits?num_outfits=3" \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -F "files=@/path/to/top.jpg" \
+  -F "files=@/path/to/pants.jpg"
+```
+
+**Python（单图）**:
 ```python
 import requests
 
 url = "http://localhost:8000/api/v1/analysis/outfits"
-headers = {
-    "Authorization": f"Bearer {access_token}"
-}
-files = {
-    "file": open("/path/to/shirt.jpg", "rb")
-}
-params = {
-    "num_outfits": 3
-}
+headers = {"Authorization": f"Bearer {access_token}"}
+params = {"num_outfits": 3}
 
-response = requests.post(url, files=files, headers=headers, params=params)
+with open("/path/to/shirt.jpg", "rb") as f:
+    response = requests.post(url, files={"file": f}, headers=headers, params=params)
+result = response.json()
+```
+
+**Python（多图，`files` 重复）**:
+```python
+import requests
+
+url = "http://localhost:8000/api/v1/analysis/outfits"
+headers = {"Authorization": f"Bearer {access_token}"}
+params = {"num_outfits": 3}
+
+t = open("/path/to/top.jpg", "rb")
+p = open("/path/to/pants.jpg", "rb")
+try:
+    multi = [
+        ("files", ("top.jpg", t, "image/jpeg")),
+        ("files", ("pants.jpg", p, "image/jpeg")),
+    ]
+    response = requests.post(url, files=multi, headers=headers, params=params)
+finally:
+    t.close()
+    p.close()
+
 result = response.json()
 
 print(f"Target: {result['target_garment']['category']}")
@@ -672,13 +701,14 @@ similarity = response.json()
 print(f"   Similar items: {len(similarity['similar_garments'])}")
 print(f"   Recommendation: {similarity['recommendation']}")
 
-# 7. 搭配推荐
+# 7. 搭配推荐（单图 file，或多图重复 files）
 print("\n7. Getting outfit recommendations...")
 with open("/path/to/shirt.jpg", "rb") as f:
     files = {"file": f}
     response = requests.post(f"{BASE_URL}/analysis/outfits?num_outfits=3", files=files, headers=headers)
 outfits = response.json()
 print(f"   Generated {len(outfits['outfit_cards'])} outfits")
+# 多图示例：files = [("files", f1), ("files", f2)] 见本节「搭配推荐」curl/Python
 
 # 8. 适合度评分
 print("\n8. Calculating suitability score...")

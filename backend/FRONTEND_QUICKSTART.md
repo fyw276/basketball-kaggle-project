@@ -363,9 +363,16 @@ class ApiClient {
     return response.data;
   }
 
-  async recommendOutfits(file: File, numOutfits: number = 3): Promise<{ target_garment: RecognitionResult; outfit_cards: OutfitCard[] }> {
+  async recommendOutfits(
+    fileOrFiles: File | File[],
+    numOutfits: number = 3,
+  ): Promise<{ target_garment: RecognitionResult; outfit_cards: OutfitCard[] }> {
     const formData = new FormData();
-    formData.append('file', file);
+    if (Array.isArray(fileOrFiles)) {
+      fileOrFiles.forEach((f) => formData.append('files', f));
+    } else {
+      formData.append('file', fileOrFiles);
+    }
 
     const response = await this.client.post(`/analysis/outfits?num_outfits=${numOutfits}`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },

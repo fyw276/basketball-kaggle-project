@@ -1,10 +1,16 @@
 import 'package:flutter/material.dart';
 
+import '../services/api_client.dart';
+import '../utils/media_url.dart';
+import 'platform_image.dart';
+
 /// Generic analysis result display widget.
 /// Renders different card types: outfit, similarity, suitability.
 class AnalysisResultDisplay extends StatelessWidget {
   final dynamic result;
   final String type; // 'outfit', 'similarity', 'suitability'
+  /// 与 [AuthProvider.apiClient] 一致，用于拼接 `/uploads/` 图片地址。
+  final String? apiBaseUrl;
   final VoidCallback? onSaveOutfit;
   final VoidCallback? onRetry;
 
@@ -12,6 +18,7 @@ class AnalysisResultDisplay extends StatelessWidget {
     super.key,
     required this.result,
     required this.type,
+    this.apiBaseUrl,
     this.onSaveOutfit,
     this.onRetry,
   });
@@ -150,12 +157,30 @@ class AnalysisResultDisplay extends StatelessWidget {
 
     switch (type) {
       case 'outfit':
-        if (result is Map && result.containsKey('outfits')) {
-          final outfits = result['outfits'] as List? ?? [];
+        if (result is Map) {
+          // Backend v1 (legacy): { outfits: [...] }
+          // Backend v2 (current): { outfit_cards: [...], target_garment: {...} }
+          final raw = (result['outfit_cards'] ?? result['outfits']);
+          final outfits = raw is List ? raw : <dynamic>[];
+          final base = apiBaseUrl ?? ApiClient().baseUrl;
           for (var i = 0; i < outfits.length; i++) {
             cards.add(OutfitResultCard(
               outfit: outfits[i],
               index: i + 1,
+              apiBaseUrl: base,
+            ));
+          }
+          if (outfits.isEmpty &&
+              (result.containsKey('outfit_cards') ||
+                  result.containsKey('outfits'))) {
+            cards.add(Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  '没有匹配到推荐结果。通常是因为衣橱里单品较少/为空：请先到「衣橱」上传几件服饰，再回来推荐。',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ),
             ));
           }
         }
@@ -204,18 +229,30 @@ class AnalysisResultDisplay extends StatelessWidget {
 class OutfitResultCard extends StatelessWidget {
   final dynamic outfit;
   final int index;
+  final String apiBaseUrl;
 
   const OutfitResultCard({
     super.key,
     required this.outfit,
     required this.index,
+    required this.apiBaseUrl,
   });
 
   @override
   Widget build(BuildContext context) {
-    final score = (outfit['score'] ?? outfit['overall_score'] ?? 0.0) as double;
-    final garments = outfit['garments'] as List? ?? [];
-    final scene = outfit['scene'] ?? outfit['recommended_scene'] ?? '';
+    final dynamic rawScore = outfit is Map
+        ? (outfit['overall_score'] ?? outfit['score'] ?? 0.0)
+        : 0.0;
+    final double score = rawScore is num ? rawScore.toDouble() : 0.0;
+
+    // Backend may return either `garments` (legacy) or `items` (current).
+    final dynamic rawItems =
+        outfit is Map ? (outfit['items'] ?? outfit['garments']) : null;
+    final List garments = rawItems is List ? rawItems : <dynamic>[];
+
+    final scene = outfit is Map
+        ? (outfit['scene'] ?? outfit['recommended_scene'] ?? '')
+        : '';
 
     return Card(
       margin: const EdgeInsets.only(bottom: 16),
@@ -270,18 +307,65 @@ class OutfitResultCard extends StatelessWidget {
                 style: Theme.of(context).textTheme.labelMedium,
               ),
               const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: garments.map((g) {
-                  return Chip(
-                    label: Text(g['category']?.toString() ??
-                        g['name']?.toString() ??
-                        '未知'),
-                    visualDensity: VisualDensity.compact,
-                  );
-                }).toList(),
-              ),
+              Builder(builder: (context) {
+                return Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: garments.map((g) {
+                    final rawUrl = (g is Map)
+                        ? (g['image_url']?.toString() ?? '').trim()
+                        : '';
+                    final rawPath = (g is Map)
+                        ? (g['image_path']?.toString() ?? '').trim()
+                        : '';
+                    final url = resolveGarmentImageUrl(
+                      rawUrl.isNotEmpty ? rawUrl : rawPath,
+                      apiBaseUrl,
+                    );
+                    final label = (g is Map)
+                        ? (g['category']?.toString() ??
+                            g['name']?.toString() ??
+                            g['role']?.toString() ??
+                            '未知')
+                        : '未知';
+                    return Container(
+                      width: 92,
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surface,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .outlineVariant
+                              .withOpacity(0.6),
+                        ),
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: PlatformImage(
+                              networkUrl: url,
+                              width: 80,
+                              height: 80,
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.labelSmall,
+                          ),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                );
+              }),
             ],
           ],
         ),
