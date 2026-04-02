@@ -350,12 +350,13 @@ clothing-assistant/
 - `POST /api/v1/recognition/colors` - 颜色提取
 - `GET /api/v1/recognition/categories` - 获取品类列表
 
-### 衣橱管理 (5个端点)
+### 衣橱管理 (6个端点)
 - `POST /api/v1/wardrobe/garments` - 添加服饰
 - `GET /api/v1/wardrobe/garments` - 查询衣橱
 - `GET /api/v1/wardrobe/garments/{id}` - 获取服饰详情
 - `PUT /api/v1/wardrobe/garments/{id}` - 更新服饰
 - `DELETE /api/v1/wardrobe/garments/{id}` - 删除服饰
+- `POST /api/v1/wardrobe/split-outfit` - 整套穿搭拆分（连衣裙/包等，见 `docs/WARDROBE_FEATURES.md`）
 
 ### 简化衣橱 API (3个端点)
 - `POST /api/v1/wardrobe/simple/garments` - 自动识别并添加
@@ -367,7 +368,7 @@ clothing-assistant/
 - `POST /api/v1/analysis/outfits` - 搭配推荐（单图 `file`，多图重复 `files`，最多 5 张）
 - `POST /api/v1/analysis/suitability` - 适合度评分
 
-**总计**: 22 个 API 端点
+**总计**: 23 个 API 端点
 
 ---
 
@@ -377,6 +378,8 @@ clothing-assistant/
 - ✅ `README.md` - 项目概述和快速开始
 - ✅ `PROJECT_STATUS.md` - 本文档，项目状态总览
 - ✅ `QUICK_START.md` - 5分钟快速启动指南
+- ✅ `docs/WARDROBE_FEATURES.md` - 衣橱整套拆分与 SnackBar 行为说明
+- ✅ `docs/OUTFIT_MULTI_IMAGE_UPLOAD.md` - 搭配推荐多图上传
 - ✅ `CONTRIBUTING.md` - 贡献指南
 
 ### 技术文档

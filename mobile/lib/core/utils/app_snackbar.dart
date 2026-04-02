@@ -24,18 +24,27 @@ String userFacingApiError(Object? error) {
 }
 
 /// 统一时长与样式，避免遗漏 [SnackBar.duration] 导致 Web 后台标签页下体验异常。
+///
+/// 自 Flutter 3.41 起，带 [SnackBarAction] 时默认 [SnackBar.persist] 为 `true`，
+/// 会忽略 [SnackBar.duration] 直到用户点击操作。此处显式 [persist]：`false` 表示
+/// 仍按 [duration] 自动消失；用户在超时前仍可点击 action。
 void showAppSnackBar(
   BuildContext context,
   String message, {
   Color? backgroundColor,
   SnackBarAction? action,
   SnackBarBehavior behavior = SnackBarBehavior.floating,
+  Duration duration = kAppSnackBarDuration,
+
+  /// `false`：到点自动关闭（有 action 时仍如此，除非无障碍长时间播报等特殊逻辑）。
+  bool persist = false,
 }) {
   if (!context.mounted) return;
   ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(
       content: Text(message),
-      duration: kAppSnackBarDuration,
+      duration: duration,
+      persist: persist,
       behavior: behavior,
       backgroundColor: backgroundColor,
       action: action,

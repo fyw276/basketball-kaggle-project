@@ -39,7 +39,8 @@ CATEGORY_CANDIDATES = [
     # Western fashion
     "上衣",  # Tops: T-shirt, 衬衫, 毛衣, 卫衣, 针织衫
     "裤子",  # Bottoms: 牛仔裤, 西裤, 休闲裤, 运动裤
-    "裙子",  # Dresses/Skirts: 连衣裙, 半裙, 短裙
+    "裙子",  # 半裙、短裙等
+    "连衣裙",  # 一体式连衣裙 / polo 裙等
     "外套",  # Outerwear: 夹克, 西装, 风衣, 大衣, 羽绒服
     "鞋",  # Footwear: 运动鞋, 高跟鞋, 靴子, 休闲鞋
     "包",  # Bags: 手提包, 双肩包, 单肩包
@@ -100,7 +101,8 @@ OCCASION_CANDIDATES = [
 CATEGORY_PROMPTS = {
     "上衣": "a stylish Chinese top: T-shirt, dress shirt, sweater, hoodie, knitwear",
     "裤子": "classic pants or bottoms: jeans, trousers, casual pants, leggings",
-    "裙子": "elegant dress or skirt: dress, skirt, miniskirt, gown",
+    "裙子": "skirt only: midi skirt, miniskirt, pleated skirt, not a one-piece dress",
+    "连衣裙": "one-piece women's dress: polo dress, shirt dress, slip dress, full outfit dress",
     "外套": "fashionable outerwear: jacket, blazer, coat, windbreaker, down jacket",
     "鞋": "fashionable shoes: sneakers, high heels, boots, casual shoes",
     "包": "designer bag: handbag, backpack, shoulder bag, tote",

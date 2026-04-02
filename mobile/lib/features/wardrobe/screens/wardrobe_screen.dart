@@ -8,6 +8,7 @@ import '../../../core/theme/fashion_palettes.dart';
 import '../../../core/utils/app_snackbar.dart';
 import '../../../core/utils/media_url.dart';
 import '../../../core/widgets/image_picker_section.dart';
+import '../../../core/widgets/platform_image.dart';
 
 /// 衣橱：左栏分类 + 右栏 4 列网格；长按 0.5s 拖动改分类 / 底部删除；数据以服务端为准。
 class WardrobeScreen extends StatefulWidget {
@@ -518,6 +519,11 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                                 itemCount: splitResult.length,
                                 itemBuilder: (_, i) {
                                   final item = splitResult[i];
+                                  final auth = context.read<AuthProvider>();
+                                  final thumb = resolveGarmentImageUrl(
+                                    item['image_url']?.toString(),
+                                    auth.apiClient.baseUrl,
+                                  );
                                   return Card(
                                     margin: const EdgeInsets.only(bottom: 8),
                                     shape: RoundedRectangleBorder(
@@ -529,17 +535,31 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                                           setModal(() => item['selected'] = v),
                                       title: Text(
                                           item['category']?.toString() ?? '单品'),
-                                      secondary: Container(
-                                        width: 48,
-                                        height: 48,
-                                        decoration: BoxDecoration(
-                                          color: palette.primary
-                                              .withValues(alpha: 0.1),
-                                          borderRadius:
-                                              BorderRadius.circular(12),
+                                      secondary: ClipRRect(
+                                        borderRadius: BorderRadius.circular(12),
+                                        child: SizedBox(
+                                          width: 48,
+                                          height: 48,
+                                          child: thumb != null
+                                              ? PlatformImage(
+                                                  networkUrl: thumb,
+                                                  width: 48,
+                                                  height: 48,
+                                                  fit: BoxFit.cover,
+                                                  placeholder: Icon(
+                                                    Icons.checkroom,
+                                                    color: palette.primary,
+                                                  ),
+                                                )
+                                              : ColoredBox(
+                                                  color: palette.primary
+                                                      .withValues(alpha: 0.1),
+                                                  child: Icon(
+                                                    Icons.checkroom,
+                                                    color: palette.primary,
+                                                  ),
+                                                ),
                                         ),
-                                        child: Icon(Icons.checkroom,
-                                            color: palette.primary),
                                       ),
                                     ),
                                   );

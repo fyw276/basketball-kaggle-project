@@ -247,6 +247,7 @@ flutter test
 - `POST /api/v1/wardrobe/garments` - 添加服饰
 - `GET /api/v1/wardrobe/garments` - 获取服饰列表
 - `DELETE /api/v1/wardrobe/garments/{id}` - 删除服饰
+- `POST /api/v1/wardrobe/split-outfit` - 整套穿搭图拆分（可选入库；连衣裙/包等见 [docs/WARDROBE_FEATURES.md](docs/WARDROBE_FEATURES.md)）
 
 #### 分析功能
 - `POST /api/v1/analysis/similarity` - 相似度分析

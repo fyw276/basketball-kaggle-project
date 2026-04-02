@@ -1,6 +1,6 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-04-02
+**最后更新**: 2026-04-03
 **状态**: ✅ 可用于演示与迭代（后端 FastAPI + Flutter Web/移动端）
 
 ## 项目简介
@@ -79,7 +79,7 @@ clothing-assistant/
 │   └── .config.kiro               # 配置文件
 ├── backend/                        # ✅ FastAPI 后端服务（已完成）
 │   ├── app/                       # 应用代码
-│   │   ├── api/                   # API 路由（22个端点）
+│   │   ├── api/                   # API 路由（约 23 个端点，见 PROJECT_STATUS）
 │   │   ├── core/                  # 核心配置（含性别表达系统）
 │   │   ├── db/                    # 数据库
 │   │   ├── ml/                    # 机器学习模型
@@ -99,7 +99,7 @@ clothing-assistant/
 │           └── analysis/          # 分析功能（结果同屏展示）
 ├── cli/                           # ⏳ CLI 工具（待实现）
 ├── mcp/                           # ⏳ MCP 服务（待实现）
-└── docs/                          # 📚 项目文档
+└── docs/                          # 📚 项目文档（多图推荐、衣橱拆分等）
 ```
 
 ## 开发状态
@@ -115,7 +115,7 @@ clothing-assistant/
 
 ## 快速开始
 
-详细的启动指南请查看 [QUICK_START.md](QUICK_START.md)。搭配推荐多图上传说明见 [docs/OUTFIT_MULTI_IMAGE_UPLOAD.md](docs/OUTFIT_MULTI_IMAGE_UPLOAD.md)。
+详细的启动指南请查看 [QUICK_START.md](QUICK_START.md)。搭配推荐多图上传见 [docs/OUTFIT_MULTI_IMAGE_UPLOAD.md](docs/OUTFIT_MULTI_IMAGE_UPLOAD.md)；衣橱整套拆分与删除提示见 [docs/WARDROBE_FEATURES.md](docs/WARDROBE_FEATURES.md)。
 
 ### 环境要求
 
@@ -265,7 +265,7 @@ flutter test
 ## 功能完成度
 
 ✅ **后端服务**: 100% 完成
-- 22 个 API 端点全部实现
+- 全部核心 API 端点已实现（数量见 [PROJECT_STATUS.md](PROJECT_STATUS.md)）
 - 324 个测试全部通过（无失败）
 - 性别表达指数系统、图像识别、相似度分析、搭配推荐、适合度评分全部可用
 

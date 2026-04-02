@@ -474,9 +474,36 @@ if response.status_code == 204:
 
 ---
 
+### 14. 整套穿搭拆分（split-outfit）
+
+**端点**: `POST /api/v1/wardrobe/split-outfit`（需登录）
+
+**说明**: 上传一张穿搭图，返回多块裁切预览及品类（如连衣裙、包、上衣/裤子/鞋等）；`save=true` 时按 `selected_indexes` 写入衣橱。拆分策略见 `backend/app/services/outfit_split.py`。
+
+**curl（仅预览）**:
+```bash
+curl -X POST "http://localhost:8000/api/v1/wardrobe/split-outfit" \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -F "file=@/path/to/outfit.jpg" \
+  -F "save=false"
+```
+
+**curl（保存第 0、2 块）**:
+```bash
+curl -X POST "http://localhost:8000/api/v1/wardrobe/split-outfit" \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -F "file=@/path/to/outfit.jpg" \
+  -F "save=true" \
+  -F "selected_indexes=0,2"
+```
+
+**响应字段**: `items[]` 含 `category`、`image_url`、`confidence`；入库成功时含 `garment_id`。
+
+---
+
 ## 智能分析
 
-### 14. 相似度分析
+### 15. 相似度分析
 
 **curl**:
 ```bash
@@ -511,7 +538,7 @@ for garment in result["similar_garments"]:
 
 ---
 
-### 15. 搭配推荐
+### 16. 搭配推荐
 
 **单图**（`file`，兼容旧客户端）：
 
@@ -580,7 +607,7 @@ for i, outfit in enumerate(result["outfit_cards"], 1):
 
 ---
 
-### 16. 适合度评分
+### 17. 适合度评分
 
 **curl**:
 ```bash

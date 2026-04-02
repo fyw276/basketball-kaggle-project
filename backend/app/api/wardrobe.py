@@ -2,7 +2,7 @@
 Wardrobe (garment) API endpoints
 """
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
@@ -401,38 +401,38 @@ async def split_outfit_image(
         except ValueError:
             pass  # 忽略无效格式
 
-    # 拆分结果
+    # 拆分结果（连衣裙 / 包 / 上下装 由 CLIP + 裁切规划决定）
     try:
         img = Image.open(io.BytesIO(image_bytes))
         width, height = img.size
 
-        items = []
+        from app.services.outfit_split import plan_outfit_split_safe
 
-        # 简单启发式：根据高度比例估算
-        if height > width * 1.2:  # 可能是全身照
-            categories = [
-                (0, "上衣", 0.0, 0.4, 0.85),
-                (1, "裤子", 0.35, 0.7, 0.80),
-                (2, "鞋", 0.65, 1.0, 0.75),
-            ]
-        else:  # 可能是单件或上半身
-            categories = [
-                (0, "上衣", 0.0, 0.6, 0.90),
-                (1, "裤子", 0.4, 1.0, 0.70),
-            ]
+        plan = plan_outfit_split_safe(img, image_bytes)
+        if not plan:
+            raise ValueError("empty split plan")
 
+        resolved: List[Tuple[str, Tuple[int, int, int, int], float]] = []
+        for cat_name, box, confidence in plan:
+            l, t, r, b = box
+            left = int(width * l)
+            top = int(height * t)
+            right = int(width * r)
+            bottom = int(height * b)
+            if bottom <= top or right <= left:
+                continue
+            if (bottom - top) < height * 0.06 and cat_name != "包":
+                bottom = min(height, top + max(int(height * 0.08), 2))
+            if (right - left) < width * 0.04:
+                right = min(width, left + max(int(width * 0.06), 2))
+            resolved.append((cat_name, (left, top, right, bottom), confidence))
+
+        items: List[OutfitSplitItem] = []
         storage = get_storage_service()
 
-        for idx, cat_name, top_ratio, bottom_ratio, confidence in categories:
-            # 裁剪区域
-            top = int(height * top_ratio)
-            bottom = int(height * bottom_ratio)
-
-            # 确保有效区域
-            if bottom <= top or bottom - top < height * 0.1:
-                continue
-
-            cropped = img.crop((0, top, width, bottom))
+        for idx, (cat_name, rect, confidence) in enumerate(resolved):
+            left, top, right, bottom = rect
+            cropped = img.crop((left, top, right, bottom))
 
             # 保存裁剪后的单品图
             buf = io.BytesIO()
