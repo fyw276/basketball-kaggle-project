@@ -368,7 +368,13 @@ clothing-assistant/
 - `POST /api/v1/analysis/outfits` - 搭配推荐（单图 `file`，多图重复 `files`，最多 5 张）
 - `POST /api/v1/analysis/suitability` - 适合度评分
 
-**总计**: 23 个 API 端点
+### 智能穿搭 (4个端点)
+- `GET /api/v1/smart-outfit/weather` - 经纬度查询城市与天气
+- `GET /api/v1/smart-outfit/weather-by-city` - 按城市名查询天气
+- `POST /api/v1/smart-outfit/upload-reference` - 上传参考衣物图（`multipart` 字段 `file`）
+- `POST /api/v1/smart-outfit/generate` - 参考图 + 天气 + 可选情绪，生成多套搭配（JSON）
+
+**总计**: 27 个 API 端点（上表为 REST 主干；另含情绪穿搭 `mood/*`、虚拟试衣 `tryon/*` 等，以 `http://localhost:8000/docs` 为准）
 
 ---
 
@@ -501,7 +507,7 @@ clothing-assistant/
 **项目状态**: ✅ 核心功能完成，可用于演示和测试
 
 **已完成**:
-- ✅ 后端 API 完整实现（22个端点）
+- ✅ 后端 API 完整实现（主干 REST 见上文「API 端点总览」；完整以 Swagger 为准）
 - ✅ 前端 Flutter Web 应用（6个功能模块）
 - ✅ 后端 `pytest` 全部通过
 - ✅ 完整的 API 文档

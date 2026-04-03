@@ -115,7 +115,7 @@ clothing-assistant/
 
 ## 快速开始
 
-详细的启动指南请查看 [QUICK_START.md](QUICK_START.md)。搭配推荐多图上传见 [docs/OUTFIT_MULTI_IMAGE_UPLOAD.md](docs/OUTFIT_MULTI_IMAGE_UPLOAD.md)；衣橱整套拆分与删除提示见 [docs/WARDROBE_FEATURES.md](docs/WARDROBE_FEATURES.md)。
+详细的启动指南请查看 [QUICK_START.md](QUICK_START.md)。搭配推荐多图上传见 [docs/OUTFIT_MULTI_IMAGE_UPLOAD.md](docs/OUTFIT_MULTI_IMAGE_UPLOAD.md)；衣橱整套拆分与删除提示见 [docs/WARDROBE_FEATURES.md](docs/WARDROBE_FEATURES.md)。**智能穿搭（Flutter Web 行为、CORS、认证顺序、响应式等）**见 [docs/SMART_OUTFIT_FLUTTER_WEB.md](docs/SMART_OUTFIT_FLUTTER_WEB.md)。
 
 ### 环境要求
 
@@ -139,6 +139,21 @@ flutter run -d chrome
 # 前端: 浏览器自动打开
 # API 文档: http://localhost:8000/docs
 ```
+
+### API 路径约定（v1）
+
+业务接口统一挂在 **`http://<host>/api/v1`** 下（与 Swagger `/docs` 一致）。**智能穿搭**相关端点为：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/smart-outfit/weather` | 经纬度查询当前城市与天气（需登录） |
+| `GET` | `/api/v1/smart-outfit/weather-by-city` | 按城市名查询天气（需登录） |
+| `POST` | `/api/v1/smart-outfit/upload-reference` | 上传参考衣物图，`multipart/form-data` 字段 `file` |
+| `POST` | `/api/v1/smart-outfit/generate` | 生成搭配，JSON：`image_url`、`city`、`weather`、`temperature`、`mood`、`count`、`regeneration_index` 等 |
+
+> 若文档或旧需求里写成 `/api/smart-outfit/...`（缺少 **`/v1`**），请改为上表路径，否则客户端会 404。
+
+更完整的 curl 示例见 [`backend/API_EXAMPLES.md`](backend/API_EXAMPLES.md)。
 
 ### 模型下载/离线提示（重要）
 

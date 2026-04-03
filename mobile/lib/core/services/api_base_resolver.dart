@@ -1,8 +1,3 @@
-/// Conditional import stub for API base URL resolver.
-/// On web: uses api_base_resolver_web.dart
-/// On native: uses api_base_resolver_io.dart
-String resolveApiBaseUrl() {
-  // This file is a stub - actual implementation uses conditional imports
-  // via build runner or platform-specific files
-  return 'http://localhost:8000/api/v1';
-}
+// 按平台解析后端 API Base（`/api/v1` 前缀已含）。
+export 'api_base_resolver_io.dart'
+    if (dart.library.html) 'api_base_resolver_web.dart';

@@ -14,8 +14,17 @@ String userFacingApiError(Object? error) {
       s.contains('Network is unreachable')) {
     return '网络异常，请检查连接';
   }
-  if (s.contains('Connection refused') || s.contains('ClientException')) {
-    return '无法连接服务器，请检查接口地址与后端';
+  if (s.contains('Connection refused')) {
+    return '无法连接服务器，请检查网络后重试';
+  }
+  if (s.contains('ClientException')) {
+    final low = s.toLowerCase();
+    if (low.contains('connection') ||
+        low.contains('failed') ||
+        low.contains('closed') ||
+        low.contains('socket')) {
+      return '无法连接服务器，请检查网络后重试';
+    }
   }
   if (s.length > 160) {
     return '${s.substring(0, 157)}…';

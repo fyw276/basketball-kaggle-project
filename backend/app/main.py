@@ -11,6 +11,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError as PydanticValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 
 from app.api import (
     analysis_router,
@@ -22,6 +24,7 @@ from app.api import (
 )
 from app.api.mood import router as mood_router
 from app.api.outfit_collections import router as outfit_collections_router
+from app.api.smart_outfit import router as smart_outfit_router
 from app.api.tryon import router as tryon_router
 from app.api.wardrobe_simple import router as wardrobe_simple_router
 from app.core.config import settings
@@ -88,6 +91,18 @@ app = FastAPI(
 # Flutter Web 端口随机；页面 Origin 为 http://localhost:<port>，API 常为 http://127.0.0.1:8000，属跨域。
 # 请求带 Authorization 时，部分浏览器对 ACAO: * 与实际 Origin 组合较严，易报「无 ACAO」类 CORS 错误。
 # 开发宽松模式改为 allow_origin_regex + 回显具体 Origin（Starlette fullmatch），避免通配符。
+# 预检请求若仅返回 Allow-Headers: *，部分浏览器不把 Authorization 视为已允许，导致带 Bearer 的 POST 失败
+# （XHR onError）；须显式列出 Authorization、Content-Type 等。
+_CORS_ALLOW_HEADERS = [
+    "Authorization",
+    "Content-Type",
+    "Accept",
+    "Accept-Language",
+    "Origin",
+    "X-Requested-With",
+    # Chrome 从 http://localhost:<flutter> 访问 http://127.0.0.1:8000 时，预检可能携带
+    "Access-Control-Request-Private-Network",
+]
 _localhost_origin_re = r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
 _env = (settings.ENVIRONMENT or "").lower()
 _cors_permissive = (
@@ -99,7 +114,7 @@ if _cors_permissive:
         allow_origin_regex=_localhost_origin_re,
         allow_credentials=False,
         allow_methods=["*"],
-        allow_headers=["*"],
+        allow_headers=_CORS_ALLOW_HEADERS,
     )
 else:
     # 生产等环境：显式域名 + 可选正则；localhost/127.0.0.1 任意端口可与 CORS_ALLOW_PATTERN 同时生效
@@ -119,8 +134,22 @@ else:
         allow_origin_regex=_allow_regex,
         allow_credentials=True,
         allow_methods=["*"],
-        allow_headers=["*"],
+        allow_headers=_CORS_ALLOW_HEADERS,
     )
+
+
+class PrivateNetworkAccessMiddleware(BaseHTTPMiddleware):
+    """为预检/跨站请求补充 Chrome 私有网络访问 (PNA) 所需响应头。"""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+        return response
+
+
+# 须挂在 CORS 外层，以便为 OPTIONS 与 POST 等响应统一附加 PNA 头
+app.add_middleware(PrivateNetworkAccessMiddleware)
+
 
 # Register exception handlers
 app.add_exception_handler(AppException, app_exception_handler)
@@ -332,6 +361,7 @@ app.include_router(analysis_router, prefix="/api/v1")
 app.include_router(tryon_router, prefix="/api/v1")  # Virtual Try-On
 app.include_router(outfit_collections_router, prefix="/api/v1")  # Outfit Collections
 app.include_router(mood_router, prefix="/api/v1")  # Mood Recommendation
+app.include_router(smart_outfit_router, prefix="/api/v1")  # Smart outfit (weather + mood)
 
 # Mount static files for uploaded images
 upload_dir = Path(settings.UPLOAD_DIR)

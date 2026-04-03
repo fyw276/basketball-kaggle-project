@@ -11,6 +11,7 @@
 - ✅ 衣橱管理（批量上传、筛选、编辑）
 - ✅ 相似度分析
 - ✅ 搭配推荐（支持多图同次请求，合并识别）
+- ✅ 智能穿搭（参考图 + 自动天气 + 可选心情；接口：`/api/v1/smart-outfit/*`）
 - ✅ 适合度评分
 - ✅ 情绪穿搭（心情 → 配色/风格方向 + 衣橱匹配）
 - ✅ 虚拟试衣（伪 3D 三视角：正/侧/背，支持多视角人物照）
@@ -82,6 +83,7 @@ flutter pub get
 
 常见说明：
 
+- **Flutter Web（本机调试）**：`api_base_resolver_web.dart` 将 API 固定为与当前页 **同源 loopback host**（`localhost` 或 `127.0.0.1`）+ 端口 `8000`，详见仓库根目录 [`docs/SMART_OUTFIT_FLUTTER_WEB.md`](../docs/SMART_OUTFIT_FLUTTER_WEB.md)。
 - Android 模拟器：`http://10.0.2.2:8000/api/v1`
 - iOS 模拟器：`http://localhost:8000/api/v1`
 - 真机：使用后端所在机器的局域网 IP（同网段）

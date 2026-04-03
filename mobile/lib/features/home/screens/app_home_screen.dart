@@ -9,11 +9,12 @@ import '../../../core/widgets/gender_decoration.dart';
 import '../../analysis/screens/body_shape_insight_screen.dart';
 import '../../analysis/screens/mood_outfit_screen.dart';
 import '../../analysis/screens/outfit_recommend_screen.dart';
+import '../../analysis/screens/smart_outfit_screen.dart';
 import '../../analysis/screens/similarity_analysis_screen.dart';
 import '../../analysis/screens/suitability_analysis_screen.dart';
 import '../../analysis/screens/virtual_tryon_screen.dart';
 
-/// 主页：自上而下固定 5 项；配色随全局性别表达指数；底部滑块仅在 Shell 中展示。
+/// 主页：功能入口列表；配色随全局性别表达指数；底部滑块仅在 Shell 中展示。
 class AppHomeScreen extends StatelessWidget {
   const AppHomeScreen({super.key});
 
@@ -96,8 +97,17 @@ class AppHomeScreen extends StatelessWidget {
                 palette: palette,
                 radius: _radius,
                 icon: Icons.auto_awesome_rounded,
-                title: '智能推荐',
-                subtitle: '基于衣橱与画像生成搭配方案',
+                title: '智能穿搭',
+                subtitle: '参考图 + 自动天气与可选心情，一次生成 3 套衣橱搭配',
+                onTap: () => _push(context, const SmartOutfitScreen()),
+              ),
+              const SizedBox(height: 12),
+              _HomeRow(
+                palette: palette,
+                radius: _radius,
+                icon: Icons.view_day_outlined,
+                title: '场景穿搭推荐',
+                subtitle: '选择场景并上传图片，智能推荐搭配方案',
                 onTap: () => _push(context, const OutfitRecommendScreen()),
               ),
               const SizedBox(height: 12),

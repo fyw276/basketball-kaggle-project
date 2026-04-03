@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'core/providers/auth_provider.dart';
 import 'core/providers/theme_provider.dart';
+import 'core/services/api_base_resolver.dart';
 import 'core/services/api_client.dart';
 import 'features/auth/screens/auth_screen.dart';
 import 'features/shell/app_shell_screen.dart';
@@ -56,7 +57,7 @@ class ClothingAssistantApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final apiClient = ApiClient();
+    final apiClient = ApiClient(baseUrl: resolveApiBaseUrl());
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => AuthProvider(apiClient)),

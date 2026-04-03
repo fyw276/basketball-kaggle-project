@@ -1,8 +1,11 @@
-/// Native platform (iOS/Android/Desktop): use fixed local address.
-/// Import this conditionally via api_base_resolver.dart on native platform.
+import 'dart:io' show Platform;
+
+/// 非 Web：默认本机后端。Android 模拟器访问宿主机用 10.0.2.2；真机请 adb reverse 或改局域网 IP。
 String resolveApiBaseUrl() {
-  // Android emulator can reach host via 10.0.2.2
-  // iOS simulator uses localhost
-  // Desktop uses 127.0.0.1
+  try {
+    if (Platform.isAndroid) {
+      return 'http://10.0.2.2:8000/api/v1';
+    }
+  } catch (_) {}
   return 'http://127.0.0.1:8000/api/v1';
 }

@@ -620,7 +620,60 @@ curl -X POST "http://localhost:8000/api/v1/recognition/category" \
 
 ---
 
-### 5.3 适合度评分
+### 5.3 智能穿搭（参考图 + 天气 + 情绪）
+
+**Base 路径前缀**: 与其它 v1 接口相同，为 `/api/v1`。本节端点完整路径形如 **`/api/v1/smart-outfit/...`**（勿省略 `/v1`）。
+
+#### 5.3.1 天气（经纬度）
+
+**端点**: `GET /api/v1/smart-outfit/weather`
+
+**描述**: 根据 GPS 经纬度返回城市名、气温、天气中文描述等（Open-Meteo）。
+
+**请求头**: 需要认证
+
+**查询参数**:
+- `latitude`: 纬度（float）
+- `longitude`: 经度（float）
+
+#### 5.3.2 天气（城市名）
+
+**端点**: `GET /api/v1/smart-outfit/weather-by-city`
+
+**描述**: 手动切换城市时使用。
+
+**查询参数**:
+- `name`: 城市名（如 `上海`）
+
+#### 5.3.3 上传参考衣物图
+
+**端点**: `POST /api/v1/smart-outfit/upload-reference`
+
+**请求体**: `multipart/form-data`
+- `file`: 图片文件
+
+**成功响应** (200 OK): JSON 含 `image_url`，供生成接口使用。
+
+#### 5.3.4 生成多套搭配
+
+**端点**: `POST /api/v1/smart-outfit/generate`
+
+**描述**: 结合参考图、城市/天气/气温与可选情绪文本，优先从衣橱组合多套搭配；重新生成时保持请求体一致并递增 `regeneration_index`。
+
+**请求头**: 需要认证
+
+**请求体**: `application/json`
+- `image_url` (string, 必填)
+- `city`, `weather`, `temperature`, `mood`（可选；`mood` 可为空字符串）
+- `count`（可选，默认 3，范围 1–5）
+- `regeneration_index`（可选，非负整数）
+- `gender_expression`（可选，0.0–1.0）
+
+**成功响应** (200 OK): JSON 含 `outfits`（数组，每项含效果图 URL、单品列表、风格与天气适配说明等），以及 `city`、`weather`、`temperature`、`mood`、`weather_fallback` 等。
+
+---
+
+### 5.4 适合度评分
 
 **端点**: `POST /analysis/suitability`
 

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
@@ -943,7 +944,9 @@ class _GarmentCard extends StatelessWidget {
   });
 
   String? _resolvedUrl() {
-    final raw = g['image_url']?.toString() ?? g['image']?.toString();
+    final raw = g['image_url']?.toString() ??
+        g['image']?.toString() ??
+        g['image_path']?.toString();
     return resolveGarmentImageUrl(raw, apiBase);
   }
 
@@ -959,6 +962,9 @@ class _GarmentCard extends StatelessWidget {
               fit: BoxFit.cover,
               width: double.infinity,
               height: double.infinity,
+              webHtmlElementStrategy: kIsWeb
+                  ? WebHtmlElementStrategy.prefer
+                  : WebHtmlElementStrategy.never,
               errorBuilder: (_, __, ___) => _placeholder(),
               loadingBuilder: (_, child, prog) {
                 if (prog == null) return child;
@@ -998,7 +1004,13 @@ class _GarmentCard extends StatelessWidget {
             child: ClipRRect(
               borderRadius: BorderRadius.circular(18),
               child: url != null && url.isNotEmpty
-                  ? Image.network(url, fit: BoxFit.cover)
+                  ? Image.network(
+                      url,
+                      fit: BoxFit.cover,
+                      webHtmlElementStrategy: kIsWeb
+                          ? WebHtmlElementStrategy.prefer
+                          : WebHtmlElementStrategy.never,
+                    )
                   : _placeholder(),
             ),
           ),

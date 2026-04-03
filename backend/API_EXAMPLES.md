@@ -8,7 +8,8 @@
 2. [用户画像管理](#用户画像管理)
 3. [图像识别](#图像识别)
 4. [衣橱管理](#衣橱管理)
-5. [智能分析](#智能分析)
+5. [智能穿搭（天气与情绪）](#智能穿搭天气与情绪)
+6. [智能分析](#智能分析)
 
 ---
 
@@ -498,6 +499,78 @@ curl -X POST "http://localhost:8000/api/v1/wardrobe/split-outfit" \
 ```
 
 **响应字段**: `items[]` 含 `category`、`image_url`、`confidence`；入库成功时含 `garment_id`。
+
+---
+
+## 智能穿搭（天气与情绪）
+
+以下端点均在 **`/api/v1/smart-outfit`** 下，**需登录**（`Authorization: Bearer <token>`）。实现见 `backend/app/api/smart_outfit.py`。
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/v1/smart-outfit/weather` | GET | 查询参数：`latitude`、`longitude` |
+| `/api/v1/smart-outfit/weather-by-city` | GET | 查询参数：`name`（城市名，如 `上海`） |
+| `/api/v1/smart-outfit/upload-reference` | POST | `multipart/form-data`，字段 `file`：参考衣物图 |
+| `/api/v1/smart-outfit/generate` | POST | JSON 体，见下方 |
+
+### 生成搭配 `POST /api/v1/smart-outfit/generate`
+
+**请求体（JSON）**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `image_url` | string | 必填，参考图 URL（通常来自 `upload-reference` 返回） |
+| `city` | string | 可选，城市名 |
+| `weather` | string | 可选，天气描述（如 晴/阴/雨） |
+| `temperature` | number | 可选，气温 ℃ |
+| `mood` | string | 可选，情绪描述；空字符串则仅按图+天气 |
+| `count` | int | 可选，默认 `3`，一次生成套数（1–5） |
+| `regeneration_index` | int | 可选，重新生成时递增，便于后端换一批结果 |
+| `gender_expression` | float | 可选，0–1 |
+
+**curl**：
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/smart-outfit/generate" \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_url": "/uploads/user-id/ref.jpg",
+    "city": "上海",
+    "weather": "晴",
+    "temperature": 22,
+    "mood": "",
+    "count": 3,
+    "regeneration_index": 0
+  }'
+```
+
+**响应**：`outfits` 数组（多套搭配）；另含 `city`、`display_address`（省/市/区等拼接的展示用完整地址）、`latitude`、`longitude`、`weather`、`temperature`、`weather_fallback` 等字段。
+
+### 天气（经纬度）`GET /api/v1/smart-outfit/weather`
+
+```bash
+curl -G "http://localhost:8000/api/v1/smart-outfit/weather" \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  --data-urlencode "latitude=31.23" \
+  --data-urlencode "longitude=121.47"
+```
+
+### 天气（城市名）`GET /api/v1/smart-outfit/weather-by-city`
+
+```bash
+curl -G "http://localhost:8000/api/v1/smart-outfit/weather-by-city" \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  --data-urlencode "name=上海"
+```
+
+### 上传参考图 `POST /api/v1/smart-outfit/upload-reference`
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/smart-outfit/upload-reference" \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -F "file=@/path/to/garment.jpg"
+```
 
 ---
 

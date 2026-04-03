@@ -335,7 +335,37 @@
   }
   ```
 
-#### 5.3 适合度评分
+#### 5.3 智能穿搭（参考图 + 天气 + 情绪）
+
+> 路径前缀均为 **`/api/v1/smart-outfit`**（与 `app.main` 中 `include_router(..., prefix="/api/v1")` + 路由 `prefix="/smart-outfit"` 一致）。
+
+##### 5.3.1 天气（经纬度）
+- **端点**: `GET /api/v1/smart-outfit/weather`
+- **认证**: 必需
+- **查询参数**: `latitude`, `longitude`
+
+##### 5.3.2 天气（城市名）
+- **端点**: `GET /api/v1/smart-outfit/weather-by-city`
+- **认证**: 必需
+- **查询参数**: `name`（城市名）
+
+##### 5.3.3 上传参考图
+- **端点**: `POST /api/v1/smart-outfit/upload-reference`
+- **认证**: 必需
+- **请求**: `multipart/form-data`，字段 `file`
+
+##### 5.3.4 生成搭配
+- **端点**: `POST /api/v1/smart-outfit/generate`
+- **认证**: 必需
+- **请求**: `application/json`
+  - `image_url`: string（必填）
+  - `city`, `weather`, `temperature`, `mood`: 可选；`mood` 可为 `""`
+  - `count`: 可选，默认 3（1–5）
+  - `regeneration_index`: 可选，重新生成时递增
+  - `gender_expression`: 可选，0–1
+- **响应** (200): 含 `outfits: Array<Record<string, unknown>>` 及天气/城市回显字段
+
+#### 5.4 适合度评分
 - **端点**: `POST /api/v1/analysis/suitability`
 - **认证**: 必需
 - **状态**: ✅ 已冻结

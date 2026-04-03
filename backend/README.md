@@ -185,11 +185,16 @@ pre-commit run --all-files
 
 - `GET /` - 根端点，返回 API 信息
 - `GET /health` - 健康检查
+- **智能穿搭（v1）**（需登录，前缀 **`/api/v1/smart-outfit`**）:
+  - `GET /api/v1/smart-outfit/weather` — 经纬度查天气
+  - `GET /api/v1/smart-outfit/weather-by-city` — 城市名查天气
+  - `POST /api/v1/smart-outfit/upload-reference` — 上传参考衣物图
+  - `POST /api/v1/smart-outfit/generate` — 生成多套搭配（JSON）
  - `POST /api/v1/mood/recommend` - 情绪穿搭推荐（可选包含衣橱匹配）
  - `GET /api/v1/mood/quick-recall` - 心情快捷入口列表
  - `POST /api/v1/tryon/garment` - 虚拟试衣（FormData：garment_file/person_file，可选 prompt）
 
-> 说明：本项目 API 以 `http://localhost:8000/docs`（Swagger）为准；仓库内历史规范文档可能存在版本差异。
+> 说明：本项目 API 以 `http://localhost:8000/docs`（Swagger）为准；业务路径均在 **`/api/v1/...`** 下。若某处文档写成 `/api/smart-outfit/...`（缺少 `/v1`），应以 Swagger 与 [`API_EXAMPLES.md`](API_EXAMPLES.md) 为准。
 
 ## 环境变量
 

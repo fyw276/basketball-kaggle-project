@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/providers/theme_provider.dart';
 import '../../analysis/screens/outfit_recommend_screen.dart';
+import '../../analysis/screens/smart_outfit_screen.dart';
 import '../../analysis/screens/similarity_analysis_screen.dart';
 import '../../analysis/screens/suitability_analysis_screen.dart';
 import '../../analysis/screens/body_shape_insight_screen.dart';
@@ -9,7 +10,7 @@ import '../../analysis/screens/mood_outfit_screen.dart';
 import '../../analysis/screens/virtual_tryon_screen.dart';
 
 /// 智能穿搭：功能入口（列表 + 右侧箭头）。
-/// 顺序：智能推荐 → 情绪穿搭 → 虚拟试衣 → …
+/// 顺序：智能穿搭（天气+情绪）→ 场景推荐 → 情绪穿搭 → …
 class OutfitHubScreen extends StatelessWidget {
   const OutfitHubScreen({super.key});
 
@@ -30,8 +31,14 @@ class OutfitHubScreen extends StatelessWidget {
         children: [
           _HubTile(
             icon: Icons.auto_awesome,
-            title: '智能推荐',
-            subtitle: '上传服装图片，智能推荐搭配方案',
+            title: '智能穿搭',
+            subtitle: '参考图 + 自动天气与可选心情，一次生成 3 套衣橱搭配',
+            onTap: () => _pushPage(context, const SmartOutfitScreen()),
+          ),
+          _HubTile(
+            icon: Icons.view_day_outlined,
+            title: '场景穿搭推荐',
+            subtitle: '选择场景并上传图片，智能推荐搭配方案',
             onTap: () => _pushPage(context, const OutfitRecommendScreen()),
           ),
           _HubTile(

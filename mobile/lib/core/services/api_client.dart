@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
@@ -7,7 +8,8 @@ class ApiClient {
   final String baseUrl;
   String? _token;
 
-  ApiClient({this.baseUrl = 'http://127.0.0.1:8000/api/v1'});
+  ApiClient({String baseUrl = 'http://127.0.0.1:8000/api/v1'})
+      : baseUrl = baseUrl.replaceAll(RegExp(r'/+$'), '');
 
   void setToken(String token) {
     _token = token;
@@ -567,5 +569,132 @@ class ApiClient {
     } catch (e) {
       return {'error': e.toString()};
     }
+  }
+
+  // ─── 智能穿搭：天气 + 参考图 + 情绪 ─────────────────────────────
+  // 后端: GET /smart-outfit/weather, GET /smart-outfit/weather-by-city
+  // POST /smart-outfit/upload-reference, POST /smart-outfit/generate
+
+  Future<Map<String, dynamic>> getSmartOutfitWeather(
+      double latitude, double longitude) async {
+    try {
+      final uri =
+          Uri.parse('$baseUrl/smart-outfit/weather').replace(queryParameters: {
+        'latitude': latitude.toString(),
+        'longitude': longitude.toString(),
+      });
+      final response = await http
+          .get(uri, headers: _jsonHeaders)
+          .timeout(const Duration(seconds: 25));
+      if (response.statusCode == 200) {
+        return json.decode(response.body) as Map<String, dynamic>;
+      }
+      return {'error': 'Weather failed: ${response.statusCode}'};
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
+  Future<Map<String, dynamic>> getSmartOutfitWeatherByCity(String name) async {
+    try {
+      final uri = Uri.parse('$baseUrl/smart-outfit/weather-by-city')
+          .replace(queryParameters: {'name': name.trim()});
+      final response = await http
+          .get(uri, headers: _jsonHeaders)
+          .timeout(const Duration(seconds: 25));
+      if (response.statusCode == 200) {
+        return json.decode(response.body) as Map<String, dynamic>;
+      }
+      return {'error': 'City weather failed: ${response.statusCode}'};
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
+  Future<Map<String, dynamic>> uploadSmartOutfitReference(
+      dynamic imageFile) async {
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/smart-outfit/upload-reference'),
+      );
+      request.headers.addAll(_authHeaders);
+      final part = await _multipartImage('file', imageFile);
+      if (part == null) return {'error': 'Unsupported image type'};
+      request.files.add(part);
+      final streamedResponse = await request.send().timeout(
+            const Duration(seconds: 120),
+          );
+      final response = await http.Response.fromStream(streamedResponse);
+      if (response.statusCode == 200) {
+        return json.decode(response.body) as Map<String, dynamic>;
+      }
+      return {'error': 'Upload failed: ${response.statusCode}'};
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
+  Future<Map<String, dynamic>> generateSmartOutfit({
+    required String imageUrl,
+    required String location,
+    String city = '',
+    required String weather,
+    required double temperature,
+    String mood = '',
+    int count = 3,
+    int regenerationIndex = 0,
+    double? genderExpression,
+  }) async {
+    final loc = location.trim();
+    final body = <String, dynamic>{
+      'image_url': imageUrl,
+      'location': loc,
+      'city': city.trim().isNotEmpty ? city.trim() : loc,
+      'weather': weather,
+      'temperature': temperature,
+      'mood': mood,
+      'count': count,
+      'regeneration_index': regenerationIndex,
+    };
+    if (genderExpression != null) {
+      body['gender_expression'] = genderExpression;
+    }
+    final genUri = Uri.parse(
+      '${baseUrl.replaceAll(RegExp(r'/$'), '')}/smart-outfit/generate',
+    );
+    try {
+      final response = await http
+          .post(
+            genUri,
+            headers: _jsonHeaders,
+            body: json.encode(body),
+          )
+          .timeout(const Duration(seconds: 180));
+      if (response.statusCode == 200) {
+        final decoded = json.decode(response.body);
+        if (decoded is Map) {
+          return Map<String, dynamic>.from(decoded);
+        }
+        return {'error': '响应格式错误'};
+      }
+      final err = _parseFastApiErrorBody(response.body);
+      if (err != null) return {'error': err};
+      return {'error': 'Generate failed: ${response.statusCode}'};
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
+  /// FastAPI 422/500 等返回的 JSON `detail` 字段。
+  String? _parseFastApiErrorBody(String body) {
+    if (body.isEmpty) return null;
+    try {
+      final decoded = json.decode(body);
+      if (decoded is Map && decoded['detail'] != null) {
+        return decoded['detail'].toString();
+      }
+    } catch (_) {}
+    return null;
   }
 }

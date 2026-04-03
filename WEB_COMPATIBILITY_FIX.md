@@ -154,4 +154,8 @@ MultipartFile.fromBytes(
 
 - [Flutter Web 文件上传](https://docs.flutter.dev/platform-integration/web/file-handling)
 - [image_picker Web 支持](https://pub.dev/packages/image_picker#web)
-- [Dio MultipartFile](https://pub.dev/documentation/dio/latest/dio/MultipartFile-class.html)
+- 本项目 `ApiClient` 使用 `package:http` 的 `MultipartFile.fromBytes`（见 `mobile/lib/core/services/api_client.dart`），无需 Dio。
+
+## 另见（智能穿搭 / API 与 Web）
+
+- [docs/SMART_OUTFIT_FLUTTER_WEB.md](docs/SMART_OUTFIT_FLUTTER_WEB.md)：智能穿搭、CORS、认证顺序、衣橱图片 URL、`PageView` 鼠标滑动与响应式布局说明。
