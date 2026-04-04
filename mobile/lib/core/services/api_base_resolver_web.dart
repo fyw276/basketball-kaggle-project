@@ -1,10 +1,14 @@
-/// Flutter Web：API 与当前页使用**相同 loopback 主机名**（端口固定 8000），局域网用页面 host。
+import 'api_port_config.dart';
+
+/// Flutter Web API 基址。
 ///
-/// 若页面用 `localhost`、API 却用 `127.0.0.1`，Chrome 会按「私有网络访问」对 POST 预检更严，
-/// 智能穿搭等 POST 可能失败，而 GET 天气仍可能成功；衣橱图片若已对齐为同源 origin 则正常。
-/// 本机 loopback 时与地址栏一致（localhost / 127.0.0.1 / ::1），避免上述混用。
+/// **本机环回一律用 IPv4 `127.0.0.1`**，不用浏览器地址栏里的 `localhost` / `::1`。
+/// 否则在 Windows 上易出现「`localhost` 解析到 ::1、与仅监听 IPv4 的进程不一致」或
+/// 「同端口存在多个监听时连错进程」，表现为登录 **404**、根路径非本仓库 JSON。
+///
+/// 局域网调试仍用当前页 host；端口见 [kApiPort]（默认与后端 [.env] PORT 一致）。
 String resolveApiBaseUrl() {
-  const apiPort = 8000;
+  const apiPort = kApiPort;
   final b = Uri.base;
   final h = b.host;
   if (h.isEmpty) {
@@ -20,12 +24,5 @@ String resolveApiBaseUrl() {
     return Uri(scheme: scheme, host: h, port: apiPort, path: '/api/v1')
         .toString();
   }
-  final scheme =
-      (b.scheme == 'http' || b.scheme == 'https') ? b.scheme : 'http';
-  return Uri(
-    scheme: scheme,
-    host: h,
-    port: apiPort,
-    path: '/api/v1',
-  ).toString();
+  return 'http://127.0.0.1:$apiPort/api/v1';
 }

@@ -5,7 +5,30 @@
 可配合 HF_ENDPOINT 镜像或拉长超时。
 """
 
+from __future__ import annotations
+
 import os
+from typing import Any
+
+
+def sync_hf_env_from_settings(settings: Any) -> None:
+    """
+    将 Pydantic Settings 中的 HF 字段同步到 os.environ。
+    huggingface_hub 只读环境变量，不把 .env 里未声明的键注入进程，故需在启动时显式写入。
+    """
+    pairs = [
+        ("HF_ENDPOINT", getattr(settings, "HF_ENDPOINT", None)),
+        ("HF_HOME", getattr(settings, "HF_HOME", None)),
+        ("HF_TOKEN", getattr(settings, "HF_TOKEN", None)),
+        ("TRANSFORMERS_CACHE", getattr(settings, "TRANSFORMERS_CACHE", None)),
+        ("HF_HUB_DOWNLOAD_TIMEOUT", getattr(settings, "HF_HUB_DOWNLOAD_TIMEOUT", None)),
+    ]
+    for key, val in pairs:
+        if val is None:
+            continue
+        s = str(val).strip()
+        if s:
+            os.environ[key] = s
 
 
 def apply_hf_hub_env_defaults() -> None:

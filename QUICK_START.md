@@ -4,12 +4,14 @@
 
 ### 步骤 1: 启动后端服务
 
+首次克隆请配置环境文件：`cd backend` 后执行 `copy .env.example .env`（macOS/Linux: `cp .env.example .env`），再启动。
+
 ```bash
 cd backend
-python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8010
 ```
 
-**验证**: 访问 http://localhost:8000/health 应该看到 `{"status":"healthy"}`
+**验证**: 访问 http://127.0.0.1:8010/health 应该看到 `{"status":"healthy"}`
 
 ### 步骤 2: 启动 Flutter Web
 

@@ -4,12 +4,38 @@ import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
 
+import 'api_port_config.dart';
+
+/// 智能穿搭：情绪字段去控制字符、折叠空白、限长，保证 JSON 与后端解析稳定。
+String _normalizeSmartOutfitMood(String mood) {
+  var s = mood.trim();
+  if (s.isEmpty) {
+    return '';
+  }
+  final buf = StringBuffer();
+  for (final r in s.runes) {
+    if (r == 0x9 || r == 0xA || r == 0xD) {
+      buf.write(' ');
+    } else if (r < 0x20) {
+      continue;
+    } else {
+      buf.writeCharCode(r);
+    }
+  }
+  s = buf.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (s.length > 500) {
+    s = s.substring(0, 500);
+  }
+  return s;
+}
+
 class ApiClient {
   final String baseUrl;
   String? _token;
 
-  ApiClient({String baseUrl = 'http://127.0.0.1:8000/api/v1'})
-      : baseUrl = baseUrl.replaceAll(RegExp(r'/+$'), '');
+  ApiClient({String? baseUrl})
+      : baseUrl =
+            (baseUrl ?? kDefaultApiBaseUrl).replaceAll(RegExp(r'/+$'), '');
 
   void setToken(String token) {
     _token = token;
@@ -89,16 +115,26 @@ class ApiClient {
 
   Future<Map<String, dynamic>> post(
       String path, Map<String, dynamic> data) async {
+    final uri = Uri.parse('$baseUrl$path');
     try {
       final response = await http.post(
-        Uri.parse('$baseUrl$path'),
+        uri,
         headers: _jsonHeaders,
         body: json.encode(data),
       );
       if (response.statusCode == 200 || response.statusCode == 201) {
         return json.decode(response.body);
       }
-      return {'error': 'Request failed with status: ${response.statusCode}'};
+      if (response.statusCode == 404) {
+        return {
+          'error': 'Request failed with status: 404 ($uri)。'
+              '请确认已启动本仓库后端且端口一致（默认 8010，见 backend/.env 的 PORT）。'
+              '浏览器打开 http://127.0.0.1:<端口>/ 应返回 Smart Outfit Assistant。',
+        };
+      }
+      return {
+        'error': 'Request failed with status: ${response.statusCode} ($uri)',
+      };
     } catch (e) {
       return {'error': e.toString()};
     }
@@ -647,13 +683,14 @@ class ApiClient {
     double? genderExpression,
   }) async {
     final loc = location.trim();
+    final moodNorm = _normalizeSmartOutfitMood(mood);
     final body = <String, dynamic>{
       'image_url': imageUrl,
       'location': loc,
       'city': city.trim().isNotEmpty ? city.trim() : loc,
       'weather': weather,
       'temperature': temperature,
-      'mood': mood,
+      'mood': moodNorm,
       'count': count,
       'regeneration_index': regenerationIndex,
     };
@@ -663,12 +700,16 @@ class ApiClient {
     final genUri = Uri.parse(
       '${baseUrl.replaceAll(RegExp(r'/$'), '')}/smart-outfit/generate',
     );
+    final genHeaders = <String, String>{
+      ..._jsonHeaders,
+      'Content-Type': 'application/json; charset=utf-8',
+    };
     try {
       final response = await http
           .post(
             genUri,
-            headers: _jsonHeaders,
-            body: json.encode(body),
+            headers: genHeaders,
+            body: utf8.encode(json.encode(body)),
           )
           .timeout(const Duration(seconds: 180));
       if (response.statusCode == 200) {

@@ -1,6 +1,6 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-04-03
+**最后更新**: 2026-04-04
 **状态**: ✅ 可用于演示与迭代（后端 FastAPI + Flutter Web/移动端）
 
 ## 项目简介
@@ -115,7 +115,7 @@ clothing-assistant/
 
 ## 快速开始
 
-详细的启动指南请查看 [QUICK_START.md](QUICK_START.md)。搭配推荐多图上传见 [docs/OUTFIT_MULTI_IMAGE_UPLOAD.md](docs/OUTFIT_MULTI_IMAGE_UPLOAD.md)；衣橱整套拆分与删除提示见 [docs/WARDROBE_FEATURES.md](docs/WARDROBE_FEATURES.md)。**智能穿搭（Flutter Web 行为、CORS、认证顺序、响应式等）**见 [docs/SMART_OUTFIT_FLUTTER_WEB.md](docs/SMART_OUTFIT_FLUTTER_WEB.md)。
+详细的启动指南请查看 [QUICK_START.md](QUICK_START.md)。搭配推荐多图上传见 [docs/OUTFIT_MULTI_IMAGE_UPLOAD.md](docs/OUTFIT_MULTI_IMAGE_UPLOAD.md)；衣橱整套拆分与删除提示见 [docs/WARDROBE_FEATURES.md](docs/WARDROBE_FEATURES.md)。**智能穿搭（Flutter Web 行为、CORS、认证顺序、响应式等）**见 [docs/SMART_OUTFIT_FLUTTER_WEB.md](docs/SMART_OUTFIT_FLUTTER_WEB.md)。**天气展示（道路名过滤）与 Hugging Face / 虚拟试衣下载配置**见 [docs/WEATHER_DISPLAY_AND_HF_ENV.md](docs/WEATHER_DISPLAY_AND_HF_ENV.md)。
 
 ### 环境要求
 
@@ -127,18 +127,23 @@ clothing-assistant/
 ### 快速启动
 
 ```bash
-# 1. 启动后端服务
+# 1. 启动后端服务（端口默认 8010，见 backend/.env 的 PORT，避免与本机其它占用 8000 的服务冲突）
 cd backend
-python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8010
 
-# 2. 启动前端应用（新终端）
+# 2. 启动前端应用（新终端，默认请求 http://127.0.0.1:8010/api/v1）
 cd mobile
 flutter run -d chrome
 
 # 3. 访问应用
 # 前端: 浏览器自动打开
-# API 文档: http://localhost:8000/docs
+# API 文档: http://127.0.0.1:8010/docs
 ```
+
+### 开发环境配置（必做）
+
+1. **后端环境文件**：在 `backend` 目录执行 `copy .env.example .env`（macOS/Linux：`cp .env.example .env`）。`PORT` 默认 `8010`，与 Flutter `kApiPort` 一致；勿与机器上已占用端口冲突。
+2. **生产部署前**：将 `JWT_SECRET_KEY` 换为强随机字符串；设置 `DEBUG=False`、`ENVIRONMENT=production`；按域名配置 `CORS_ORIGINS`（勿依赖 `CORS_ALLOW_ALL_LOCALHOST`）。
 
 ### API 路径约定（v1）
 
@@ -157,8 +162,8 @@ flutter run -d chrome
 
 ### 模型下载/离线提示（重要）
 
-- CLIP / Try-on 首次运行可能需要从 Hugging Face 下载权重（弱网易超时）。
-- 国内网络建议设置镜像：`HF_ENDPOINT=https://hf-mirror.com`
+- CLIP / 虚拟试衣首次运行需要从 Hugging Face 下载权重（弱网易超时、大文件需较长超时）。
+- 在 **`backend/.env`** 中配置（示例见 `backend/.env.example`）：`HF_ENDPOINT=https://hf-mirror.com`、`HF_HUB_DOWNLOAD_TIMEOUT=600` 等。这些键已列入后端 `Settings`，启动时会 **`sync_hf_env_from_settings` 注入 `os.environ`**，供 `huggingface_hub` / `diffusers` 使用（仅写进未被 Pydantic 声明的裸 `.env` 键不会生效）。
 - 可用脚本一次性预下载（用于离线/加速）：
 
 ```bash
@@ -166,6 +171,8 @@ cd backend
 python scripts/prefetch_models.py --clip vit_l14
 python scripts/prefetch_models.py --tryon
 ```
+
+更完整的说明与排障见 [docs/WEATHER_DISPLAY_AND_HF_ENV.md](docs/WEATHER_DISPLAY_AND_HF_ENV.md)。
 
 ### Git Hooks 设置
 
@@ -281,7 +288,7 @@ flutter test
 
 ✅ **后端服务**: 100% 完成
 - 全部核心 API 端点已实现（数量见 [PROJECT_STATUS.md](PROJECT_STATUS.md)）
-- 324 个测试全部通过（无失败）
+- 后端 `pytest`：346 通过、2 跳过（详见 `backend/tests`；以本机最近一次全量运行为准）
 - 性别表达指数系统、图像识别、相似度分析、搭配推荐、适合度评分全部可用
 
 ✅ **前端应用**: 100% 完成

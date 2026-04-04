@@ -13,7 +13,7 @@
 
 | 主题 | 说明 |
 |------|------|
-| **API 基址** | `api_base_resolver_web.dart`：本机 loopback 时 API 的 **host 与浏览器地址栏一致**（`localhost` ↔ `localhost:8000`，`127.0.0.1` ↔ `127.0.0.1:8000`），避免 `localhost` 页面请求 `127.0.0.1` API 触发 Chrome 私有网络预检问题。局域网调试仍用页面同源 IP。 |
+| **API 基址** | `api_base_resolver_web.dart`：本机 loopback 时 API **固定为 `http://127.0.0.1:<PORT>/api/v1`**（`PORT` 默认 8010，与 `backend/.env` 一致），避免 `localhost`/`::1` 连错进程导致登录 404。局域网调试仍用页面同源 IP。 |
 | **认证顺序** | `AuthProvider` 异步从 `SharedPreferences` 恢复 token。`SmartOutfitScreen` 在请求天气/生成前 **`_waitForAuthReady()`**，避免无 `Authorization` 的 401 被误报为「无法获取天气」或生成失败。 |
 | **衣橱图片 URL** | `core/utils/media_url.dart`：`resolveGarmentImageUrl` 将相对路径与混用 host 的绝对 URL 对齐到当前 API 源站；`/uploads/` 路径大小写不敏感兼容历史数据。 |
 | **衣橱缩略图** | `wardrobe_screen.dart`：`Image.network` 在 Web 上使用 `webHtmlElementStrategy: prefer`，与 `PlatformImage` 一致，减轻跨端口加载问题。 |
@@ -36,6 +36,7 @@
 2. **生成报「无法连接」**：后端是否监听、防火墙；CORS/PNA 是否生效（重启后端）。`OPTIONS` 与正式 `POST` 的响应头是否正常。
 3. **衣橱部分图不加载**：检查 Network 中图片 URL 是否 404；`resolveGarmentImageUrl` 是否将 `127.0.0.1` 与当前 API host 对齐。
 4. **Web 无法左右滑搭配卡**：确认已包含鼠标 `dragDevices` 的 `ScrollConfiguration`（见 `smart_outfit_screen.dart`）。
+5. **登录 404（`/api/v1/auth/login`）**：多为端口上不是本仓库后端（8000 常被其它程序占用），或 `localhost`/`::1` 连错监听。默认开发端口为 **8010**，前后端一致；验证：浏览器打开 `http://127.0.0.1:8010/` 应返回含 `Smart Outfit Assistant` 的 JSON。
 
 ## 相关文件索引
 

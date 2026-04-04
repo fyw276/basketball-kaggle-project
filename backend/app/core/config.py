@@ -17,9 +17,9 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     ENVIRONMENT: str = "development"
 
-    # Server
+    # Server（默认 8010，减少与本机其它占用 8000 的进程冲突；可用环境变量 PORT 覆盖）
     HOST: str = "0.0.0.0"
-    PORT: int = 8000
+    PORT: int = 8010
     WORKERS: int = 4
 
     # Database
@@ -49,6 +49,19 @@ class Settings(BaseSettings):
     # Model Configuration
     MODEL_PATH: str = "../models"
     MODEL_CACHE_SIZE: int = 1000
+
+    # Hugging Face（写入 os.environ，供 huggingface_hub / diffusers 使用；仅配 .env 即可）
+    HF_ENDPOINT: str = Field(
+        default="",
+        description="镜像基址，国内可填 https://hf-mirror.com",
+    )
+    HF_HOME: str = Field(default="", description="HF 缓存根目录，如 D:\\model-cache\\hf")
+    HF_TOKEN: str = Field(default="", description="gated 模型令牌")
+    TRANSFORMERS_CACHE: str = Field(default="", description="transformers 缓存目录")
+    HF_HUB_DOWNLOAD_TIMEOUT: str = Field(
+        default="",
+        description="下载超时秒数；空则由 hf_hub_env 默认 120",
+    )
 
     # CORS
     CORS_ORIGINS: str = Field(

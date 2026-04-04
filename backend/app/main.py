@@ -2,6 +2,7 @@
 Main FastAPI application entry point
 """
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -35,17 +36,51 @@ from app.core.error_handlers import (
     validation_exception_handler,
 )
 from app.core.exceptions import AppException
-from app.core.hf_hub_env import apply_hf_hub_env_defaults
+from app.core.hf_hub_env import apply_hf_hub_env_defaults, sync_hf_env_from_settings
 from app.core.logging import setup_logging
 
-# 须在首次下载 HF 模型前生效（CLIP 等）
+# 须在首次下载 HF 模型前生效（CLIP / 虚拟试衣 diffusers）
+sync_hf_env_from_settings(settings)
 apply_hf_hub_env_defaults()
 
 # Setup logging
 logger = setup_logging()
 
+# CORS 模式在启动日志中使用（ lifespan 内需访问）
+_env = (settings.ENVIRONMENT or "").lower()
+_cors_permissive = (
+    _env in ("development", "dev", "local") or settings.DEBUG or settings.CORS_ALLOW_ALL_LOCALHOST
+)
+
+
+@asynccontextmanager
+async def _app_lifespan(app: FastAPI):
+    """应用启动/关闭：数据库补丁、日志（替代已弃用的 on_event）。"""
+    from app.db.session import engine
+    from app.db.sqlite_schema import apply_sqlite_schema_patches
+
+    apply_sqlite_schema_patches(engine)
+
+    logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
+    logger.info(f"Environment: {settings.ENVIRONMENT}")
+    logger.info(f"Debug mode: {settings.DEBUG}")
+    logger.info(
+        "CORS: {}",
+        (
+            "宽松（本机 localhost/127.0.0.1 任意端口，回显 Origin）"
+            if _cors_permissive
+            else "严格（仅 CORS_ORIGINS / 正则）"
+        ),
+    )
+
+    yield
+
+    logger.info(f"Shutting down {settings.APP_NAME}")
+
+
 # Create FastAPI app
 app = FastAPI(
+    lifespan=_app_lifespan,
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     description="""
@@ -88,7 +123,7 @@ app = FastAPI(
 )
 
 # Configure CORS
-# Flutter Web 端口随机；页面 Origin 为 http://localhost:<port>，API 常为 http://127.0.0.1:8000，属跨域。
+# Flutter Web 端口随机；页面 Origin 为 http://localhost:<port>，API 常为 http://127.0.0.1:<后端端口>，属跨域。
 # 请求带 Authorization 时，部分浏览器对 ACAO: * 与实际 Origin 组合较严，易报「无 ACAO」类 CORS 错误。
 # 开发宽松模式改为 allow_origin_regex + 回显具体 Origin（Starlette fullmatch），避免通配符。
 # 预检请求若仅返回 Allow-Headers: *，部分浏览器不把 Authorization 视为已允许，导致带 Bearer 的 POST 失败
@@ -100,14 +135,10 @@ _CORS_ALLOW_HEADERS = [
     "Accept-Language",
     "Origin",
     "X-Requested-With",
-    # Chrome 从 http://localhost:<flutter> 访问 http://127.0.0.1:8000 时，预检可能携带
+    # Chrome 从 http://localhost:<flutter> 访问本机 API 时，预检可能携带
     "Access-Control-Request-Private-Network",
 ]
 _localhost_origin_re = r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
-_env = (settings.ENVIRONMENT or "").lower()
-_cors_permissive = (
-    _env in ("development", "dev", "local") or settings.DEBUG or settings.CORS_ALLOW_ALL_LOCALHOST
-)
 if _cors_permissive:
     app.add_middleware(
         CORSMiddleware,
@@ -157,34 +188,6 @@ app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.add_exception_handler(PydanticValidationError, validation_exception_handler)
 app.add_exception_handler(Exception, generic_exception_handler)
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Application startup event"""
-    # 旧版 SQLite 库缺少 ORM 新增列时，启动时补齐（避免 no such column）
-    from app.db.session import engine
-    from app.db.sqlite_schema import apply_sqlite_schema_patches
-
-    apply_sqlite_schema_patches(engine)
-
-    logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
-    logger.info(f"Environment: {settings.ENVIRONMENT}")
-    logger.info(f"Debug mode: {settings.DEBUG}")
-    logger.info(
-        "CORS: {}",
-        (
-            "宽松（本机 localhost/127.0.0.1 任意端口，回显 Origin）"
-            if _cors_permissive
-            else "严格（仅 CORS_ORIGINS / 正则）"
-        ),
-    )
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Application shutdown event"""
-    logger.info(f"Shutting down {settings.APP_NAME}")
 
 
 @app.get("/")

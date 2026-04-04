@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 import httpx
@@ -21,6 +22,29 @@ from app.services.storage import StorageService
 from app.services.user_profile import get_profile_by_user_id
 
 logger = setup_logging()
+
+
+def normalize_mood_input(mood: Optional[str]) -> str:
+    """
+    规范化情绪文案：去控制字符与空字节、折叠空白、限制长度，避免 JSON/日志与下游异常。
+    """
+    if mood is None:
+        return ""
+    s = str(mood).replace("\x00", "")
+    out: List[str] = []
+    for ch in s:
+        o = ord(ch)
+        if o in (9, 10, 13):
+            out.append(" ")
+        elif o < 32:
+            continue
+        else:
+            out.append(ch)
+    s = "".join(out)
+    s = " ".join(s.split())
+    if len(s) > 500:
+        s = s[:500]
+    return s.strip()
 
 
 def _scene_from_weather(weather_cn: str, temperature: float) -> str:
@@ -63,6 +87,28 @@ def _mood_extra_styles(mood: str) -> List[str]:
         (("酷", "冷淡", "冷"), ["街头", "朋克", "简约"]),
         (("正式", "通勤", "上班"), ["通勤", "正式"]),
         (("约会", "甜"), ["甜美", "优雅"]),
+        (
+            (
+                "难受",
+                "委屈",
+                "低落",
+                "丧",
+                "烦",
+                "累",
+                "焦虑",
+                "压力",
+                "难过",
+                "伤心",
+                "郁闷",
+                "被骂",
+                "崩溃",
+                "绝望",
+                "孤独",
+                "emo",
+            ),
+            ["简约", "温柔", "优雅", "舒适"],
+        ),
+        (("生气", "愤怒", "火大", "暴躁"), ["简约", "街头", "休闲"]),
     ]
     for keys, styles in pairs:
         if any(k in m for k in keys):
@@ -96,8 +142,22 @@ def _is_safe_image_url_for_user(user_id: str, image_url: str) -> bool:
 
 
 async def load_image_bytes(image_url: str) -> bytes:
+    """
+    加载参考图字节。若 image_url 为本服务上的 /uploads/ 绝对地址，**直接从磁盘读取**，
+    避免 httpx 回环请求本机（与当前请求同进程时易 502/死锁）。
+    """
     u = image_url.strip()
     if u.startswith("http://") or u.startswith("https://"):
+        parsed = urlparse(u)
+        path_part = (parsed.path or "").replace("\\", "/")
+        low = path_part.lower()
+        if "/uploads/" in low:
+            idx = low.find("/uploads/")
+            tail = path_part[idx + len("/uploads/") :].lstrip("/")
+            if tail:
+                full = Path(settings.UPLOAD_DIR) / tail
+                if full.is_file():
+                    return full.read_bytes()
         async with httpx.AsyncClient(timeout=45.0) as client:
             r = await client.get(u)
             r.raise_for_status()
@@ -212,6 +272,8 @@ async def generate_smart_outfits(
     """
     生成智能穿搭结果字典：outfits, city, weather, temperature, mood, weather_fallback 等。
     """
+    mood = normalize_mood_input(mood)
+
     if not _is_safe_image_url_for_user(user_id, image_url):
         raise ValueError("无效的图片地址，请使用本账号上传的参考图")
 

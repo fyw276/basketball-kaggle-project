@@ -88,21 +88,67 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
     super.dispose();
   }
 
-  /// Web：enableHighAccuracy + maximumAge:0；超时 10s，禁用陈旧缓存位置
+  /// Web：高精度；超时 25s（与天气接口一致，避免用户点「允许」稍慢即失败）；
+  /// maximumAge 允许浏览器复用数十秒内坐标，对城市级天气/逆地理仍足够准确。
   LocationSettings _gpsLocationSettings() {
     if (kIsWeb) {
       return WebSettings(
         accuracy: LocationAccuracy.best,
         distanceFilter: 0,
-        timeLimit: const Duration(seconds: 10),
-        maximumAge: Duration.zero,
+        timeLimit: const Duration(seconds: 25),
+        maximumAge: const Duration(seconds: 45),
       );
     }
     return const LocationSettings(
       accuracy: LocationAccuracy.best,
       distanceFilter: 0,
-      timeLimit: Duration(seconds: 10),
+      timeLimit: Duration(seconds: 20),
     );
+  }
+
+  Future<Position> _getCurrentPositionWithRetry() async {
+    Object? last;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await Geolocator.getCurrentPosition(
+          locationSettings: _gpsLocationSettings(),
+        );
+      } catch (e) {
+        last = e;
+        if (attempt < 1) {
+          await Future.delayed(const Duration(milliseconds: 700));
+        }
+      }
+    }
+    throw (last ?? StateError('position'));
+  }
+
+  /// 上次展示是否可作为失败回退（非默认占位、非失败态）
+  bool _hadReliableWeatherSnapshot({
+    required bool fallback,
+    required String full,
+    required String disp,
+    required String city,
+  }) {
+    if (fallback) return false;
+    if (city.trim() == '默认') return false;
+    return full.trim().isNotEmpty ||
+        disp.trim().isNotEmpty ||
+        city.trim().isNotEmpty;
+  }
+
+  String _weatherFailureHint(Object e) {
+    final s = e.toString();
+    if (s.contains('401')) {
+      return '登录已失效或无效，请重新登录后再试定位与天气';
+    }
+    if (s.contains('403')) {
+      return '没有权限访问天气接口，请检查账号';
+    }
+    if (s.contains('503') || s.toLowerCase().contains('unavailable')) {
+      return '天气服务暂时不可用，请稍后重试';
+    }
+    return '无法更新位置或天气，仍显示上次定位；或请使用「手动选择地址」';
   }
 
   Future<void> _persistWeatherCache() async {
@@ -195,6 +241,20 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
       return;
     }
 
+    // 确保 token 已写入 ApiClient（与 isInitialized 竞态时偶发无 Authorization → 401）
+    for (var i = 0; i < 80; i++) {
+      if (auth0.token != null && auth0.token!.isNotEmpty) break;
+      await Future.delayed(const Duration(milliseconds: 25));
+      if (!mounted) return;
+    }
+
+    final prevFallback = _weatherFallback;
+    final prevFull = _fullAddressLine;
+    final prevDisp = _displayAddress;
+    final prevCity = _cityShort;
+    final prevWeather = _weather;
+    final prevTemp = _temp;
+
     _weatherRequestInFlight = true;
     final seq = ++_weatherSeq;
     final api = context.read<AuthProvider>().apiClient;
@@ -224,12 +284,10 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
         return;
       }
 
-      final pos = await Geolocator.getCurrentPosition(
-        locationSettings: _gpsLocationSettings(),
-      );
+      final pos = await _getCurrentPositionWithRetry();
       final r = await api.getSmartOutfitWeather(pos.latitude, pos.longitude);
       if (r['error'] != null) {
-        throw Exception(r['error']);
+        throw Exception('${r['error']}');
       }
       if (!mounted || seq != _weatherSeq) return;
       _applyWeatherPayload(r, fallback: false);
@@ -238,6 +296,31 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
       if (e is StateError && e.message == 'location_service_disabled') {
         setState(() => _weatherLoading = false);
         await _showManualAddressPicker();
+        return;
+      }
+      final canKeepLast = _hadReliableWeatherSnapshot(
+        fallback: prevFallback,
+        full: prevFull,
+        disp: prevDisp,
+        city: prevCity,
+      );
+      if (canKeepLast) {
+        setState(() {
+          _weatherFallback = prevFallback;
+          _fullAddressLine = prevFull;
+          _displayAddress = prevDisp;
+          _cityShort = prevCity;
+          _weather = prevWeather;
+          _temp = prevTemp;
+          _weatherLoading = false;
+        });
+        _persistWeatherCache();
+        if (!mounted) return;
+        showAppSnackBar(
+          context,
+          _weatherFailureHint(e),
+          backgroundColor: palette.textBody,
+        );
         return;
       }
       setState(() {
@@ -252,7 +335,7 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
       _persistWeatherCache();
       showAppSnackBar(
         context,
-        '无法获取当前天气，已使用默认推荐',
+        _weatherFailureHint(e),
         backgroundColor: palette.textBody,
       );
     } finally {

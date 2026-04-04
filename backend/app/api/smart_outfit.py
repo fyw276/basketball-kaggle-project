@@ -21,7 +21,7 @@ class SmartOutfitGenerateRequest(BaseModel):
     city: str = Field("", description="城市名或短地址（兼容旧字段）")
     weather: str = Field("", description="天气状况（晴/阴/雨等）")
     temperature: float = Field(20.0, description="气温 ℃")
-    mood: str = Field("", description="情绪描述，可空")
+    mood: str = Field("", max_length=2000, description="情绪描述，可空")
     count: int = Field(3, ge=1, le=5, description="一次生成套数")
     regeneration_index: int = Field(0, ge=0, description="重新生成时递增，用于结果多样化")
     gender_expression: Optional[float] = Field(

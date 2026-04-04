@@ -85,7 +85,7 @@ copy .env.example .env  # Windows
 
 > 模型相关提示：
 > - CLIP / 虚拟试衣首次运行可能会下载权重（弱网易超时）。
-> - 国内网络建议设置：`HF_ENDPOINT=https://hf-mirror.com`
+> - 在 `.env` 中设置 `HF_ENDPOINT=https://hf-mirror.com`（及可选 `HF_HUB_DOWNLOAD_TIMEOUT` 等）；这些键已在 `app.core.config.Settings` 中声明，启动时会注入 `os.environ`。详见仓库根目录 [docs/WEATHER_DISPLAY_AND_HF_ENV.md](../docs/WEATHER_DISPLAY_AND_HF_ENV.md)。
 > - 虚拟试衣默认模型为公开的 `runwayml/stable-diffusion-inpainting`；若改用 gated 模型（例如 stabilityai/*），需要配置 `HF_TOKEN` 并在 HF 网站同意条款。
 
 ### 4. 启动开发服务器
@@ -94,18 +94,20 @@ copy .env.example .env  # Windows
 python run.py
 ```
 
-或使用 uvicorn：
+或使用 uvicorn（端口与 `PORT` / `.env` 一致，**默认 8010**，与 Flutter `kApiPort` 对齐）：
 
 ```bash
-uvicorn app.main:app --reload
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8010
 ```
 
 ### 5. 访问 API 文档
 
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-- 健康检查: http://localhost:8000/health
-- 根端点: http://localhost:8000/
+- Swagger UI: http://127.0.0.1:8010/docs
+- ReDoc: http://127.0.0.1:8010/redoc
+- 健康检查: http://127.0.0.1:8010/health
+- 根端点: http://127.0.0.1:8010/
+
+若 `.env` 中 `PORT` 不是 `8010`，请把上面 URL 中的端口改成当前值。
 
 ## ⚠️ 遇到问题？
 
@@ -194,7 +196,7 @@ pre-commit run --all-files
  - `GET /api/v1/mood/quick-recall` - 心情快捷入口列表
  - `POST /api/v1/tryon/garment` - 虚拟试衣（FormData：garment_file/person_file，可选 prompt）
 
-> 说明：本项目 API 以 `http://localhost:8000/docs`（Swagger）为准；业务路径均在 **`/api/v1/...`** 下。若某处文档写成 `/api/smart-outfit/...`（缺少 `/v1`），应以 Swagger 与 [`API_EXAMPLES.md`](API_EXAMPLES.md) 为准。
+> 说明：本项目 API 以 `http://127.0.0.1:8010/docs`（Swagger，端口以 `.env` 的 `PORT` 为准）为准；业务路径均在 **`/api/v1/...`** 下。若某处文档写成 `/api/smart-outfit/...`（缺少 `/v1`），应以 Swagger 与 [`API_EXAMPLES.md`](API_EXAMPLES.md) 为准。
 
 ## 环境变量
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
@@ -12,6 +13,39 @@ from app.core.logging import setup_logging
 logger = setup_logging()
 
 NOMINATIM_UA = "ClothingAssistant/1.1 (weather; +https://github.com)"
+
+# 国道/省道/县道/高速及「某某线」等道路编号，逆地理常压在 street 上，对用户展示「省市区」更稳。
+_ROUTE_NAME_HINT = re.compile(r"(国道|省道|县道|乡道|高速公路|快速路|环线|绕城|高速|^[Gg]\d{1,4})")
+
+
+def _is_route_like_road(street: str) -> bool:
+    """判断是否为线路/国道类道路名（展示时可省略，避免「山深线」等掩盖真实区县感知）。"""
+    t = (street or "").strip()
+    if not t:
+        return False
+    if _ROUTE_NAME_HINT.search(t):
+        return True
+    if t.endswith("线") and len(t) <= 12 and "地铁" not in t and "公交" not in t:
+        return True
+    return False
+
+
+def _display_address_after_route_filter(
+    province: str, city: str, district: str, street: str
+) -> Tuple[str, str, str, str, str]:
+    """
+    若有省市区且最后一级为线路型道路名，则展示行去掉道路，仅保留省市区。
+    返回 (province, city, district, street, full_address)。
+    """
+    p = (province or "").strip()
+    c = (city or "").strip()
+    d = (district or "").strip()
+    s = (street or "").strip()
+    admin_line = _full_address_spaced([p, c, d])
+    full = _full_address_spaced([p, c, d, s])
+    if s and _is_route_like_road(s) and admin_line.strip():
+        return p, c, d, "", admin_line
+    return p, c, d, s, full
 
 
 def wmo_to_cn(weather_code: int) -> str:
@@ -45,6 +79,26 @@ def _structured_from_open_meteo(r: Dict[str, Any]) -> Tuple[str, str, str, str]:
     if not street:
         street = str(r.get("name") or "").strip()
     return province, city, district, street
+
+
+def _line_from_om_result(r0: Dict[str, Any]) -> str:
+    """
+    从 Open-Meteo reverse 单条结果拼展示用一行地址。
+    在 admin1–4 与 name 的组合经 _structured 仍为空时，补用 name/admin/country 等字段。
+    """
+    if not r0:
+        return ""
+    p, c, d, s = _structured_from_open_meteo(r0)
+    line = _full_address_spaced([p, c, d, s])
+    if line.strip():
+        return line
+    name = str(r0.get("name") or "").strip()
+    a1 = str(r0.get("admin1") or "").strip()
+    a2 = str(r0.get("admin2") or "").strip()
+    a3 = str(r0.get("admin3") or "").strip()
+    a4 = str(r0.get("admin4") or "").strip()
+    country = str(r0.get("country") or "").strip()
+    return _full_address_spaced([a1, a2, a3, a4, name, country])
 
 
 async def _nominatim_reverse(
@@ -86,6 +140,10 @@ async def _nominatim_reverse(
             or addr.get("pedestrian")
             or addr.get("path")
             or addr.get("quarter")
+            or addr.get("neighbourhood")
+            or addr.get("suburb")
+            or addr.get("village")
+            or addr.get("hamlet")
             or ""
         ).strip()
         if not province and not city:
@@ -94,6 +152,11 @@ async def _nominatim_reverse(
                 return ("", "", "", "", dl[:240])
             return None
         line = _full_address_spaced([province, city, district, street])
+        if not line.strip():
+            dl = str(data.get("display_name") or "").strip()
+            if dl:
+                return ("", "", "", "", dl[:240])
+            return None
         return (province, city, district, street, line)
     except Exception as e:
         logger.warning(f"nominatim reverse failed: {e}")
@@ -140,8 +203,39 @@ async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, 
                     full_line = merged or nline
             elif nline:
                 full_line = nline
+        if not full_line.strip() and r0:
+            fb = _line_from_om_result(r0)
+            if fb.strip():
+                full_line = fb
+                om_struct = _structured_from_open_meteo(r0)
+                p, c, d, s = om_struct
+        if not full_line.strip():
+            try:
+                geo_url_en = (
+                    "https://geocoding-api.open-meteo.com/v1/reverse"
+                    f"?latitude={latitude}&longitude={longitude}&language=en&format=json"
+                )
+                gr2 = await client.get(geo_url_en)
+                gr2.raise_for_status()
+                gj2 = gr2.json()
+                results_en = gj2.get("results") or []
+                if results_en:
+                    r_en = results_en[0]
+                    fb = _line_from_om_result(r_en)
+                    if fb.strip():
+                        r0 = r_en
+                        full_line = fb
+                        city_short = str(r_en.get("name") or city_short).strip() or city_short
+                        om_struct = _structured_from_open_meteo(r_en)
+                        p, c, d, s = om_struct
+            except Exception as e:
+                logger.warning(f"open-meteo reverse (en fallback) failed: {e}")
+        if not full_line.strip() and city_short and city_short != "当前位置":
+            full_line = city_short
         if not full_line.strip():
             full_line = "未能解析详细地址，请点击「手动选择地址」"
+
+        p, c, d, s, full_line = _display_address_after_route_filter(p, c, d, s)
 
         wx_url = (
             "https://api.open-meteo.com/v1/forecast"
@@ -213,6 +307,7 @@ async def fetch_weather_by_city_name(name: str) -> Optional[Dict[str, Any]]:
                     full_line = nline
             if not full_line.strip():
                 full_line = cname or "未能解析详细地址，请重新选择"
+            p, c, d, s, full_line = _display_address_after_route_filter(p, c, d, s)
         except Exception as e:
             logger.warning(f"city geocode failed: {e}")
             return None

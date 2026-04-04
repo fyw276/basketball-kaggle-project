@@ -83,9 +83,9 @@ flutter pub get
 
 常见说明：
 
-- **Flutter Web（本机调试）**：`api_base_resolver_web.dart` 将 API 固定为与当前页 **同源 loopback host**（`localhost` 或 `127.0.0.1`）+ 端口 `8000`，详见仓库根目录 [`docs/SMART_OUTFIT_FLUTTER_WEB.md`](../docs/SMART_OUTFIT_FLUTTER_WEB.md)。
-- Android 模拟器：`http://10.0.2.2:8000/api/v1`
-- iOS 模拟器：`http://localhost:8000/api/v1`
+- **Flutter Web（本机调试）**：`api_base_resolver_web.dart` 将 API 固定为 **`http://127.0.0.1:<端口>/api/v1`**（默认端口 **8010**，与 `backend/.env` 的 `PORT` 一致），详见 [`docs/SMART_OUTFIT_FLUTTER_WEB.md`](../docs/SMART_OUTFIT_FLUTTER_WEB.md)。
+- Android 模拟器：`http://10.0.2.2:8010/api/v1`（端口随 `api_port_config.dart` / `--dart-define=API_PORT`）
+- iOS 模拟器：`http://127.0.0.1:8010/api/v1`
 - 真机：使用后端所在机器的局域网 IP（同网段）
 
 3. **运行应用**
