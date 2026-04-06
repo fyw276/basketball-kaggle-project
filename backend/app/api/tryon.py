@@ -114,6 +114,12 @@ async def try_on_garment(
             model_gender=model_gender,
         )
 
+        if result.get("status") == "error":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result.get("message") or "Virtual try-on failed",
+            )
+
         # Save result image
         if result["result_image"] is not None:
             # Save the result

@@ -22,4 +22,15 @@ void main() {
     final url = resolveApiBaseUrl();
     expect(url, 'http://127.0.0.1:$kApiPort/api/v1');
   });
+
+  test('kPredictApiPort matches int.fromEnvironment default', () {
+    const expected =
+        int.fromEnvironment('PREDICT_API_PORT', defaultValue: 8765);
+    expect(kPredictApiPort, expected);
+  });
+
+  test('resolvePredictApiBaseUrl on VM/io matches kPredictApiPort', () {
+    final url = resolvePredictApiBaseUrl();
+    expect(url, 'http://127.0.0.1:$kPredictApiPort');
+  });
 }

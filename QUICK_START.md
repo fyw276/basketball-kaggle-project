@@ -20,7 +20,7 @@ cd mobile
 flutter run -d chrome
 ```
 
-**验证**: 浏览器自动打开，显示登录页面
+**验证**: 浏览器自动打开，显示登录页面。若直接访问 `http://localhost:<端口>/` 出现白屏，请 **热重载或更新到已包含 `/` → `/auth` 重定向的版本**（见 [docs/AI_OUTFIT_PREDICT_AND_TRYON.md](docs/AI_OUTFIT_PREDICT_AND_TRYON.md)）。
 
 ### 步骤 3: 注册账号
 
@@ -78,9 +78,22 @@ flutter run -d chrome
 3. 查看风格/颜色建议与衣橱匹配单品
 
 #### 虚拟试衣（伪 3D 三视角）
-1. 点击"虚拟试衣"
-2. 上传衣服图 + 人物正面照（侧面/背面可选）
+1. 点击「虚拟试衣」（需登录）
+2. **衣服图请用无模特的白底/平铺商品图**（含模特图会被后端拒绝）；人物正面照必填，侧面/背面可选
 3. 点击生成，左右滑动查看正/侧/背三视角（可点进全屏缩放）
+   - 未加载扩散模型时，后端使用 **去背景 + 粘贴合成**，不再使用半透明整图叠图
+
+#### AI 穿搭风格分（可选：Vite 演示页）
+1. 启动独立 predict API（默认 **8765**）：仓库根目录执行 `.\scripts\run_predict_api.ps1`，或见 [docs/AI_OUTFIT_PREDICT_AND_TRYON.md](docs/AI_OUTFIT_PREDICT_AND_TRYON.md)
+2. 另开终端：`cd frontend && npm install && npm run dev`
+3. 浏览器打开 Vite 提示的地址，填写表单调用 **`POST /predict`**
+
+#### Flutter 与主后端同端口（仅 predict）
+若只运行 `app.main`（例如 `--port 8010`），希望预测接口也走同一进程：
+
+```bash
+flutter run -d chrome --dart-define=PREDICT_API_PORT=8010
+```
 
 #### 适合度评分
 1. 点击"适合度评分"

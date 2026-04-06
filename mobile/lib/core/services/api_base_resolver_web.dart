@@ -26,3 +26,23 @@ String resolveApiBaseUrl() {
   }
   return 'http://127.0.0.1:$apiPort/api/v1';
 }
+
+/// AI 穿搭风格分（`POST /predict`），与主 API 端口分离时默认 8765。
+String resolvePredictApiBaseUrl() {
+  const predictPort = kPredictApiPort;
+  final b = Uri.base;
+  final h = b.host;
+  if (h.isEmpty) {
+    return 'http://127.0.0.1:$predictPort';
+  }
+  final isLoopback = h == 'localhost' ||
+      h == '127.0.0.1' ||
+      h == '::1' ||
+      h.startsWith('127.');
+  if (!isLoopback) {
+    final scheme =
+        (b.scheme == 'http' || b.scheme == 'https') ? b.scheme : 'http';
+    return Uri(scheme: scheme, host: h, port: predictPort).toString();
+  }
+  return 'http://127.0.0.1:$predictPort';
+}

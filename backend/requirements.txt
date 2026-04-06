@@ -43,6 +43,7 @@ accelerate>=0.25.0              # Faster model loading
 # Scipy for image processing (used in virtual try-on)
 scipy>=1.11.0                  # For morphological operations in masking
 opencv-python-headless>=4.9.0  # Lightweight OpenCV (no GUI)
+# Optional: pip install rembg — stronger garment cutout for virtual try-on (fallback path)
 
 # Scientific Computing
 numpy>=1.26.0,<2.1.0

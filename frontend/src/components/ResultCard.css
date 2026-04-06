@@ -1,0 +1,156 @@
+.result-card {
+  margin-top: 1.5rem;
+  padding: 1.5rem 1.25rem;
+  border-radius: 16px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.96) 100%);
+  box-shadow:
+    0 2px 8px rgba(15, 23, 42, 0.06),
+    0 12px 32px rgba(79, 70, 229, 0.08);
+  text-align: center;
+}
+
+.result-card__section {
+  padding: 0.75rem 0;
+}
+
+.result-card__section + .result-card__section {
+  border-top: 1px solid #e2e8f0;
+  margin-top: 0.5rem;
+  padding-top: 1.25rem;
+}
+
+.result-card__section--score {
+  padding-bottom: 1rem;
+}
+
+.result-card__emoji {
+  margin: 0 0 0.25rem;
+  font-size: 1.75rem;
+  line-height: 1;
+}
+
+.result-card__title {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--heading-color, #1e1b4b);
+  letter-spacing: 0.02em;
+}
+
+.result-card__score-line {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+}
+
+.result-card__score-num {
+  font-size: clamp(28px, 8vw, 42px);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  background: linear-gradient(135deg, #4f46e5, #9333ea);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.result-card__score-slash {
+  font-size: 1.5rem;
+  font-weight: 500;
+  color: #94a3b8;
+}
+
+.result-card__score-max {
+  font-size: 1.65rem;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.result-card__block-title {
+  margin: 0 0 0.85rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--heading-color, #334155);
+  text-align: center;
+}
+
+.result-card__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+
+.result-card__list-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.65rem 0.75rem;
+  margin-bottom: 0.5rem;
+  border-radius: 10px;
+  background: rgba(241, 245, 249, 0.85);
+  border: 1px solid #e2e8f0;
+  font-size: 0.9rem;
+}
+
+.result-card__list-item:last-child {
+  margin-bottom: 0;
+}
+
+.result-card__rank {
+  font-weight: 700;
+  color: #6366f1;
+  min-width: 1.5rem;
+}
+
+.result-card__outfit {
+  flex: 1 1 140px;
+  color: #0f172a;
+  font-weight: 500;
+}
+
+.result-card__item-score {
+  font-weight: 600;
+  color: #7c3aed;
+  white-space: nowrap;
+}
+
+.result-card__section--tip {
+  text-align: left;
+}
+
+.result-card__explanation {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: #475569;
+}
+
+@media (prefers-color-scheme: dark) {
+  .result-card {
+    border-color: rgba(51, 65, 85, 0.8);
+    background: linear-gradient(180deg, rgba(30, 27, 75, 0.55) 0%, rgba(15, 23, 42, 0.45) 100%);
+  }
+
+  .result-card__section + .result-card__section {
+    border-top-color: #334155;
+  }
+
+  .result-card__list-item {
+    background: rgba(15, 23, 42, 0.5);
+    border-color: #334155;
+  }
+
+  .result-card__outfit {
+    color: #f1f5f9;
+  }
+
+  .result-card__explanation {
+    color: #cbd5e1;
+  }
+}

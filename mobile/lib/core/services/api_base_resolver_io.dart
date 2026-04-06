@@ -11,3 +11,13 @@ String resolveApiBaseUrl() {
   } catch (_) {}
   return 'http://127.0.0.1:$kApiPort/api/v1';
 }
+
+/// AI 穿搭风格分服务基址（`POST /predict`）。Android 模拟器用 10.0.2.2 访问宿主机。
+String resolvePredictApiBaseUrl() {
+  try {
+    if (Platform.isAndroid) {
+      return 'http://10.0.2.2:$kPredictApiPort';
+    }
+  } catch (_) {}
+  return kDefaultPredictApiBaseUrl;
+}

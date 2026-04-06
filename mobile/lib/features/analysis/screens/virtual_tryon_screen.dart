@@ -81,6 +81,24 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
 
   Future<void> _generate() async {
     if (_garmentImage == null || _personFront == null) return;
+
+    final auth = context.read<AuthProvider>();
+    if (!auth.isInitialized) {
+      if (mounted) {
+        showAppSnackBar(context, '正在加载登录状态，请稍后再试');
+      }
+      return;
+    }
+    if (!auth.isAuthenticated) {
+      if (mounted) {
+        showAppSnackBar(
+          context,
+          '请先登录后再使用虚拟试衣（试衣结果会保存到您的账号）',
+        );
+      }
+      return;
+    }
+
     // 新生成时清空旧结果与本地缓存，避免“看起来没对应/还是旧图”的错觉
     FeatureLocalStore.saveJson(_cacheKey, {'results': []});
     setState(() {
@@ -89,7 +107,6 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
       _usedFallback = false;
     });
 
-    final auth = context.read<AuthProvider>();
     final base = auth.apiClient.baseUrl;
     try {
       // 3 次请求：front / side / back（若用户提供对应人物照则绑定，否则复用正面照）
@@ -112,6 +129,19 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
             showAppSnackBar(
               context,
               '试衣服务暂不可用：${userFacingApiError(map['error'])}',
+            );
+          }
+          setState(() {
+            _loading = false;
+          });
+          return;
+        }
+
+        if (map['status']?.toString() == 'error') {
+          if (mounted) {
+            showAppSnackBar(
+              context,
+              map['message']?.toString() ?? '试衣失败',
             );
           }
           setState(() {
@@ -169,6 +199,34 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: palette.surface.withValues(alpha: 0.75),
+                borderRadius: BorderRadius.circular(12),
+                border:
+                    Border.all(color: palette.divider.withValues(alpha: 0.85)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.info_outline, size: 18, color: palette.accent),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '请上传无模特的衣服图，否则效果会出现重影。'
+                      '尽量使用白底或平铺商品主图；含人像的商品图会被拒绝。未加载 AI 扩散模型时，后端会用去背景+粘贴合成。',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: palette.textBody,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
             // 上传区
             Row(
               children: [

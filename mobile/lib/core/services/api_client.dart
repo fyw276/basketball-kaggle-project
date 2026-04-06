@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
 
+import 'api_base_resolver.dart';
 import 'api_port_config.dart';
 
 /// 智能穿搭：情绪字段去控制字符、折叠空白、限长，保证 JSON 与后端解析稳定。
@@ -135,6 +136,38 @@ class ApiClient {
       return {
         'error': 'Request failed with status: ${response.statusCode} ($uri)',
       };
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
+  /// AI 穿搭风格分：`POST /predict`（默认 `127.0.0.1:8765`，与 `backend.main` 一致）。
+  ///
+  /// 成功时含 `score`、`recommendations`、`explanation`；失败时含 `error`。
+  Future<Map<String, dynamic>> predictOutfitStyle(
+    Map<String, dynamic> body,
+  ) async {
+    final base = resolvePredictApiBaseUrl().replaceAll(RegExp(r'/+$'), '');
+    final uri = Uri.parse('$base/predict');
+    try {
+      final response = await http.post(
+        uri,
+        headers: const {
+          'Content-Type': 'application/json',
+        },
+        body: json.encode(body),
+      );
+      if (response.statusCode == 200) {
+        return json.decode(response.body) as Map<String, dynamic>;
+      }
+      final errBody = response.body.isNotEmpty
+          ? json.decode(response.body)
+          : <String, dynamic>{};
+      final detail = errBody['detail'];
+      final msg = detail is String
+          ? detail
+          : 'Request failed with status: ${response.statusCode} ($uri)';
+      return {'error': msg};
     } catch (e) {
       return {'error': e.toString()};
     }
@@ -560,12 +593,13 @@ class ApiClient {
   // 后端路由: POST /tryon/garment
   // 后端字段: garment_file=UploadFile, person_file=UploadFile, prompt=str, model_gender=str
 
+  /// 虚拟试衣：CPU 扩散常超过 3 分钟，默认单次超时 15 分钟；页面会连发 3 次（正/侧/背）。
   Future<Map<String, dynamic>> virtualTryon({
     dynamic garmentImage,
     dynamic personImage,
     String? prompt,
     String modelGender = 'neutral',
-    Duration timeout = const Duration(seconds: 180),
+    Duration timeout = const Duration(seconds: 900),
   }) async {
     try {
       final request = http.MultipartRequest(
@@ -591,17 +625,26 @@ class ApiClient {
         request.fields['prompt'] = prompt.trim();
       }
 
-      final streamedResponse = await request.send().timeout(
-            timeout,
-          );
-      final response = await http.Response.fromStream(streamedResponse);
+      final streamedResponse = await request.send().timeout(timeout);
+      final response =
+          await http.Response.fromStream(streamedResponse).timeout(timeout);
 
       if (response.statusCode == 200) {
-        return json.decode(response.body);
+        return json.decode(response.body) as Map<String, dynamic>;
       }
-      return {
-        'error': 'Virtual try-on failed with status: ${response.statusCode}'
-      };
+      if (response.statusCode == 401) {
+        return {
+          'error': '未登录或登录已过期，请重新登录后再试',
+        };
+      }
+      var errMsg = 'Virtual try-on failed with status: ${response.statusCode}';
+      try {
+        final body = json.decode(response.body);
+        if (body is Map && body['detail'] != null) {
+          errMsg = body['detail'].toString();
+        }
+      } catch (_) {}
+      return {'error': errMsg};
     } catch (e) {
       return {'error': e.toString()};
     }

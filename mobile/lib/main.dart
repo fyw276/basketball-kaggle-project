@@ -95,6 +95,11 @@ class _AppRouterHostState extends State<_AppRouterHost> {
         return null;
       },
       routes: [
+        // 直接打开 http://localhost:端口/ 时路径为 `/`，若无此路由会整页空白
+        GoRoute(
+          path: '/',
+          redirect: (context, state) => '/auth',
+        ),
         GoRoute(
           path: '/auth',
           builder: (context, state) => const AuthScreen(),
@@ -128,6 +133,17 @@ class _AppRouterHostState extends State<_AppRouterHost> {
           builder: (context, state) => const StyleSettingsScreen(),
         ),
       ],
+      errorBuilder: (context, state) => Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Text(
+              '未知路由：${state.uri}\n请从底部导航进入各功能页面。',
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
+      ),
     );
   }
 

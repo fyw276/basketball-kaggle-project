@@ -181,6 +181,15 @@ class VirtualTryOnService:
             logger.debug("Try-on cache hit")
             return self._cache[cache_key]
 
+        # 含模特的商品图会与人物叠出「双人脸」，直接拒绝
+        if self._garment_has_face(garment_image):
+            return {
+                "result_image": None,
+                "status": "error",
+                "message": "衣服图检测到人像，请上传无模特的白底商品图，否则会出现重影。",
+                "metadata": {"reason": "garment_contains_face"},
+            }
+
         # Try loading the model
         if self._ensure_model_loaded():
             return self._tryon_diffusion(
@@ -283,30 +292,24 @@ class VirtualTryOnService:
     ) -> dict:
         """
         Fallback when SD-VTON is not available.
-        Returns a composition of garment + person with opacity blending.
+        使用去背景后的 RGBA + alpha 粘贴到人像上，避免 Image.blend 造成的重影/双人脸。
         """
         logger.warning(f"Using fallback composition mode (no GPU/model, gender={model_gender})")
         try:
-            # Simple alpha blending as placeholder
-            # Resize garment to fit in person image
-            target_size = person_image.size
-            garment_resized = garment_image.resize(target_size, Image.Resampling.LANCZOS)
-
-            # Blend: 60% garment, 40% person
-            blended = Image.blend(
-                person_image.convert("RGBA"), garment_resized.convert("RGBA"), alpha=0.4
-            )
-
-            result = blended.convert("RGB")
+            garment_rgba = self._garment_to_rgba_cutout(garment_image)
+            result = self._paste_garment_on_person(person_image, garment_rgba)
 
             output = {
                 "result_image": result,
                 "status": "fallback",
-                "message": "GPU不可用，使用简化合成模式。安装diffusers和torch并使用GPU可获得最佳效果。",
+                "message": (
+                    "已使用去背景+粘贴合成（未加载扩散模型）。"
+                    "安装 diffusers/torch 并可选用 GPU 可获得更高质量试衣。"
+                ),
                 "metadata": {
-                    "model": "fallback_composition",
+                    "model": "fallback_paste",
                     "device": "cpu",
-                    "note": "Install CUDA-enabled torch + diffusers for full quality",
+                    "note": "mask+paste, no alpha blend",
                 },
             }
 
@@ -323,6 +326,88 @@ class VirtualTryOnService:
                 "message": f"虚拟试穿失败: {str(e)}",
                 "metadata": {},
             }
+
+    def _garment_has_face(self, garment_image: Image.Image) -> bool:
+        """检测衣服图是否含正面人脸（含模特图）。"""
+        try:
+            import cv2
+            import numpy as np
+
+            arr = np.array(garment_image.convert("RGB"))
+            gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            cascade = cv2.CascadeClassifier(cascade_path)
+            if cascade.empty():
+                logger.warning("Haar cascade not loaded; skip garment face check")
+                return False
+            faces = cascade.detectMultiScale(
+                gray, scaleFactor=1.1, minNeighbors=5, minSize=(64, 64)
+            )
+            return len(faces) > 0
+        except Exception as e:
+            logger.warning("Garment face detection skipped: %s", e)
+            return False
+
+    def _garment_to_rgba_cutout(self, garment_image: Image.Image) -> Image.Image:
+        """
+        衣服抠图：优先 rembg（若已安装），否则用亮度/饱和度阈值生成 mask 作 alpha。
+        """
+        rgb = garment_image.convert("RGB")
+        try:
+            from io import BytesIO
+
+            from rembg import remove
+
+            out = remove(rgb)
+            if isinstance(out, Image.Image):
+                logger.info("Garment cutout: rembg")
+                return out.convert("RGBA")
+            if isinstance(out, (bytes, bytearray)):
+                logger.info("Garment cutout: rembg (bytes)")
+                return Image.open(BytesIO(out)).convert("RGBA")
+        except Exception as e:
+            logger.info("rembg unavailable (%s); using local mask for garment alpha", e)
+
+        mask_l = self._generate_garment_mask(garment_image)
+        rgba = rgb.convert("RGBA")
+        rgba.putalpha(mask_l)
+        logger.info("Garment cutout: local threshold mask")
+        return rgba
+
+    def _crop_to_alpha_bbox(self, im: Image.Image) -> Image.Image:
+        """按不透明区域裁剪，减少整图空白边。"""
+        if im.mode != "RGBA":
+            im = im.convert("RGBA")
+        bbox = im.split()[3].getbbox()
+        if bbox:
+            return im.crop(bbox)
+        return im
+
+    def _paste_garment_on_person(
+        self,
+        person_image: Image.Image,
+        garment_rgba: Image.Image,
+    ) -> Image.Image:
+        """将抠图衣服按 alpha 粘贴到人像躯干区域（不使用全图半透明叠图）。"""
+        g = self._crop_to_alpha_bbox(garment_rgba)
+        pw, ph = person_image.size
+        gw, gh = g.size
+        if gw < 8 or gh < 8:
+            raise ValueError("Garment cutout too small after background removal")
+
+        tw = max(32, int(pw * 0.50))
+        th = int(round(gh * (tw / float(gw))))
+        max_h = int(ph * 0.58)
+        if th > max_h:
+            th = max_h
+            tw = max(32, int(round(gw * (th / float(gh)))))
+        g = g.resize((tw, th), Image.Resampling.LANCZOS)
+
+        x = (pw - tw) // 2
+        y = int(ph * 0.07)
+        base = person_image.convert("RGBA")
+        base.paste(g, (x, y), g)
+        return base.convert("RGB")
 
     # ─── Helpers ─────────────────────────────────────────────────────────────
 

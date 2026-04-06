@@ -1,6 +1,6 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-04-04
+**最后更新**: 2026-04-04（补充 AI 打分 `/predict`、Vite 前端、虚拟试衣与 Web 根路径说明，见 [docs/AI_OUTFIT_PREDICT_AND_TRYON.md](docs/AI_OUTFIT_PREDICT_AND_TRYON.md)）
 **状态**: ✅ 可用于演示与迭代（后端 FastAPI + Flutter Web/移动端）
 
 ## 项目简介
@@ -39,7 +39,13 @@
 ### 5. 虚拟试衣（Try-on）
 - 前端自动 3 次请求生成 `front/side/back view`
 - 支持人物 3 视角上传：正面必填，侧面/背面可选（未上传则复用正面照）
+- **衣服图**：需无模特（后端做人脸检测）；未加载扩散模型时使用 **去背景 + alpha 粘贴**，避免旧版半透明叠图导致的重影
 - 轮播与全屏预览：等比例完整显示（`contain`），支持缩放/拖拽
+
+### 6. AI 穿搭风格分（演示用 `POST /predict`）
+
+- **sklearn** 风格分 + Top3 推荐与中文解释；与 **Flutter / Vite** 共用同一契约（见 `backend/app/services/outfit_style_predict.py`）。
+- 独立服务默认端口 **8765**；主应用 **`app.main`** 亦提供 **`POST /predict`**（无 `/api/v1` 前缀），可与 Flutter `--dart-define=PREDICT_API_PORT=<PORT>` 对齐。
 
 ## 技术架构
 
@@ -88,6 +94,7 @@ clothing-assistant/
 │   │   └── services/              # 业务逻辑
 │   ├── tests/                     # ✅ pytest 套件（见 backend/tests）
 │   └── uploads/                   # 上传的图片
+├── frontend/                       # ✅ Vite + React（AI 穿搭打分演示页，可选）
 ├── mobile/                         # ✅ Flutter 前端（已完成）
 │   └── lib/
 │       ├── core/                  # 核心服务、主题、性别表达系统
@@ -115,7 +122,7 @@ clothing-assistant/
 
 ## 快速开始
 
-详细的启动指南请查看 [QUICK_START.md](QUICK_START.md)。搭配推荐多图上传见 [docs/OUTFIT_MULTI_IMAGE_UPLOAD.md](docs/OUTFIT_MULTI_IMAGE_UPLOAD.md)；衣橱整套拆分与删除提示见 [docs/WARDROBE_FEATURES.md](docs/WARDROBE_FEATURES.md)。**智能穿搭（Flutter Web 行为、CORS、认证顺序、响应式等）**见 [docs/SMART_OUTFIT_FLUTTER_WEB.md](docs/SMART_OUTFIT_FLUTTER_WEB.md)。**天气展示（道路名过滤）与 Hugging Face / 虚拟试衣下载配置**见 [docs/WEATHER_DISPLAY_AND_HF_ENV.md](docs/WEATHER_DISPLAY_AND_HF_ENV.md)。
+详细的启动指南请查看 [QUICK_START.md](QUICK_START.md)。**AI `/predict`、Vite 演示前端、虚拟试衣与 Web 根路径**见 [docs/AI_OUTFIT_PREDICT_AND_TRYON.md](docs/AI_OUTFIT_PREDICT_AND_TRYON.md)。搭配推荐多图上传见 [docs/OUTFIT_MULTI_IMAGE_UPLOAD.md](docs/OUTFIT_MULTI_IMAGE_UPLOAD.md)；衣橱整套拆分与删除提示见 [docs/WARDROBE_FEATURES.md](docs/WARDROBE_FEATURES.md)。**智能穿搭（Flutter Web 行为、CORS、认证顺序、响应式等）**见 [docs/SMART_OUTFIT_FLUTTER_WEB.md](docs/SMART_OUTFIT_FLUTTER_WEB.md)。**天气展示（道路名过滤）与 Hugging Face / 虚拟试衣下载配置**见 [docs/WEATHER_DISPLAY_AND_HF_ENV.md](docs/WEATHER_DISPLAY_AND_HF_ENV.md)。
 
 ### 环境要求
 
@@ -288,7 +295,7 @@ flutter test
 
 ✅ **后端服务**: 100% 完成
 - 全部核心 API 端点已实现（数量见 [PROJECT_STATUS.md](PROJECT_STATUS.md)）
-- 后端 `pytest`：346 通过、2 跳过（详见 `backend/tests`；以本机最近一次全量运行为准）
+- 后端 `pytest`：348 收集，**346 通过、2 跳过**（详见 `backend/tests`；以本机最近一次全量运行为准）
 - 性别表达指数系统、图像识别、相似度分析、搭配推荐、适合度评分全部可用
 
 ✅ **前端应用**: 100% 完成
