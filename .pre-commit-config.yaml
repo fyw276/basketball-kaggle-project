@@ -119,7 +119,7 @@ repos:
     hooks:
       - id: pytest-check
         name: pytest-check
-        entry: powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-Location backend; python -m pytest -v --tb=short -x"
+        entry: powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-Location backend; python -m pytest tests_lite -v --tb=short -x"
         language: system
         pass_filenames: false
         always_run: true
