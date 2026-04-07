@@ -16,7 +16,7 @@ quick_start_py314.bat
 **为什么需要特殊处理？**
 - Python 3.14 太新，某些包（如 `pydantic-core`）没有预编译版本
 - 需要 Rust 编译器，但我们提供了兼容版本的依赖文件
-- `quick_start_py314.bat` 会自动使用 `requirements-simple.txt`
+- `quick_start_py314.bat` 会自动使用 `requirements-py314.txt`
 
 **详细说明**：
 - 查看 `backend/解决方案.md`（完整中文说明）
@@ -57,19 +57,16 @@ source venv/bin/activate
 
 ```bash
 # Python 3.14 用户（推荐）
-pip install -r requirements-simple.txt
+pip install -r requirements-py314.txt
 
-# Python 3.9-3.12 完整安装
+# Python 3.9-3.12 安装
 pip install -r requirements.txt
-
-# Python 3.9-3.12 最小安装（快速测试，仅核心依赖）
-pip install -r requirements-minimal.txt
 ```
 
 **依赖文件说明**：
-- `requirements-simple.txt` - Python 3.14 兼容版本 ⭐
-- `requirements.txt` - 完整依赖（Python 3.9-3.12）
-- `requirements-minimal.txt` - 最小依赖（Python 3.9-3.12）
+- `requirements-py314.txt` - Python 3.14 兼容版本 ⭐
+- `requirements.txt` - Python 3.9-3.12 依赖
+- `requirements-dev.txt` - 开发工具与测试增强依赖
 
 详细说明请查看 `DEPENDENCIES.md`
 
@@ -113,7 +110,7 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8010
 
 1. **运行诊断工具**: `diagnose.bat`
 2. **查看故障排查指南**: `TROUBLESHOOTING.md`
-3. **使用最小依赖**: `pip install -r requirements-minimal.txt`
+3. **Python 3.14 环境使用兼容依赖**: `pip install -r requirements-py314.txt`
 
 ## 项目结构
 

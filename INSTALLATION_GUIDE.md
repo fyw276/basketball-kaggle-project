@@ -44,7 +44,7 @@ venv\Scripts\activate
 python -m pip install --upgrade pip
 
 # 5. 安装 Python 3.14 兼容依赖
-pip install -r requirements-simple.txt
+pip install -r requirements-py314.txt
 
 # 6. 创建配置文件
 copy .env.example .env
@@ -57,9 +57,9 @@ python run.py
 
 Python 3.14 是最新版本，某些依赖包（如 `pydantic-core`）还没有提供预编译的二进制文件（wheel），需要从源代码编译，这需要 Rust 编译器。
 
-**解决方案**: 使用 `requirements-simple.txt`，它包含了兼容 Python 3.14 的更新版本。
+**解决方案**: 使用 `requirements-py314.txt`，它包含了兼容 Python 3.14 的更新版本。
 
-### 📦 requirements-simple.txt 包含什么？
+### 📦 requirements-py314.txt 包含什么？
 
 ```
 fastapi==0.115.0          # Web 框架
@@ -74,9 +74,9 @@ pytest==8.3.4             # 测试框架
 ### 🎉 验证安装
 
 启动成功后，访问：
-- **主页**: http://localhost:8000
-- **API 文档**: http://localhost:8000/docs
-- **健康检查**: http://localhost:8000/health
+- **主页**: http://localhost:8010
+- **API 文档**: http://localhost:8010/docs
+- **健康检查**: http://localhost:8010/health
 
 ---
 
@@ -112,8 +112,8 @@ venv\Scripts\activate
 python -m pip install --upgrade pip
 
 # 5. 安装依赖（选择一个）
-pip install -r requirements.txt           # 完整依赖
-pip install -r requirements-minimal.txt   # 最小依赖（推荐）
+pip install -r requirements.txt           # 运行所需依赖
+pip install -r requirements-dev.txt       # 开发/测试增强依赖（可选）
 
 # 6. 创建配置文件
 copy .env.example .env
@@ -126,10 +126,10 @@ python run.py
 
 | 文件 | 说明 | 适用场景 |
 |------|------|----------|
-| `requirements.txt` | 完整依赖，包含所有功能 | 生产环境、完整开发 |
-| `requirements-minimal.txt` | 最小依赖，不含图像处理 | 快速测试、任务 1-4 |
+| `requirements.txt` | 运行所需依赖 | 本地运行、部署 |
+| `requirements-dev.txt` | 在运行依赖基础上增加开发工具 | 本地开发、测试、代码质量检查 |
 
-**推荐**: 先使用 `requirements-minimal.txt`，等到任务 5（图像识别）时再安装完整依赖。
+**推荐**: 先安装 `requirements.txt`，需要测试和代码质量工具时再安装 `requirements-dev.txt`。
 
 ---
 
@@ -158,7 +158,7 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 使用国内镜像：
 
 ```bash
-pip install -r requirements-simple.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install -r requirements-py314.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
 ### Q4: 依赖安装失败
@@ -169,8 +169,8 @@ python -m pip install --upgrade pip
 ```
 
 **步骤 2**: 使用正确的依赖文件
-- Python 3.14 → `requirements-simple.txt`
-- Python 3.9-3.12 → `requirements-minimal.txt`
+- Python 3.14 → `requirements-py314.txt`
+- Python 3.9-3.12 → `requirements.txt`
 
 **步骤 3**: 运行诊断
 ```bash
@@ -178,20 +178,20 @@ cd backend
 diagnose.bat
 ```
 
-### Q5: 端口 8000 被占用
+### Q5: 端口 8010 被占用
 
 **方法 1**: 修改端口
 
 编辑 `backend/.env`:
 ```
-PORT=8001
+PORT=8011
 ```
 
 **方法 2**: 释放端口
 
 查找占用进程：
 ```bash
-netstat -ano | findstr :8000
+netstat -ano | findstr :8010
 ```
 
 终止进程（管理员权限）：
@@ -208,7 +208,7 @@ taskkill /PID <进程ID> /F
 
 ### Q7: 应该降级到 Python 3.11 吗？
 
-**不需要**！`requirements-simple.txt` 已经解决了 Python 3.14 的兼容性问题。
+**不需要**！`requirements-py314.txt` 已经解决了 Python 3.14 的兼容性问题。
 
 但如果你想要最好的包兼容性和稳定性，Python 3.11 或 3.12 确实是更成熟的选择。
 
@@ -312,7 +312,7 @@ fix_everything.bat
 INFO:     Started server process [xxxxx]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
-INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Uvicorn running on http://127.0.0.1:8010 (Press CTRL+C to quit)
 ```
 
-然后访问 http://localhost:8000/docs 查看 API 文档！🎉
+然后访问 http://localhost:8010/docs 查看 API 文档！🎉

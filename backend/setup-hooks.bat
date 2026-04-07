@@ -54,8 +54,8 @@ pre-commit install --hook-type pre-push
 REM Initialize secrets baseline
 echo.
 echo [3/4] 初始化密钥检测...
-if not exist "backend\.secrets.baseline" (
-    detect-secrets scan > backend\.secrets.baseline
+if not exist ".secrets.baseline" (
+    detect-secrets scan > .secrets.baseline
     echo [成功] 创建 .secrets.baseline
 ) else (
     echo [成功] .secrets.baseline 已存在

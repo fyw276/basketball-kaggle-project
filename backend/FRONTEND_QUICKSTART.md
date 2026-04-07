@@ -13,12 +13,12 @@ cd backend
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-访问 http://localhost:8000/docs 确认 API 文档可访问。
+访问 http://127.0.0.1:8010/docs 确认 API 文档可访问。
 
 ### 2. 阅读 API 文档
 
-- **Swagger UI**: http://localhost:8000/docs （交互式测试）
-- **ReDoc**: http://localhost:8000/redoc （详细文档）
+- **Swagger UI**: http://127.0.0.1:8010/docs （交互式测试）
+- **ReDoc**: http://127.0.0.1:8010/redoc （详细文档）
 - **API 规范**: `backend/API_SPECIFICATION.md`
 - **API 契约**: `backend/API_CONTRACT_v1.0.md`
 
@@ -182,7 +182,7 @@ class ApiClient {
   private client: AxiosInstance;
   private accessToken: string | null = null;
 
-  constructor(baseURL: string = 'http://localhost:8000/api/v1') {
+  constructor(baseURL: string = 'http://127.0.0.1:8010/api/v1') {
     this.client = axios.create({
       baseURL,
       headers: {
@@ -719,7 +719,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class ApiClient {
   final Dio _dio = Dio(BaseOptions(
-    baseUrl: 'http://localhost:8000/api/v1',
+    baseUrl: 'http://127.0.0.1:8010/api/v1',
   ));
   final _storage = FlutterSecureStorage();
 
@@ -928,8 +928,8 @@ describe('ApiClient', () => {
 - **API 使用示例**: `backend/API_EXAMPLES.md`
 - **API 契约**: `backend/API_CONTRACT_v1.0.md`
 - **Postman 集合**: `backend/postman_collection.json`
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+- **Swagger UI**: http://127.0.0.1:8010/docs
+- **ReDoc**: http://127.0.0.1:8010/redoc
 
 ---
 

@@ -245,7 +245,7 @@ git commit -m "style: format code"
 
 ```bash
 # 更新基线
-detect-secrets scan --baseline backend/.secrets.baseline
+detect-secrets scan --baseline .secrets.baseline
 
 # 或在代码中添加注释
 password = "fake-password"  # pragma: allowlist secret

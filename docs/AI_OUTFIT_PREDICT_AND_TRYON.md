@@ -15,6 +15,21 @@
 
 `top`, `bottom`, `color_top`, `color_bottom`, `season`, `occasion`（均为字符串）。
 
+请求示例（可直接复制）：
+
+```bash
+curl -X POST "http://127.0.0.1:8010/predict" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "top": "衬衫",
+    "bottom": "牛仔裤",
+    "color_top": "白色",
+    "color_bottom": "蓝色",
+    "season": "春季",
+    "occasion": "通勤"
+  }'
+```
+
 ### 响应体（JSON）
 
 | 字段 | 说明 |
@@ -22,6 +37,49 @@
 | `score` | 模型输出的风格分（浮点） |
 | `recommendations` | `{ "outfit": string, "score": number }[]`，Top3 |
 | `explanation` | 中文短解释 |
+| `source` | 结果来源：`local`（仅本地）/ `hybrid`（本地+外部增强） |
+| `fallback_reason` | 触发或回退原因：`low_confidence` / `small_margin` / `external_failed` / `null` |
+| `model_version_local` | 本地模型版本标识 |
+| `model_version_external` | 外部增强模型版本标识（未调用时为 `null`） |
+| `latency_ms` | 当前请求推理耗时（毫秒） |
+
+响应示例（本地模式）：
+
+```json
+{
+  "score": 8.4,
+  "recommendations": [
+    { "outfit": "衬衫 + 牛仔裤", "score": 8.4 },
+    { "outfit": "Shirt + Chinos", "score": 8.1 },
+    { "outfit": "Hoodie + Joggers", "score": 7.8 }
+  ],
+  "explanation": "颜色搭配协调，适合当前季节和场景",
+  "source": "local",
+  "fallback_reason": null,
+  "model_version_local": "local-sklearn-pipeline",
+  "model_version_external": null,
+  "latency_ms": 42
+}
+```
+
+响应示例（双通道增强）：
+
+```json
+{
+  "score": 7.9,
+  "recommendations": [
+    { "outfit": "衬衫 + 牛仔裤", "score": 7.9 },
+    { "outfit": "Shirt + Chinos", "score": 7.6 },
+    { "outfit": "Hoodie + Joggers", "score": 7.3 }
+  ],
+  "explanation": "外部增强判定更匹配",
+  "source": "hybrid",
+  "fallback_reason": "low_confidence",
+  "model_version_local": "local-sklearn-pipeline",
+  "model_version_external": "ext-v1",
+  "latency_ms": 165
+}
+```
 
 实现逻辑位于 `backend/app/services/outfit_style_predict.py`（主应用挂载 `backend/app/api/predict_style.py`）。
 

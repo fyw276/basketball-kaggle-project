@@ -56,7 +56,7 @@
 ### 检查清单
 
 1. **后端是否运行？**
-   - 访问 http://localhost:8000/health
+   - 访问 http://127.0.0.1:8010/health
    - 应该看到 `{"status":"healthy","version":"1.0.0"}`
 
 2. **Flutter Web 是否重启？**
@@ -76,7 +76,7 @@
 
 #### 错误 1: "CORS policy" 错误
 ```
-Access to XMLHttpRequest at 'http://localhost:8000/api/v1/auth/login'
+Access to XMLHttpRequest at 'http://127.0.0.1:8010/api/v1/auth/login'
 from origin 'http://localhost:61742' has been blocked by CORS policy
 ```
 

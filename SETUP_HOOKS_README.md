@@ -19,7 +19,7 @@ cd D:\Users\omen\OneDrive\桌面\clothing-assistant
 ## 📁 文件位置
 
 - ✅ `.pre-commit-config.yaml` - 项目根目录
-- ✅ `backend/.secrets.baseline` - backend 目录
+- ✅ `.secrets.baseline` - 项目根目录
 - ✅ `setup-hooks.ps1` - 项目根目录（PowerShell）
 - ✅ `setup-hooks.bat` - 项目根目录（CMD）
 - ✅ `setup-hooks.sh` - 项目根目录（Linux/Mac）
@@ -42,7 +42,7 @@ pre-commit install --hook-type commit-msg
 pre-commit install --hook-type pre-push
 
 # 5. 初始化密钥检测
-detect-secrets scan > backend\.secrets.baseline
+detect-secrets scan > .secrets.baseline
 
 # 6. 验证安装
 pre-commit run --all-files

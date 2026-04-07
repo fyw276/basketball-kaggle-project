@@ -55,8 +55,8 @@ pre-commit install --hook-type pre-push
 # Initialize secrets baseline if it doesn't exist
 echo ""
 echo "[3/4] Initializing secrets detection..."
-if [ ! -f "backend/.secrets.baseline" ]; then
-    detect-secrets scan > backend/.secrets.baseline
+if [ ! -f ".secrets.baseline" ]; then
+    detect-secrets scan > .secrets.baseline
     echo "✓ Created .secrets.baseline"
 else
     echo "✓ .secrets.baseline already exists"

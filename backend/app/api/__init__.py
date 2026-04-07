@@ -2,13 +2,19 @@
 API routes
 """
 
-from app.api.analysis import router as analysis_router
-from app.api.auth import router as auth_router
-from app.api.outfit_collections import router as outfit_collections_router
-from app.api.profile import router as profile_router
-from app.api.recognition import router as recognition_router
-from app.api.users import router as users_router
-from app.api.wardrobe import router as wardrobe_router
+from __future__ import annotations
+
+from importlib import import_module
+
+_ROUTER_MAP = {
+    "analysis_router": "app.api.analysis",
+    "auth_router": "app.api.auth",
+    "outfit_collections_router": "app.api.outfit_collections",
+    "profile_router": "app.api.profile",
+    "recognition_router": "app.api.recognition",
+    "users_router": "app.api.users",
+    "wardrobe_router": "app.api.wardrobe",
+}
 
 __all__ = [
     "auth_router",
@@ -19,3 +25,13 @@ __all__ = [
     "analysis_router",
     "outfit_collections_router",
 ]
+
+
+def __getattr__(name: str):
+    module_name = _ROUTER_MAP.get(name)
+    if module_name is None:
+        raise AttributeError(f"module 'app.api' has no attribute '{name}'")
+    module = import_module(module_name)
+    value = getattr(module, "router")
+    globals()[name] = value
+    return value

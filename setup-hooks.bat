@@ -71,11 +71,11 @@ echo [Success] Git hooks installed
 REM Initialize secrets baseline
 echo.
 echo [3/4] Initializing secrets detection...
-if not exist "backend\.secrets.baseline" (
-    detect-secrets scan > backend\.secrets.baseline
-    echo [Success] Created backend\.secrets.baseline
+if not exist ".secrets.baseline" (
+    detect-secrets scan > .secrets.baseline
+    echo [Success] Created .secrets.baseline
 ) else (
-    echo [Success] backend\.secrets.baseline already exists
+    echo [Success] .secrets.baseline already exists
 )
 
 REM Run hooks on all files

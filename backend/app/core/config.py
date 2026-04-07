@@ -50,6 +50,20 @@ class Settings(BaseSettings):
     MODEL_PATH: str = "../models"
     MODEL_CACHE_SIZE: int = 1000
 
+    # Hybrid Inference (local primary + external enhancement)
+    HYBRID_INFERENCE_ENABLED: bool = True
+    EXTERNAL_ENHANCE_ENABLED: bool = False
+    LOW_CONF_THRESHOLD: float = 0.62
+    HIGH_CONF_THRESHOLD: float = 0.78
+    MARGIN_THRESHOLD: float = 0.08
+    LOCAL_WEIGHT: float = 0.65
+    EXTERNAL_WEIGHT: float = 0.35
+    LOCAL_INFER_TIMEOUT_MS: int = 1200
+    EXTERNAL_INFER_TIMEOUT_MS: int = 1800
+    EXTERNAL_API_BASE_URL: str = ""
+    EXTERNAL_API_KEY: str = ""
+    EXTERNAL_API_PATH: str = "/infer"
+
     # Hugging Face（写入 os.environ，供 huggingface_hub / diffusers 使用；仅配 .env 即可）
     HF_ENDPOINT: str = Field(
         default="",

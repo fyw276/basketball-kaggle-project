@@ -55,16 +55,16 @@ pre-commit installed at .git\hooks\pre-push
 
 ```powershell
 # 确保在项目根目录
-detect-secrets scan > backend\.secrets.baseline
-```
-
-或者如果你想在根目录创建：
-
-```powershell
 detect-secrets scan > .secrets.baseline
 ```
 
-**注意：** 配置文件中引用的是 `backend/.secrets.baseline`，所以建议使用第一个命令。
+或者使用与 pre-commit 参数一致的命令：
+
+```powershell
+detect-secrets scan --baseline .secrets.baseline
+```
+
+**注意：** 配置文件中引用的是根目录 `.secrets.baseline`。
 
 ### 步骤 6: 验证安装
 
@@ -212,7 +212,7 @@ pre-commit install --hook-type commit-msg
 pre-commit install --hook-type pre-push
 
 # 初始化密钥检测
-detect-secrets scan > backend\.secrets.baseline
+detect-secrets scan > .secrets.baseline
 
 # 验证安装
 pre-commit run --all-files

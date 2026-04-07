@@ -6,12 +6,69 @@
 
 ## 目录
 
-1. [认证流程](#认证流程)
-2. [用户画像管理](#用户画像管理)
-3. [图像识别](#图像识别)
-4. [衣橱管理](#衣橱管理)
-5. [智能穿搭（天气与情绪）](#智能穿搭天气与情绪)
-6. [智能分析](#智能分析)
+1. [AI 穿搭风格分（/predict）](#ai-穿搭风格分predict)
+2. [认证流程](#认证流程)
+3. [用户画像管理](#用户画像管理)
+4. [图像识别](#图像识别)
+5. [衣橱管理](#衣橱管理)
+6. [智能穿搭（天气与情绪）](#智能穿搭天气与情绪)
+7. [智能分析](#智能分析)
+
+---
+
+## AI 穿搭风格分（/predict）
+
+### 1. 获取风格分与推荐
+
+**curl**:
+```bash
+curl -X POST "http://127.0.0.1:8010/predict" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "top": "衬衫",
+    "bottom": "牛仔裤",
+    "color_top": "白色",
+    "color_bottom": "蓝色",
+    "season": "春季",
+    "occasion": "通勤"
+  }'
+```
+
+**Python**:
+```python
+import requests
+
+url = "http://127.0.0.1:8010/predict"
+data = {
+    "top": "衬衫",
+    "bottom": "牛仔裤",
+    "color_top": "白色",
+    "color_bottom": "蓝色",
+    "season": "春季",
+    "occasion": "通勤",
+}
+
+response = requests.post(url, json=data)
+print(response.json())
+```
+
+**响应示例**:
+```json
+{
+  "score": 8.4,
+  "recommendations": [
+    { "outfit": "衬衫 + 牛仔裤", "score": 8.4 },
+    { "outfit": "Shirt + Chinos", "score": 8.1 },
+    { "outfit": "Hoodie + Joggers", "score": 7.8 }
+  ],
+  "explanation": "颜色搭配协调，适合当前季节和场景",
+  "source": "local",
+  "fallback_reason": null,
+  "model_version_local": "local-sklearn-pipeline",
+  "model_version_external": null,
+  "latency_ms": 42
+}
+```
 
 ---
 

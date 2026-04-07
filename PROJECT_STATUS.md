@@ -215,10 +215,10 @@
 #### 后端
 ```bash
 cd backend
-python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8010
 ```
 
-访问 API 文档: http://localhost:8000/docs
+访问 API 文档: http://127.0.0.1:8010/docs
 
 #### 前端
 ```bash
@@ -374,7 +374,7 @@ clothing-assistant/
 - `POST /api/v1/smart-outfit/upload-reference` - 上传参考衣物图（`multipart` 字段 `file`）
 - `POST /api/v1/smart-outfit/generate` - 参考图 + 天气 + 可选情绪，生成多套搭配（JSON）
 
-**总计**: 27 个 API 端点（上表为 REST 主干；另含情绪穿搭 `mood/*`、虚拟试衣 `tryon/*` 等，以 `http://localhost:8000/docs` 为准）
+**总计**: 27 个 API 端点（上表为 REST 主干；另含情绪穿搭 `mood/*`、虚拟试衣 `tryon/*` 等，以 `http://127.0.0.1:8010/docs` 为准）
 
 ---
 
@@ -398,8 +398,8 @@ clothing-assistant/
 - ✅ `backend/API_EXAMPLES.md` - 使用示例
 - ✅ `backend/API_CONTRACT_v1.0.md` - API 契约
 - ✅ `backend/FRONTEND_QUICKSTART.md` - 前端快速入门
-- ✅ Swagger UI: http://localhost:8000/docs
-- ✅ ReDoc: http://localhost:8000/redoc
+- ✅ Swagger UI: http://127.0.0.1:8010/docs
+- ✅ ReDoc: http://127.0.0.1:8010/redoc
 
 ### 问题修复文档
 - ✅ `CLASSIFICATION_LIMITATION.md` - 图像识别准确度说明

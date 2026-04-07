@@ -75,7 +75,7 @@
 - ✅ 示例和反例
 - ✅ 快速参考表
 
-**文件：** `backend/.secrets.baseline`
+**文件：** `.secrets.baseline`
 
 **功能：**
 - ✅ 密钥检测基线配置
@@ -179,7 +179,7 @@ pip install pre-commit==4.0.1 detect-secrets==1.5.0
 pre-commit install --hook-type pre-commit
 pre-commit install --hook-type commit-msg
 pre-commit install --hook-type pre-push
-detect-secrets scan > backend/.secrets.baseline
+detect-secrets scan > .secrets.baseline
 ```
 
 ### 正常工作流
@@ -301,7 +301,7 @@ git commit -m "style: format code"
 
 ```bash
 # 更新基线
-detect-secrets scan --baseline backend/.secrets.baseline
+detect-secrets scan --baseline .secrets.baseline
 
 # 或在代码中添加注释
 password = "fake-password"  # pragma: allowlist secret
@@ -310,9 +310,9 @@ password = "fake-password"  # pragma: allowlist secret
 ## 文件清单
 
 ### 配置文件
-- ✅ `backend/.pre-commit-config.yaml` - Pre-commit 配置
+- ✅ `.pre-commit-config.yaml` - Pre-commit 配置（仓库根目录）
 - ✅ `backend/pyproject.toml` - 工具配置
-- ✅ `backend/.secrets.baseline` - 密钥检测基线
+- ✅ `.secrets.baseline` - 密钥检测基线（仓库根目录）
 - ✅ `.gitignore` - Git 忽略规则
 
 ### 脚本

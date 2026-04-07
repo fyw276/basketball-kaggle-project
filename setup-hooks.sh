@@ -60,11 +60,11 @@ echo "✓ Git hooks installed"
 # Initialize secrets baseline
 echo ""
 echo "[3/4] Initializing secrets detection..."
-if [ ! -f "backend/.secrets.baseline" ]; then
-    detect-secrets scan > backend/.secrets.baseline
-    echo "✓ Created backend/.secrets.baseline"
+if [ ! -f ".secrets.baseline" ]; then
+    detect-secrets scan > .secrets.baseline
+    echo "✓ Created .secrets.baseline"
 else
-    echo "✓ backend/.secrets.baseline already exists"
+    echo "✓ .secrets.baseline already exists"
 fi
 
 # Run hooks on all files

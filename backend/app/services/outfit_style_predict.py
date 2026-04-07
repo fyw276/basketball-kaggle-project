@@ -6,12 +6,16 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
 import joblib
 import pandas as pd
 from pydantic import BaseModel, Field
+
+from app.core.config import settings
+from app.services.external_enhance_client import call_external_enhance
 
 _logger = logging.getLogger(__name__)
 
@@ -37,9 +41,17 @@ class RecommendationItem(BaseModel):
 
 
 class PredictResponse(BaseModel):
-    score: float
-    recommendations: list[RecommendationItem]
-    explanation: str
+    score: float = Field(..., description="最终评分（0-10）")
+    recommendations: list[RecommendationItem] = Field(..., description="推荐组合列表")
+    explanation: str = Field(..., description="推荐解释")
+    source: str = Field(default="local", description="结果来源: local | hybrid | external")
+    fallback_reason: str | None = Field(
+        default=None,
+        description="回退原因: low_confidence | small_margin | external_failed",
+    )
+    model_version_local: str = Field(default="local-sklearn-pipeline", description="本地模型版本")
+    model_version_external: str | None = Field(default=None, description="外部增强模型版本")
+    latency_ms: int | None = Field(default=None, description="本次推理耗时（毫秒）")
 
 
 def _build_recommendations(score: float, top: str, bottom: str) -> list[RecommendationItem]:
@@ -57,6 +69,16 @@ def _build_explanation(score: float) -> str:
     return "搭配一般，可以尝试更协调的颜色组合"
 
 
+def _normalized_confidence(score: float) -> float:
+    return max(0.0, min(1.0, score / 10.0))
+
+
+def _top2_margin(recs: list[RecommendationItem]) -> float:
+    if len(recs) < 2:
+        return 1.0
+    return abs(float(recs[0].score) - float(recs[1].score)) / 10.0
+
+
 def ensure_pipeline() -> Any:
     """加载并缓存 sklearn pipeline；缺失文件时抛错。"""
     global _pipeline
@@ -70,6 +92,7 @@ def ensure_pipeline() -> Any:
 
 def predict_impl(body: PredictRequest) -> PredictResponse:
     """模型推理并组装推荐与解释。"""
+    started_at = time.perf_counter()
     pipeline = ensure_pipeline()
     payload = body.model_dump()
     _logger.info("predict input: %s", json.dumps(payload, ensure_ascii=False))
@@ -78,8 +101,50 @@ def predict_impl(body: PredictRequest) -> PredictResponse:
     score = float(raw)
     recs = _build_recommendations(score, body.top, body.bottom)
     expl = _build_explanation(score)
+
+    response = PredictResponse(score=score, recommendations=recs, explanation=expl)
+
+    confidence = _normalized_confidence(score)
+    margin = _top2_margin(recs)
+    trigger_reason: str | None = None
+    if confidence < settings.LOW_CONF_THRESHOLD:
+        trigger_reason = "low_confidence"
+    elif margin < settings.MARGIN_THRESHOLD:
+        trigger_reason = "small_margin"
+
+    should_enhance = (
+        settings.HYBRID_INFERENCE_ENABLED
+        and settings.EXTERNAL_ENHANCE_ENABLED
+        and confidence < settings.HIGH_CONF_THRESHOLD
+        and trigger_reason is not None
+    )
+
+    if should_enhance:
+        try:
+            external_payload = call_external_enhance(
+                payload=payload, timeout_ms=settings.EXTERNAL_INFER_TIMEOUT_MS
+            )
+            external_score = float(external_payload.get("score", score))
+            external_expl = str(external_payload.get("explanation", "")).strip()
+            fused_score = score * settings.LOCAL_WEIGHT + external_score * settings.EXTERNAL_WEIGHT
+            fused_recs = _build_recommendations(fused_score, body.top, body.bottom)
+            response = PredictResponse(
+                score=fused_score,
+                recommendations=fused_recs,
+                explanation=(external_expl or expl),
+                source="hybrid",
+                fallback_reason=trigger_reason,
+                model_version_external=str(
+                    external_payload.get("model_version", "external-unknown")
+                ),
+            )
+        except Exception as exc:
+            _logger.warning("external enhance failed, fallback to local: %s", exc)
+            response.fallback_reason = "external_failed"
+
+    response.latency_ms = int((time.perf_counter() - started_at) * 1000)
     _logger.info("predict output score=%s", score)
-    return PredictResponse(score=score, recommendations=recs, explanation=expl)
+    return response
 
 
 def reset_pipeline_for_tests() -> None:

@@ -69,11 +69,11 @@ Write-Host "[Success] Git hooks installed" -ForegroundColor Green
 # Initialize secrets baseline
 Write-Host ""
 Write-Host "[3/4] Initializing secrets detection..." -ForegroundColor Cyan
-if (-not (Test-Path "backend\.secrets.baseline")) {
-    detect-secrets scan | Out-File -FilePath "backend\.secrets.baseline" -Encoding UTF8
-    Write-Host "[Success] Created backend\.secrets.baseline" -ForegroundColor Green
+if (-not (Test-Path ".secrets.baseline")) {
+    detect-secrets scan | Out-File -FilePath ".secrets.baseline" -Encoding UTF8
+    Write-Host "[Success] Created .secrets.baseline" -ForegroundColor Green
 } else {
-    Write-Host "[Success] backend\.secrets.baseline already exists" -ForegroundColor Green
+    Write-Host "[Success] .secrets.baseline already exists" -ForegroundColor Green
 }
 
 # Run hooks on all files

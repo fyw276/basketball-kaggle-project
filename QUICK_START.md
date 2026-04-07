@@ -220,7 +220,7 @@ MAX_UPLOAD_SIZE=10485760
 ### 前端配置 (mobile/lib/core/services/api_client.dart)
 
 ```dart
-static const String baseUrl = 'http://localhost:8000/api/v1';
+static const String baseUrl = 'http://127.0.0.1:8010/api/v1';
 ```
 
 ## 🧪 测试
@@ -249,10 +249,10 @@ flutter test
 ## 📊 API 文档
 
 ### Swagger UI
-访问: http://localhost:8000/docs
+访问: http://127.0.0.1:8010/docs
 
 ### ReDoc
-访问: http://localhost:8000/redoc
+访问: http://127.0.0.1:8010/redoc
 
 ### 主要 API 端点
 
@@ -289,7 +289,7 @@ python --version  # 应该是 3.9+
 pip list | grep fastapi
 
 # 检查端口占用
-netstat -ano | findstr :8000
+netstat -ano | findstr :8010
 ```
 
 ### 问题 2: Flutter Web 无法启动

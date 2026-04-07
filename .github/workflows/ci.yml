@@ -1,0 +1,165 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master", "develop"]
+  pull_request:
+    branches: ["*"]
+
+jobs:
+  backend-smoke:
+    name: Backend Smoke Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install lightweight tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8==7.1.1
+
+      - name: Python syntax compile
+        run: python -m compileall backend/app
+
+      - name: Flake8 (backend app)
+        run: flake8 backend/app --max-line-length=100 --extend-ignore=E203,W503
+
+  backend-lite-tests:
+    name: Backend Lite Tests
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install lightweight test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            fastapi==0.115.6 \
+            pytest==8.3.4 \
+            pydantic==2.10.5 \
+            pydantic-settings==2.7.1 \
+            python-jose[cryptography]==3.3.0 \
+            passlib[bcrypt]==1.7.4 \
+            bcrypt==4.0.1 \
+            loguru==0.7.3
+
+      - name: Run auth security unit tests
+        run: |
+          python -m pytest tests_lite -v --tb=short --junitxml=tests_lite_report.xml
+
+      - name: Upload backend lite test report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-lite-tests-report
+          path: backend/tests_lite_report.xml
+
+      - name: Publish backend lite test summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          report = "tests_lite_report.xml"
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+
+          if not summary_path:
+            raise SystemExit(0)
+
+          lines = ["## Backend Lite Tests Summary\n"]
+
+          if not os.path.exists(report):
+            lines.append("- Report file not found: tests_lite_report.xml\n")
+          else:
+            root = ET.parse(report).getroot()
+            tests = int(root.attrib.get("tests", 0))
+            failures = int(root.attrib.get("failures", 0))
+            errors = int(root.attrib.get("errors", 0))
+            skipped = int(root.attrib.get("skipped", 0))
+
+            lines.append(f"- tests: {tests}\n")
+            lines.append(f"- failures: {failures}\n")
+            lines.append(f"- errors: {errors}\n")
+            lines.append(f"- skipped: {skipped}\n")
+
+            if failures or errors:
+              lines.append("\nFailed test cases:\n")
+              for case in root.iter("testcase"):
+                if case.find("failure") is not None or case.find("error") is not None:
+                  cls = case.attrib.get("classname", "")
+                  name = case.attrib.get("name", "")
+                  lines.append(f"- {cls}::{name}\n")
+
+          with open(summary_path, "a", encoding="utf-8") as f:
+            f.writelines(lines)
+          PY
+
+  frontend-build:
+    name: Frontend Build (Vite)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+  mobile-test:
+    name: Mobile Test (Flutter)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: mobile
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Flutter analyze
+        run: flutter analyze
+
+      - name: Flutter test
+        run: flutter test

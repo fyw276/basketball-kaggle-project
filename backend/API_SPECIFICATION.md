@@ -6,7 +6,7 @@
 
 ### 基础信息
 
-- **Base URL**: `http://localhost:8000/api/v1`
+- **Base URL**: `http://127.0.0.1:8010/api/v1`
 - **协议**: HTTP/HTTPS
 - **数据格式**: JSON
 - **字符编码**: UTF-8
@@ -88,6 +88,52 @@ Token 有效期：24 小时（可配置）
 
 ## API 端点详细说明
 
+## 0. AI 穿搭风格分（Predict）
+
+### 0.1 获取穿搭风格分
+
+**端点**: `POST /predict`
+
+**描述**: 基于上装/下装/颜色/季节/场景进行风格评分，并可在低置信度场景触发外部增强。
+
+**请求头**: 无需认证
+
+**请求体**:
+```json
+{
+  "top": "衬衫",
+  "bottom": "牛仔裤",
+  "color_top": "白色",
+  "color_bottom": "蓝色",
+  "season": "春季",
+  "occasion": "通勤"
+}
+```
+
+**成功响应** (200 OK):
+```json
+{
+  "score": 8.4,
+  "recommendations": [
+    { "outfit": "衬衫 + 牛仔裤", "score": 8.4 },
+    { "outfit": "Shirt + Chinos", "score": 8.1 },
+    { "outfit": "Hoodie + Joggers", "score": 7.8 }
+  ],
+  "explanation": "颜色搭配协调，适合当前季节和场景",
+  "source": "local",
+  "fallback_reason": null,
+  "model_version_local": "local-sklearn-pipeline",
+  "model_version_external": null,
+  "latency_ms": 42
+}
+```
+
+**字段补充说明**:
+
+1. `source`: `local`（仅本地推理）或 `hybrid`（本地+外部增强）
+2. `fallback_reason`: `low_confidence` / `small_margin` / `external_failed` / `null`
+3. `model_version_external`: 未触发增强时为 `null`
+
 ## 1. 认证模块 (Authentication)
 
 ### 1.1 用户注册
@@ -124,7 +170,7 @@ Token 有效期：24 小时（可配置）
 
 **示例**:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/auth/register" \
+curl -X POST "http://127.0.0.1:8010/api/v1/auth/register" \
   -H "Content-Type: application/json" \
   -d '{
     "username": "testuser",
@@ -165,7 +211,7 @@ curl -X POST "http://localhost:8000/api/v1/auth/register" \
 
 **示例**:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/auth/login" \
+curl -X POST "http://127.0.0.1:8010/api/v1/auth/login" \
   -H "Content-Type: application/json" \
   -d '{
     "username": "testuser",
@@ -314,7 +360,7 @@ curl -X POST "http://localhost:8000/api/v1/auth/login" \
 
 **示例**:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/recognition/category" \
+curl -X POST "http://127.0.0.1:8010/api/v1/recognition/category" \
   -F "file=@/path/to/image.jpg"
 ```
 
@@ -798,5 +844,5 @@ curl -X POST "http://localhost:8000/api/v1/recognition/category" \
 ## 10. 联系方式
 
 - **技术支持**: support@smartoutfit.example.com
-- **API 文档**: http://localhost:8000/docs
-- **ReDoc 文档**: http://localhost:8000/redoc
+- **API 文档**: http://127.0.0.1:8010/docs
+- **ReDoc 文档**: http://127.0.0.1:8010/redoc

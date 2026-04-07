@@ -123,6 +123,17 @@ clothing-assistant/
 ## 快速开始
 
 详细的启动指南请查看 [QUICK_START.md](QUICK_START.md)。**AI `/predict`、Vite 演示前端、虚拟试衣与 Web 根路径**见 [docs/AI_OUTFIT_PREDICT_AND_TRYON.md](docs/AI_OUTFIT_PREDICT_AND_TRYON.md)。搭配推荐多图上传见 [docs/OUTFIT_MULTI_IMAGE_UPLOAD.md](docs/OUTFIT_MULTI_IMAGE_UPLOAD.md)；衣橱整套拆分与删除提示见 [docs/WARDROBE_FEATURES.md](docs/WARDROBE_FEATURES.md)。**智能穿搭（Flutter Web 行为、CORS、认证顺序、响应式等）**见 [docs/SMART_OUTFIT_FLUTTER_WEB.md](docs/SMART_OUTFIT_FLUTTER_WEB.md)。**天气展示（道路名过滤）与 Hugging Face / 虚拟试衣下载配置**见 [docs/WEATHER_DISPLAY_AND_HF_ENV.md](docs/WEATHER_DISPLAY_AND_HF_ENV.md)。
+工程协作与最小质量门禁基线见 [docs/ENGINEERING_BASELINE.md](docs/ENGINEERING_BASELINE.md)。
+分支保护与合并门禁基线见 [docs/BRANCH_PROTECTION_BASELINE.md](docs/BRANCH_PROTECTION_BASELINE.md)。
+
+### 工程治理文档入口
+
+- [工程基线（CI / 轻量测试边界）](docs/ENGINEERING_BASELINE.md)
+- [分支保护基线](docs/BRANCH_PROTECTION_BASELINE.md)
+- [分支保护执行清单](docs/BRANCH_PROTECTION_CHECKLIST.md)
+- [提交前自检清单](docs/PRE_SUBMIT_SELF_CHECK.md)
+- [交付状态（本轮治理改造）](docs/DELIVERY_STATUS.md)
+- [双通道推理速交付方案（本地主推理 + 外部增强）](docs/HYBRID_INFERENCE_FAST_TRACK.md)
 
 ### 环境要求
 
