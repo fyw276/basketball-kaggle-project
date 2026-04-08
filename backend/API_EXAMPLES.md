@@ -2,7 +2,7 @@
 
 本文档提供智能穿搭助手 API 的实际使用示例，包括 curl 命令、Python 代码和 JavaScript 代码。
 
-> **基址与端口**：下文示例中的 `http://localhost:8000` 仅为占位。开发环境默认后端为 **`http://127.0.0.1:8010`**（见 `backend/.env` 的 `PORT` 与 `mobile` 的 `kApiPort`）。请将示例里的主机与端口替换为你的实际值，或设 `BASE_URL=http://127.0.0.1:8010` 后自行拼接路径。
+> **基址与端口**：开发环境默认后端为 **`http://127.0.0.1:8010`**（见 `backend/.env` 的 `PORT` 与 `mobile` 的 `kApiPort`）。如你的环境不同，请将示例里的主机与端口替换为实际值，或设 `BASE_URL=http://127.0.0.1:8010` 后自行拼接路径。
 
 ## 目录
 
@@ -78,7 +78,7 @@ print(response.json())
 
 **curl**:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/auth/register" \
+curl -X POST "http://127.0.0.1:8010/api/v1/auth/register" \
   -H "Content-Type: application/json" \
   -d '{
     "username": "fashionista",
@@ -91,7 +91,7 @@ curl -X POST "http://localhost:8000/api/v1/auth/register" \
 ```python
 import requests
 
-url = "http://localhost:8000/api/v1/auth/register"
+url = "http://127.0.0.1:8010/api/v1/auth/register"
 data = {
     "username": "fashionista",
     "email": "fashionista@example.com",
@@ -104,7 +104,7 @@ print(response.json())
 
 **JavaScript (fetch)**:
 ```javascript
-const url = 'http://localhost:8000/api/v1/auth/register';
+const url = 'http://127.0.0.1:8010/api/v1/auth/register';
 const data = {
   username: 'fashionista',
   email: 'fashionista@example.com',
@@ -139,7 +139,7 @@ fetch(url, {
 
 **curl**:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/auth/login" \
+curl -X POST "http://127.0.0.1:8010/api/v1/auth/login" \
   -H "Content-Type: application/json" \
   -d '{
     "username": "fashionista",
@@ -151,7 +151,7 @@ curl -X POST "http://localhost:8000/api/v1/auth/login" \
 ```python
 import requests
 
-url = "http://localhost:8000/api/v1/auth/login"
+url = "http://127.0.0.1:8010/api/v1/auth/login"
 data = {
     "username": "fashionista",
     "password": "SecurePass123"
@@ -180,7 +180,7 @@ print(f"Access Token: {access_token}")
 
 **curl**:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/profile" \
+curl -X POST "http://127.0.0.1:8010/api/v1/profile" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -197,7 +197,7 @@ curl -X POST "http://localhost:8000/api/v1/profile" \
 ```python
 import requests
 
-url = "http://localhost:8000/api/v1/profile"
+url = "http://127.0.0.1:8010/api/v1/profile"
 headers = {
     "Authorization": f"Bearer {access_token}"
 }
@@ -220,7 +220,7 @@ print(response.json())
 
 **curl**:
 ```bash
-curl -X GET "http://localhost:8000/api/v1/profile" \
+curl -X GET "http://127.0.0.1:8010/api/v1/profile" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 ```
 
@@ -228,7 +228,7 @@ curl -X GET "http://localhost:8000/api/v1/profile" \
 ```python
 import requests
 
-url = "http://localhost:8000/api/v1/profile"
+url = "http://127.0.0.1:8010/api/v1/profile"
 headers = {
     "Authorization": f"Bearer {access_token}"
 }
@@ -245,7 +245,7 @@ print(f"Style Preference: {profile['style_preference']}")
 
 **curl**:
 ```bash
-curl -X PUT "http://localhost:8000/api/v1/profile" \
+curl -X PUT "http://127.0.0.1:8010/api/v1/profile" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -262,7 +262,7 @@ curl -X PUT "http://localhost:8000/api/v1/profile" \
 
 **curl**:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/recognition/category" \
+curl -X POST "http://127.0.0.1:8010/api/v1/recognition/category" \
   -F "file=@/path/to/shirt.jpg"
 ```
 
@@ -270,7 +270,7 @@ curl -X POST "http://localhost:8000/api/v1/recognition/category" \
 ```python
 import requests
 
-url = "http://localhost:8000/api/v1/recognition/category"
+url = "http://127.0.0.1:8010/api/v1/recognition/category"
 files = {
     "file": open("/path/to/shirt.jpg", "rb")
 }
@@ -283,7 +283,7 @@ print(f"Confidence: {result['confidence']:.2%}")
 
 **JavaScript (FormData)**:
 ```javascript
-const url = 'http://localhost:8000/api/v1/recognition/category';
+const url = 'http://127.0.0.1:8010/api/v1/recognition/category';
 const formData = new FormData();
 formData.append('file', fileInput.files[0]);
 
@@ -304,7 +304,7 @@ fetch(url, {
 
 **curl**:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/recognition/colors" \
+curl -X POST "http://127.0.0.1:8010/api/v1/recognition/colors" \
   -F "file=@/path/to/shirt.jpg"
 ```
 
@@ -312,7 +312,7 @@ curl -X POST "http://localhost:8000/api/v1/recognition/colors" \
 ```python
 import requests
 
-url = "http://localhost:8000/api/v1/recognition/colors"
+url = "http://127.0.0.1:8010/api/v1/recognition/colors"
 files = {
     "file": open("/path/to/shirt.jpg", "rb")
 }
@@ -335,7 +335,7 @@ for i, color in enumerate(result["secondary_colors"], 1):
 
 **curl**:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/recognition/analyze" \
+curl -X POST "http://127.0.0.1:8010/api/v1/recognition/analyze" \
   -F "file=@/path/to/shirt.jpg"
 ```
 
@@ -343,7 +343,7 @@ curl -X POST "http://localhost:8000/api/v1/recognition/analyze" \
 ```python
 import requests
 
-url = "http://localhost:8000/api/v1/recognition/analyze"
+url = "http://127.0.0.1:8010/api/v1/recognition/analyze"
 files = {
     "file": open("/path/to/shirt.jpg", "rb")
 }
@@ -365,7 +365,7 @@ print(f"Feature Vector Length: {len(result['feature_vector'])}")
 
 **curl**:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/wardrobe/garments" \
+curl -X POST "http://127.0.0.1:8010/api/v1/wardrobe/garments" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -F "file=@/path/to/shirt.jpg" \
   -F "category=上衣" \
@@ -382,7 +382,7 @@ curl -X POST "http://localhost:8000/api/v1/wardrobe/garments" \
 ```python
 import requests
 
-url = "http://localhost:8000/api/v1/wardrobe/garments"
+url = "http://127.0.0.1:8010/api/v1/wardrobe/garments"
 headers = {
     "Authorization": f"Bearer {access_token}"
 }
@@ -412,11 +412,11 @@ print(f"Garment ID: {garment['garment_id']}")
 **curl**:
 ```bash
 # 获取所有服饰（第1页）
-curl -X GET "http://localhost:8000/api/v1/wardrobe/garments?page=1&page_size=20" \
+curl -X GET "http://127.0.0.1:8010/api/v1/wardrobe/garments?page=1&page_size=20" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 
 # 按品类筛选
-curl -X GET "http://localhost:8000/api/v1/wardrobe/garments?category=上衣" \
+curl -X GET "http://127.0.0.1:8010/api/v1/wardrobe/garments?category=上衣" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 ```
 
@@ -424,7 +424,7 @@ curl -X GET "http://localhost:8000/api/v1/wardrobe/garments?category=上衣" \
 ```python
 import requests
 
-url = "http://localhost:8000/api/v1/wardrobe/garments"
+url = "http://127.0.0.1:8010/api/v1/wardrobe/garments"
 headers = {
     "Authorization": f"Bearer {access_token}"
 }
@@ -450,7 +450,7 @@ for garment in result["items"]:
 
 **curl**:
 ```bash
-curl -X GET "http://localhost:8000/api/v1/wardrobe/garments/123e4567-e89b-12d3-a456-426614174000" \
+curl -X GET "http://127.0.0.1:8010/api/v1/wardrobe/garments/123e4567-e89b-12d3-a456-426614174000" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 ```
 
@@ -459,7 +459,7 @@ curl -X GET "http://localhost:8000/api/v1/wardrobe/garments/123e4567-e89b-12d3-a
 import requests
 
 garment_id = "123e4567-e89b-12d3-a456-426614174000"
-url = f"http://localhost:8000/api/v1/wardrobe/garments/{garment_id}"
+url = f"http://127.0.0.1:8010/api/v1/wardrobe/garments/{garment_id}"
 headers = {
     "Authorization": f"Bearer {access_token}"
 }
@@ -477,7 +477,7 @@ print(f"Styles: {', '.join(garment['style_tags'])}")
 
 **curl**:
 ```bash
-curl -X PUT "http://localhost:8000/api/v1/wardrobe/garments/123e4567-e89b-12d3-a456-426614174000" \
+curl -X PUT "http://127.0.0.1:8010/api/v1/wardrobe/garments/123e4567-e89b-12d3-a456-426614174000" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -492,7 +492,7 @@ curl -X PUT "http://localhost:8000/api/v1/wardrobe/garments/123e4567-e89b-12d3-a
 import requests
 
 garment_id = "123e4567-e89b-12d3-a456-426614174000"
-url = f"http://localhost:8000/api/v1/wardrobe/garments/{garment_id}"
+url = f"http://127.0.0.1:8010/api/v1/wardrobe/garments/{garment_id}"
 headers = {
     "Authorization": f"Bearer {access_token}"
 }
@@ -513,7 +513,7 @@ print("Garment updated successfully")
 
 **curl**:
 ```bash
-curl -X DELETE "http://localhost:8000/api/v1/wardrobe/garments/123e4567-e89b-12d3-a456-426614174000" \
+curl -X DELETE "http://127.0.0.1:8010/api/v1/wardrobe/garments/123e4567-e89b-12d3-a456-426614174000" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 ```
 
@@ -522,7 +522,7 @@ curl -X DELETE "http://localhost:8000/api/v1/wardrobe/garments/123e4567-e89b-12d
 import requests
 
 garment_id = "123e4567-e89b-12d3-a456-426614174000"
-url = f"http://localhost:8000/api/v1/wardrobe/garments/{garment_id}"
+url = f"http://127.0.0.1:8010/api/v1/wardrobe/garments/{garment_id}"
 headers = {
     "Authorization": f"Bearer {access_token}"
 }
@@ -542,7 +542,7 @@ if response.status_code == 204:
 
 **curl（仅预览）**:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/wardrobe/split-outfit" \
+curl -X POST "http://127.0.0.1:8010/api/v1/wardrobe/split-outfit" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -F "file=@/path/to/outfit.jpg" \
   -F "save=false"
@@ -550,7 +550,7 @@ curl -X POST "http://localhost:8000/api/v1/wardrobe/split-outfit" \
 
 **curl（保存第 0、2 块）**:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/wardrobe/split-outfit" \
+curl -X POST "http://127.0.0.1:8010/api/v1/wardrobe/split-outfit" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -F "file=@/path/to/outfit.jpg" \
   -F "save=true" \
@@ -590,7 +590,7 @@ curl -X POST "http://localhost:8000/api/v1/wardrobe/split-outfit" \
 **curl**：
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/smart-outfit/generate" \
+curl -X POST "http://127.0.0.1:8010/api/v1/smart-outfit/generate" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -609,7 +609,7 @@ curl -X POST "http://localhost:8000/api/v1/smart-outfit/generate" \
 ### 天气（经纬度）`GET /api/v1/smart-outfit/weather`
 
 ```bash
-curl -G "http://localhost:8000/api/v1/smart-outfit/weather" \
+curl -G "http://127.0.0.1:8010/api/v1/smart-outfit/weather" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   --data-urlencode "latitude=31.23" \
   --data-urlencode "longitude=121.47"
@@ -618,7 +618,7 @@ curl -G "http://localhost:8000/api/v1/smart-outfit/weather" \
 ### 天气（城市名）`GET /api/v1/smart-outfit/weather-by-city`
 
 ```bash
-curl -G "http://localhost:8000/api/v1/smart-outfit/weather-by-city" \
+curl -G "http://127.0.0.1:8010/api/v1/smart-outfit/weather-by-city" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   --data-urlencode "name=上海"
 ```
@@ -626,7 +626,7 @@ curl -G "http://localhost:8000/api/v1/smart-outfit/weather-by-city" \
 ### 上传参考图 `POST /api/v1/smart-outfit/upload-reference`
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/smart-outfit/upload-reference" \
+curl -X POST "http://127.0.0.1:8010/api/v1/smart-outfit/upload-reference" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -F "file=@/path/to/garment.jpg"
 ```
@@ -639,7 +639,7 @@ curl -X POST "http://localhost:8000/api/v1/smart-outfit/upload-reference" \
 
 **curl**:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/analysis/similarity" \
+curl -X POST "http://127.0.0.1:8010/api/v1/analysis/similarity" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -F "file=@/path/to/new_shirt.jpg"
 ```
@@ -648,7 +648,7 @@ curl -X POST "http://localhost:8000/api/v1/analysis/similarity" \
 ```python
 import requests
 
-url = "http://localhost:8000/api/v1/analysis/similarity"
+url = "http://127.0.0.1:8010/api/v1/analysis/similarity"
 headers = {
     "Authorization": f"Bearer {access_token}"
 }
@@ -676,7 +676,7 @@ for garment in result["similar_garments"]:
 
 **curl**:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/analysis/outfits?num_outfits=3" \
+curl -X POST "http://127.0.0.1:8010/api/v1/analysis/outfits?num_outfits=3" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -F "file=@/path/to/shirt.jpg"
 ```
@@ -685,7 +685,7 @@ curl -X POST "http://localhost:8000/api/v1/analysis/outfits?num_outfits=3" \
 
 **curl**:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/analysis/outfits?num_outfits=3" \
+curl -X POST "http://127.0.0.1:8010/api/v1/analysis/outfits?num_outfits=3" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -F "files=@/path/to/top.jpg" \
   -F "files=@/path/to/pants.jpg"
@@ -695,7 +695,7 @@ curl -X POST "http://localhost:8000/api/v1/analysis/outfits?num_outfits=3" \
 ```python
 import requests
 
-url = "http://localhost:8000/api/v1/analysis/outfits"
+url = "http://127.0.0.1:8010/api/v1/analysis/outfits"
 headers = {"Authorization": f"Bearer {access_token}"}
 params = {"num_outfits": 3}
 
@@ -708,7 +708,7 @@ result = response.json()
 ```python
 import requests
 
-url = "http://localhost:8000/api/v1/analysis/outfits"
+url = "http://127.0.0.1:8010/api/v1/analysis/outfits"
 headers = {"Authorization": f"Bearer {access_token}"}
 params = {"num_outfits": 3}
 
@@ -743,7 +743,7 @@ for i, outfit in enumerate(result["outfit_cards"], 1):
 
 **curl**:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/analysis/suitability" \
+curl -X POST "http://127.0.0.1:8010/api/v1/analysis/suitability" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -F "file=@/path/to/dress.jpg"
 ```
@@ -752,7 +752,7 @@ curl -X POST "http://localhost:8000/api/v1/analysis/suitability" \
 ```python
 import requests
 
-url = "http://localhost:8000/api/v1/analysis/suitability"
+url = "http://127.0.0.1:8010/api/v1/analysis/suitability"
 headers = {
     "Authorization": f"Bearer {access_token}"
 }
@@ -789,7 +789,7 @@ for suggestion in result["suggestions"]:
 import requests
 import time
 
-BASE_URL = "http://localhost:8000/api/v1"
+BASE_URL = "http://127.0.0.1:8010/api/v1"
 
 # 1. 注册用户
 print("1. Registering user...")
@@ -942,7 +942,7 @@ def make_api_request(url, method="GET", **kwargs):
 # Usage
 try:
     result = make_api_request(
-        "http://localhost:8000/api/v1/profile",
+        "http://127.0.0.1:8010/api/v1/profile",
         method="GET",
         headers={"Authorization": f"Bearer {token}"}
     )
@@ -984,7 +984,7 @@ def test_api_performance(url, files=None, headers=None):
 with open("/path/to/test_image.jpg", "rb") as f:
     files = {"file": f}
     elapsed = test_api_performance(
-        "http://localhost:8000/api/v1/recognition/analyze",
+        "http://127.0.0.1:8010/api/v1/recognition/analyze",
         files=files
     )
 
@@ -1008,6 +1008,6 @@ with open("/path/to/test_image.jpg", "rb") as f:
 
 ## 更多资源
 
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
-- **OpenAPI JSON**: http://localhost:8000/openapi.json
+- **Swagger UI**: http://127.0.0.1:8010/docs
+- **ReDoc**: http://127.0.0.1:8010/redoc
+- **OpenAPI JSON**: http://127.0.0.1:8010/openapi.json
