@@ -101,19 +101,19 @@ python run.py
 或使用 uvicorn：
 
 ```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8010
 ```
 
 ### 访问 API 文档
 
 打开浏览器访问：
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
+- Swagger UI: http://127.0.0.1:8010/docs
+- ReDoc: http://127.0.0.1:8010/redoc
 
 ### 测试用户注册
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/auth/register" \
+curl -X POST "http://127.0.0.1:8010/api/v1/auth/register" \
   -H "Content-Type: application/json" \
   -d '{
     "username": "testuser",
@@ -136,7 +136,7 @@ curl -X POST "http://localhost:8000/api/v1/auth/register" \
 ### 测试用户登录
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/auth/login" \
+curl -X POST "http://127.0.0.1:8010/api/v1/auth/login" \
   -H "Content-Type: application/json" \
   -d '{
     "username": "testuser",
@@ -157,7 +157,7 @@ curl -X POST "http://localhost:8000/api/v1/auth/login" \
 使用获取的 token 访问受保护端点：
 
 ```bash
-curl -X GET "http://localhost:8000/api/v1/users/me" \
+curl -X GET "http://127.0.0.1:8010/api/v1/users/me" \
   -H "Authorization: Bearer YOUR_TOKEN_HERE"
 ```
 
@@ -166,7 +166,7 @@ curl -X GET "http://localhost:8000/api/v1/users/me" \
 创建用户画像：
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/profile" \
+curl -X POST "http://127.0.0.1:8010/api/v1/profile" \
   -H "Authorization: Bearer YOUR_TOKEN_HERE" \
   -H "Content-Type: application/json" \
   -d '{

@@ -111,7 +111,7 @@ python run.py
 start.bat  # Windows
 ```
 
-访问 http://localhost:8000 应该能看到 API 响应。
+访问 http://127.0.0.1:8010 应该能看到 API 响应。
 
 ## 常见问题
 

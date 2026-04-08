@@ -2,7 +2,7 @@
 
 ## 问题现象
 
-访问 http://localhost:8000/redoc 时页面完全空白，但 Swagger UI 正常工作。
+访问 http://127.0.0.1:8010/redoc 时页面完全空白，但 Swagger UI 正常工作。
 
 ## 根本原因
 
@@ -20,7 +20,7 @@ Swagger UI 和 ReDoc 提供相同的 API 文档，只是展示方式不同。
 
 **直接使用 Swagger UI**：
 ```
-http://localhost:8000/docs
+http://127.0.0.1:8010/docs
 ```
 
 **优点**：
@@ -48,7 +48,7 @@ http://localhost:8000/docs
 
 访问测试端点验证 HTML 响应是否正常：
 ```
-http://localhost:8000/test-html
+http://127.0.0.1:8010/test-html
 ```
 
 如果看到 "HTML Response Test" 页面，说明服务器配置正常，问题在 ReDoc 的 CDN 加载。
@@ -71,7 +71,7 @@ http://localhost:8000/test-html
 ### 方案 5: 使用无痕模式
 
 1. 按 `Ctrl+Shift+N` (Chrome) 或 `Ctrl+Shift+P` (Firefox)
-2. 在无痕窗口访问 http://localhost:8000/redoc
+2. 在无痕窗口访问 http://127.0.0.1:8010/redoc
 3. 如果可以正常显示，说明是浏览器扩展或缓存问题
 
 ### 方案 6: 检查网络连接
@@ -113,7 +113,7 @@ python diagnose_redoc.py
 
 访问 OpenAPI JSON 端点：
 ```
-http://localhost:8000/openapi.json
+http://127.0.0.1:8010/openapi.json
 ```
 
 应该看到完整的 JSON 规范。如果这个端点有问题，ReDoc 也无法工作。
@@ -147,16 +147,16 @@ Swagger UI 完全够用，它还支持直接测试 API，比 ReDoc 更实用。
 
 | 端点 | 用途 | 状态 |
 |------|------|------|
-| http://localhost:8000/docs | Swagger UI（推荐） | ✅ 正常 |
-| http://localhost:8000/redoc | ReDoc | ❌ 空白 |
-| http://localhost:8000/test-html | HTML 测试 | ✅ 测试用 |
-| http://localhost:8000/openapi.json | OpenAPI 规范 | ✅ 正常 |
+| http://127.0.0.1:8010/docs | Swagger UI（推荐） | ✅ 正常 |
+| http://127.0.0.1:8010/redoc | ReDoc | ❌ 空白 |
+| http://127.0.0.1:8010/test-html | HTML 测试 | ✅ 测试用 |
+| http://127.0.0.1:8010/openapi.json | OpenAPI 规范 | ✅ 正常 |
 
 ## 总结
 
 **最简单的解决方案**：使用 Swagger UI 代替 ReDoc
 
-**访问**：http://localhost:8000/docs
+**访问**：http://127.0.0.1:8010/docs
 
 Swagger UI 提供：
 - ✅ 完整的 API 文档

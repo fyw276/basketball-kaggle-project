@@ -3,7 +3,7 @@
 ## 测试概述
 
 **测试时间**: 2024-01-XX
-**测试服务器**: http://localhost:8000
+**测试服务器**: http://127.0.0.1:8010
 **测试方法**: 自动化测试脚本 + 手动测试
 
 ---
@@ -78,7 +78,7 @@
 **端点**: `POST /api/v1/recognition/analyze`
 
 **测试步骤**:
-1. 访问 http://localhost:8000/docs
+1. 访问 http://127.0.0.1:8010/docs
 2. 展开 `POST /api/v1/recognition/analyze`
 3. 点击 "Try it out"
 4. 上传服饰图片
@@ -214,7 +214,7 @@ python test_all_features.py
 
 2. 访问 Swagger UI：
    ```
-   http://localhost:8000/docs
+   http://127.0.0.1:8010/docs
    ```
 
 3. 按照上面的步骤测试每个功能

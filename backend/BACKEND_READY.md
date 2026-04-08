@@ -32,7 +32,7 @@ python run.py
 
 **预期输出**：
 ```
-INFO:     Uvicorn running on http://127.0.0.1:8000
+INFO:     Uvicorn running on http://127.0.0.1:8010
 INFO:     Application startup complete.
 ```
 
@@ -40,7 +40,7 @@ INFO:     Application startup complete.
 
 **Swagger UI（推荐）**：
 ```
-http://localhost:8000/docs
+http://127.0.0.1:8010/docs
 ```
 
 **功能**：
@@ -53,7 +53,7 @@ http://localhost:8000/docs
 
 #### 健康检查
 ```bash
-curl http://localhost:8000/health
+curl http://127.0.0.1:8010/health
 ```
 
 **响应**：
@@ -66,7 +66,7 @@ curl http://localhost:8000/health
 
 #### 根端点
 ```bash
-curl http://localhost:8000/
+curl http://127.0.0.1:8010/
 ```
 
 **响应**：
@@ -122,14 +122,14 @@ curl http://localhost:8000/
 
 **1. 注册用户**
 ```bash
-curl -X POST http://localhost:8000/api/v1/auth/register \
+curl -X POST http://127.0.0.1:8010/api/v1/auth/register \
   -H "Content-Type: application/json" \
   -d '{"username":"testuser","email":"test@example.com","password":"Test123456"}'
 ```
 
 **2. 登录获取 Token**
 ```bash
-curl -X POST http://localhost:8000/api/v1/auth/login \
+curl -X POST http://127.0.0.1:8010/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"testuser","password":"Test123456"}'
 ```
@@ -139,7 +139,7 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 ### 测试 2: 创建用户画像
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/profile \
+curl -X POST http://127.0.0.1:8010/api/v1/profile \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN_HERE" \
   -d '{
@@ -154,7 +154,7 @@ curl -X POST http://localhost:8000/api/v1/profile \
 
 ### 测试 3: 图像识别（使用 Swagger UI）
 
-1. 访问 http://localhost:8000/docs
+1. 访问 http://127.0.0.1:8010/docs
 2. 找到 `POST /api/v1/recognition/analyze`
 3. 点击 "Try it out"
 4. 点击 "Choose File" 上传服饰图片
@@ -304,7 +304,7 @@ python scripts/verify_backend_completion.py
 
 ### 查看 API 文档
 ```
-http://localhost:8000/docs
+http://127.0.0.1:8010/docs
 ```
 
 ---
@@ -322,7 +322,7 @@ http://localhost:8000/docs
 
 **开始使用**：
 1. 启动服务: `python run.py`
-2. 访问文档: http://localhost:8000/docs
+2. 访问文档: http://127.0.0.1:8010/docs
 3. 开始测试 API！
 
 ---

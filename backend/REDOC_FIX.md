@@ -2,7 +2,7 @@
 
 ## 问题描述
 
-访问 http://localhost:8000/redoc 时页面空白，但 Swagger UI (http://localhost:8000/docs) 正常工作。
+访问 http://127.0.0.1:8010/redoc 时页面空白，但 Swagger UI (http://127.0.0.1:8010/docs) 正常工作。
 
 ## 可能的原因
 
@@ -28,7 +28,7 @@
 
 1. 按 `Ctrl+Shift+Delete` (Windows) 或 `Cmd+Shift+Delete` (Mac)
 2. 选择清除缓存和 Cookie
-3. 重新访问 http://localhost:8000/redoc
+3. 重新访问 http://127.0.0.1:8010/redoc
 
 ### 方案 3: 使用本地 ReDoc 资源
 
@@ -109,10 +109,10 @@ app = FastAPI(
 
 ```bash
 # 访问 OpenAPI JSON
-curl http://localhost:8000/openapi.json
+curl http://127.0.0.1:8010/openapi.json
 
 # 或在浏览器中访问
-http://localhost:8000/openapi.json
+http://127.0.0.1:8010/openapi.json
 ```
 
 如果 JSON 正确显示，说明问题在 ReDoc 前端加载。
@@ -145,7 +145,7 @@ curl -I https://cdn.jsdelivr.net/npm/redoc@latest/bundles/redoc.standalone.js
 
 ## 验证修复
 
-修复后，访问 http://localhost:8000/redoc 应该看到：
+修复后，访问 http://127.0.0.1:8010/redoc 应该看到：
 - 左侧：API 端点列表
 - 右侧：详细的 API 文档
 - 顶部：API 标题和版本信息
