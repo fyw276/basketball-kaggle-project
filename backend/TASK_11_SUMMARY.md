@@ -153,7 +153,7 @@ As per task instructions, optional testing tasks were skipped to focus on core f
 **API Integration:**
 - Registered in `app/main.py` as `/api/v1/recognition`
 - Available at: `POST /api/v1/recognition/analyze`
-- OpenAPI docs: `http://localhost:8000/docs`
+- OpenAPI docs: `http://127.0.0.1:8010/docs`
 
 ## Usage Examples
 
@@ -172,7 +172,7 @@ print(f"Feature Vector: {len(result.feature_vector)}-dim")
 
 ### API Usage (curl):
 ```bash
-curl -X POST "http://localhost:8000/api/v1/recognition/analyze" \
+curl -X POST "http://127.0.0.1:8010/api/v1/recognition/analyze" \
   -H "Content-Type: multipart/form-data" \
   -F "file=@garment.jpg"
 ```
@@ -184,7 +184,7 @@ import requests
 with open("garment.jpg", "rb") as f:
     files = {"file": f}
     response = requests.post(
-        "http://localhost:8000/api/v1/recognition/analyze",
+        "http://127.0.0.1:8010/api/v1/recognition/analyze",
         files=files
     )
     result = response.json()

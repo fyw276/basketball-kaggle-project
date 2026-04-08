@@ -396,7 +396,7 @@ for outfit in outfits:
 
 ### cURL 请求
 ```bash
-curl -X POST "http://localhost:8000/api/v1/analysis/outfits?num_outfits=3" \
+curl -X POST "http://127.0.0.1:8010/api/v1/analysis/outfits?num_outfits=3" \
   -H "Authorization: Bearer {token}" \
   -F "file=@shirt.jpg"
 ```

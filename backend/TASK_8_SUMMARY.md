@@ -230,7 +230,7 @@ for color in secondary:
 
 ```bash
 # Test color recognition endpoint
-curl -X POST "http://localhost:8000/api/v1/recognition/colors" \
+curl -X POST "http://127.0.0.1:8010/api/v1/recognition/colors" \
   -H "accept: application/json" \
   -H "Content-Type: multipart/form-data" \
   -F "file=@garment.jpg"

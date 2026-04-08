@@ -52,7 +52,7 @@ def extract_colors(self, image: Union[Image.Image, np.ndarray, bytes]) -> List[C
    ```
 
 3. **验证服务已启动**：
-   - 访问 http://localhost:8000/health
+   - 访问 http://127.0.0.1:8010/health
    - 应该返回 `{"status": "healthy"}`
 
 ### 方法 2: 使用 PowerShell 重启（如果终端不可用）
@@ -74,7 +74,7 @@ python run.py
 
 ### 2. 在 Swagger UI 中测试
 
-1. 访问 http://localhost:8000/docs
+1. 访问 http://127.0.0.1:8010/docs
 2. 展开 `POST /api/v1/recognition/analyze`
 3. 点击 "Try it out"
 4. 点击 "Choose File" 上传图片
@@ -155,7 +155,7 @@ python test_all_features.py
 或使用 curl 命令测试：
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/recognition/analyze \
+curl -X POST http://127.0.0.1:8010/api/v1/recognition/analyze \
   -H "Content-Type: multipart/form-data" \
   -F "file=@/path/to/your/image.jpg"
 ```

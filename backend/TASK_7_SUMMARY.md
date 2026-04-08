@@ -174,12 +174,12 @@ $ python scripts/test_recognition_api.py
 
 ```bash
 # 识别品类
-curl -X POST "http://localhost:8000/api/v1/recognition/category" \
+curl -X POST "http://127.0.0.1:8010/api/v1/recognition/category" \
   -H "Content-Type: multipart/form-data" \
   -F "file=@garment.jpg"
 
 # 获取品类列表
-curl -X GET "http://localhost:8000/api/v1/recognition/categories"
+curl -X GET "http://127.0.0.1:8010/api/v1/recognition/categories"
 ```
 
 ### Python 示例
@@ -190,7 +190,7 @@ import requests
 # 识别品类
 with open("garment.jpg", "rb") as f:
     response = requests.post(
-        "http://localhost:8000/api/v1/recognition/category",
+        "http://127.0.0.1:8010/api/v1/recognition/category",
         files={"file": f}
     )
     result = response.json()

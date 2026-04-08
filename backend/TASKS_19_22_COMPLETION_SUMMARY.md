@@ -19,9 +19,9 @@ This document summarizes the completion of backend core tasks 19-22 for the Smar
 - `backend/app/main.py` - Enhanced OpenAPI configuration
 
 **Verification:**
-- Swagger UI accessible at http://localhost:8000/docs
-- ReDoc accessible at http://localhost:8000/redoc
-- OpenAPI spec available at http://localhost:8000/openapi.json
+- Swagger UI accessible at http://127.0.0.1:8010/docs
+- ReDoc accessible at http://127.0.0.1:8010/redoc
+- OpenAPI spec available at http://127.0.0.1:8010/openapi.json
 
 ### 19.2: Implement Standardized Error Handling ✅
 

@@ -181,7 +181,7 @@ garment = GarmentCreate(
 ### 添加服饰
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/wardrobe/garments" \
+curl -X POST "http://127.0.0.1:8010/api/v1/wardrobe/garments" \
   -H "Authorization: Bearer {token}" \
   -F "file=@shirt.jpg" \
   -F "category=上衣" \
@@ -196,14 +196,14 @@ curl -X POST "http://localhost:8000/api/v1/wardrobe/garments" \
 ### 查询衣橱
 
 ```bash
-curl -X GET "http://localhost:8000/api/v1/wardrobe/garments?page=1&page_size=20&category=上衣" \
+curl -X GET "http://127.0.0.1:8010/api/v1/wardrobe/garments?page=1&page_size=20&category=上衣" \
   -H "Authorization: Bearer {token}"
 ```
 
 ### 更新服饰
 
 ```bash
-curl -X PUT "http://localhost:8000/api/v1/wardrobe/garments/{garment_id}" \
+curl -X PUT "http://127.0.0.1:8010/api/v1/wardrobe/garments/{garment_id}" \
   -H "Authorization: Bearer {token}" \
   -H "Content-Type: application/json" \
   -d '{
@@ -215,7 +215,7 @@ curl -X PUT "http://localhost:8000/api/v1/wardrobe/garments/{garment_id}" \
 ### 删除服饰
 
 ```bash
-curl -X DELETE "http://localhost:8000/api/v1/wardrobe/garments/{garment_id}" \
+curl -X DELETE "http://127.0.0.1:8010/api/v1/wardrobe/garments/{garment_id}" \
   -H "Authorization: Bearer {token}"
 ```
 

@@ -341,7 +341,7 @@ message = analyzer.get_recommendation_message(matches, "中等")
 
 ### cURL 请求
 ```bash
-curl -X POST "http://localhost:8000/api/v1/analysis/similarity" \
+curl -X POST "http://127.0.0.1:8010/api/v1/analysis/similarity" \
   -H "Authorization: Bearer {token}" \
   -F "file=@shirt.jpg"
 ```
