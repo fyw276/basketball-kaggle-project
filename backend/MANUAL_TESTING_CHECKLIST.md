@@ -10,7 +10,7 @@ python run.py
 
 ### 2. 访问 Swagger UI
 ```
-http://localhost:8000/docs
+http://127.0.0.1:8010/docs
 ```
 
 ### 3. 准备测试图片

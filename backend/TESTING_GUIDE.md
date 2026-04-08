@@ -129,7 +129,7 @@ uvicorn app.main:app --reload
 
 **预期输出**：
 ```
-INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Uvicorn running on http://127.0.0.1:8010 (Press CTRL+C to quit)
 INFO:     Started reloader process
 INFO:     Started server process
 INFO:     Waiting for application startup.
@@ -140,16 +140,16 @@ INFO:     Application startup complete.
 
 打开浏览器访问：
 
-1. **根端点**: http://localhost:8000/
+1. **根端点**: http://127.0.0.1:8010/
    - 应该看到欢迎消息和 API 信息
 
-2. **健康检查**: http://localhost:8000/health
+2. **健康检查**: http://127.0.0.1:8010/health
    - 应该返回 `{"status": "healthy"}`
 
-3. **Swagger UI**: http://localhost:8000/docs
+3. **Swagger UI**: http://127.0.0.1:8010/docs
    - 应该看到交互式 API 文档
 
-4. **ReDoc**: http://localhost:8000/redoc
+4. **ReDoc**: http://127.0.0.1:8010/redoc
    - 应该看到美观的 API 文档
 
 ---
@@ -158,7 +158,7 @@ INFO:     Application startup complete.
 
 ### 使用 Swagger UI 测试（推荐）
 
-1. 访问 http://localhost:8000/docs
+1. 访问 http://127.0.0.1:8010/docs
 2. 展开任意端点
 3. 点击 "Try it out"
 4. 填写参数
@@ -170,7 +170,7 @@ INFO:     Application startup complete.
 #### 测试根端点
 
 ```bash
-curl http://localhost:8000/
+curl http://127.0.0.1:8010/
 ```
 
 **预期响应**：
@@ -185,7 +185,7 @@ curl http://localhost:8000/
 #### 测试健康检查
 
 ```bash
-curl http://localhost:8000/health
+curl http://127.0.0.1:8010/health
 ```
 
 **预期响应**：
@@ -198,7 +198,7 @@ curl http://localhost:8000/health
 #### 测试用户注册
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/auth/register \
+curl -X POST http://127.0.0.1:8010/api/v1/auth/register \
   -H "Content-Type: application/json" \
   -d "{\"username\":\"testuser\",\"email\":\"test@example.com\",\"password\":\"TestPass123\"}"
 ```
@@ -215,7 +215,7 @@ curl -X POST http://localhost:8000/api/v1/auth/register \
 #### 测试用户登录
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/auth/login \
+curl -X POST http://127.0.0.1:8010/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d "{\"username\":\"testuser\",\"password\":\"TestPass123\"}"
 ```

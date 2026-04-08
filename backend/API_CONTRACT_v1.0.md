@@ -513,7 +513,7 @@ interface RecognitionResult {
 
 - **技术支持**: support@smartoutfit.example.com
 - **API 问题**: api-issues@smartoutfit.example.com
-- **文档**: http://localhost:8000/docs
+- **文档**: http://127.0.0.1:8010/docs
 
 ---
 

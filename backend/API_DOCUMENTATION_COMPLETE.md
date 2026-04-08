@@ -184,9 +184,9 @@ backend/
 ## 🎓 学习资源
 
 ### 在线文档
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
-- **OpenAPI JSON**: http://localhost:8000/openapi.json
+- **Swagger UI**: http://127.0.0.1:8010/docs
+- **ReDoc**: http://127.0.0.1:8010/redoc
+- **OpenAPI JSON**: http://127.0.0.1:8010/openapi.json
 
 ### 本地文档
 - `API_SPECIFICATION.md` - 完整规范

@@ -70,7 +70,7 @@ echo ========================================
 echo.
 echo 下一步：
 echo 1. 启动后端服务: python run.py
-echo 2. 访问 API 文档: http://localhost:8000/docs
+echo 2. 访问 API 文档: http://127.0.0.1:8010/docs
 echo 3. 查看详细测试指南: TESTING_GUIDE.md
 echo.
 

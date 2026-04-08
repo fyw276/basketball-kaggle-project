@@ -21,11 +21,11 @@ flutter pub get
 编辑 `lib/core/services/api_client.dart`，修改第 6 行的 `baseUrl`：
 
 ```dart
-static const String baseUrl = 'http://10.0.2.2:8000/api/v1';  // Android 模拟器
+static const String baseUrl = 'http://10.0.2.2:8010/api/v1';  // Android 模拟器
 // 或
-static const String baseUrl = 'http://localhost:8000/api/v1';  // iOS 模拟器
+static const String baseUrl = 'http://127.0.0.1:8010/api/v1';  // iOS 模拟器
 // 或
-static const String baseUrl = 'http://192.168.1.100:8000/api/v1';  // 真机（替换为你的 IP）
+static const String baseUrl = 'http://192.168.1.100:8010/api/v1';  // 真机（替换为你的 IP）
 ```
 
 ## 第四步：启动后端服务
@@ -34,7 +34,7 @@ static const String baseUrl = 'http://192.168.1.100:8000/api/v1';  // 真机（�
 
 ```bash
 cd backend
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8010
 ```
 
 ## 第五步：运行应用
