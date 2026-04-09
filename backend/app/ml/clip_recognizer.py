@@ -212,6 +212,12 @@ class CLIPRecognizer:
         if self._is_clip_available is not None:
             return self._is_clip_available
 
+        # Allow forcing MobileNetV2 fallback in constrained environments (e.g. Windows CI),
+        # and to avoid native crashes from heavyweight torch/transformers loads during tests.
+        if str(os.environ.get("DISABLE_CLIP", "")).strip().lower() in ("1", "true", "yes"):
+            self._is_clip_available = False
+            return False
+
         try:
             apply_hf_hub_env_defaults()
             from transformers import CLIPModel, CLIPProcessor

@@ -5,6 +5,8 @@ import '../../../core/providers/auth_provider.dart';
 import '../../../core/providers/theme_provider.dart';
 import '../../../core/services/feature_local_store.dart';
 import '../../../core/widgets/analysis_feature_layout.dart';
+import '../../../core/utils/app_snackbar.dart';
+import '../services/body_shape_outfit_generator.dart';
 import '../../profile/screens/personal_settings_screen.dart';
 
 /// 体型感知：结合个人资料给出可执行的穿搭方向，并引导完善资料。
@@ -17,8 +19,12 @@ class BodyShapeInsightScreen extends StatefulWidget {
 
 class _BodyShapeInsightScreenState extends State<BodyShapeInsightScreen> {
   Future<Map<String, dynamic>>? _future;
+  bool _generating = false;
+  String? _genError;
+  List<Map<String, dynamic>> _generated = [];
 
   static const _cacheKey = 'body_shape';
+  static const _outfitCacheKey = 'body_shape_outfits_v1';
 
   /// 与后端 `outfit_recommender_3d.BODY_TYPE_IDEAL_FITS` 对齐的展示文案
   static const Map<String, List<String>> _idealFitHints = {
@@ -64,12 +70,58 @@ class _BodyShapeInsightScreenState extends State<BodyShapeInsightScreen> {
     return cached ?? <String, dynamic>{};
   }
 
-  void _openSettings() {
-    Navigator.of(context).push(
+  Future<void> _openSettings() async {
+    await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => const PersonalSettingsScreen(),
       ),
     );
+    if (!mounted) return;
+    setState(() {
+      _future = _loadProfile();
+    });
+  }
+
+  Future<void> _loadGeneratedOutfits() async {
+    final cached = await FeatureLocalStore.loadJson(_outfitCacheKey);
+    final raw = cached?['outfits'];
+    if (!mounted) return;
+    setState(() {
+      _generated = raw is List
+          ? raw
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e))
+              .toList()
+          : <Map<String, dynamic>>[];
+    });
+  }
+
+  Future<void> _generateOutfits(Map<String, dynamic> profile) async {
+    setState(() {
+      _generating = true;
+      _genError = null;
+    });
+    try {
+      final outfits = generateBodyShapeOutfits(profile,
+          seed: DateTime.now().millisecondsSinceEpoch);
+      await FeatureLocalStore.saveJson(_outfitCacheKey, {
+        'generated_at': DateTime.now().toIso8601String(),
+        'outfits': outfits,
+      });
+      if (!mounted) return;
+      setState(() {
+        _generated = outfits;
+        _generating = false;
+      });
+      showAppSnackBar(context, '已生成 3 套体型专属穿搭');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _generating = false;
+        _genError = userFacingApiError(e);
+      });
+      showAppSnackBar(context, '生成失败：${_genError ?? '未知错误'}');
+    }
   }
 
   @override
@@ -87,6 +139,10 @@ class _BodyShapeInsightScreenState extends State<BodyShapeInsightScreen> {
           final body = data != null && !data.containsKey('error')
               ? data
               : <String, dynamic>{};
+          // 首次进入时恢复上一次生成的结果（不阻塞主渲染）
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _generated.isEmpty) _loadGeneratedOutfits();
+          });
           final height = body['height'];
           final bt = body['body_type']?.toString() ?? '';
           final avoid = body['avoid_body_parts'];
@@ -362,10 +418,255 @@ class _BodyShapeInsightScreenState extends State<BodyShapeInsightScreen> {
                     padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
                 ),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: palette.cardBg,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: palette.divider),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.03),
+                        blurRadius: 14,
+                        offset: const Offset(0, 6),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.auto_awesome_outlined,
+                              size: 18, color: palette.primary),
+                          const SizedBox(width: 8),
+                          Text(
+                            '体型专属穿搭',
+                            style: TextStyle(
+                              color: palette.textTitle,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 14,
+                            ),
+                          ),
+                          const Spacer(),
+                          Text(
+                            '一次生成 3 套',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: palette.textBody.withValues(alpha: 0.8),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        '基于你的身高、体型与风格偏好，生成可直接执行的搭配方案；支持一键重新生成。',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: palette.textBody,
+                          height: 1.35,
+                        ),
+                      ),
+                      if (_genError != null &&
+                          _genError!.trim().isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: Colors.red.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: Colors.red.withValues(alpha: 0.18),
+                            ),
+                          ),
+                          child: Text(
+                            _genError!,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: palette.textBody,
+                              height: 1.35,
+                            ),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      FilledButton.icon(
+                        onPressed:
+                            _generating ? null : () => _generateOutfits(body),
+                        icon: _generating
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: Colors.white),
+                              )
+                            : const Icon(Icons.auto_awesome, size: 20),
+                        label: Text(_generating ? '生成中…' : '生成体型专属穿搭'),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: palette.primary,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                      ),
+                      if (_generated.isNotEmpty) ...[
+                        const SizedBox(height: 14),
+                        _BodyShapeOutfitResultList(
+                          outfits: _generated,
+                          bodyType: bt,
+                        ),
+                        const SizedBox(height: 10),
+                        OutlinedButton.icon(
+                          onPressed:
+                              _generating ? null : () => _generateOutfits(body),
+                          icon: const Icon(Icons.refresh_outlined, size: 20),
+                          label: const Text('重新生成'),
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
               ],
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+class _BodyShapeOutfitResultList extends StatelessWidget {
+  final List<Map<String, dynamic>> outfits;
+  final String bodyType;
+
+  const _BodyShapeOutfitResultList({
+    required this.outfits,
+    required this.bodyType,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (var i = 0; i < outfits.length; i++) ...[
+          _BodyShapeOutfitCard(
+            index: i + 1,
+            outfit: outfits[i],
+            bodyType: bodyType,
+          ),
+          if (i != outfits.length - 1) const SizedBox(height: 12),
+        ],
+      ],
+    );
+  }
+}
+
+class _BodyShapeOutfitCard extends StatelessWidget {
+  final int index;
+  final Map<String, dynamic> outfit;
+  final String bodyType;
+
+  const _BodyShapeOutfitCard({
+    required this.index,
+    required this.outfit,
+    required this.bodyType,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.watch<ThemeProvider>().palette;
+    final title = (outfit['title'] ?? '搭配 #$index').toString();
+    final explain = (outfit['fit_explain'] ?? '').toString();
+    final itemsRaw = outfit['items'];
+    final items = itemsRaw is List
+        ? itemsRaw.map((e) => e.toString()).toList()
+        : <String>[];
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: palette.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: palette.divider.withValues(alpha: 0.9)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: palette.primary.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  '推荐 #$index',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: palette.primary,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: palette.textTitle,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (items.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: items
+                  .map(
+                    (s) => Chip(
+                      label: Text(s, style: const TextStyle(fontSize: 12)),
+                      backgroundColor: palette.chipUnselectedBg,
+                      side: BorderSide(color: palette.divider),
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  )
+                  .toList(),
+            ),
+          ],
+          if (explain.trim().isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.check_circle_outline,
+                    size: 16, color: palette.successColor),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    explain,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: palette.textBody,
+                      height: 1.35,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
       ),
     );
   }
