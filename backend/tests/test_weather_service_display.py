@@ -2,7 +2,11 @@
 
 import pytest
 
-from app.services.weather_service import _display_address_after_route_filter, _is_route_like_road
+from app.services.weather_service import (
+    _display_address_after_route_filter,
+    _is_route_like_road,
+    _normalize_city_query,
+)
 
 
 @pytest.mark.parametrize(
@@ -43,3 +47,10 @@ def test_display_when_only_route_no_admin_fallback():
     p, c, d, s_out, full = _display_address_after_route_filter("", "", "", "山深线")
     assert s_out == "山深线"
     assert "山深线" in full
+
+
+def test_normalize_city_query_strips_cn_suffixes():
+    assert _normalize_city_query("郑州市") == "郑州"
+    assert _normalize_city_query("河南省郑州市") == "郑州"
+    assert _normalize_city_query("  郑州 市  ") == "郑州"
+    assert _normalize_city_query("香港特别行政区") == "香港"

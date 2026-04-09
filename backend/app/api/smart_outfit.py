@@ -79,7 +79,7 @@ async def get_weather_by_city(
     try:
         res = await fetch_weather_by_city_name(name)
         if not res:
-            raise HTTPException(status_code=404, detail="未找到城市")
+            raise HTTPException(status_code=404, detail="未找到该地区天气，请重试或换个地名")
         return {
             "city": res["city"],
             "province": res.get("province", ""),
@@ -100,7 +100,7 @@ async def get_weather_by_city(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(e),
+            detail=f"weather unavailable: {e}",
         )
 
 

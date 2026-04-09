@@ -17,6 +17,49 @@ NOMINATIM_UA = "ClothingAssistant/1.1 (weather; +https://github.com)"
 # 国道/省道/县道/高速及「某某线」等道路编号，逆地理常压在 street 上，对用户展示「省市区」更稳。
 _ROUTE_NAME_HINT = re.compile(r"(国道|省道|县道|乡道|高速公路|快速路|环线|绕城|高速|^[Gg]\d{1,4})")
 
+# 常见中文行政区后缀（用于 city 查询容错）
+_CN_ADMIN_SUFFIX = re.compile(r"(特别行政区|自治区|自治州|地区|盟|省|市|县|区|旗|镇|乡|街道)$")
+
+
+def _normalize_city_query(name: str) -> str:
+    """
+    归一化中文城市名查询：
+    - 去空白
+    - 去常见后缀（省/市/自治区/特别行政区等）
+    - 兼容“河南省郑州市”这类：取最后一级并去后缀
+    """
+    s = (name or "").strip()
+    if not s:
+        return ""
+    # 去掉所有空白（用户输入常见“郑州 市”）
+    s = re.sub(r"\s+", "", s)
+    # 去掉常见前缀“中华人民共和国/中国”
+    s = s.replace("中华人民共和国", "").replace("中国", "").strip()
+    # 若包含分隔符，取最后一级（省 市 城市）
+    for sep in (" ", "-", "·", "/", "\\", ",", "，"):
+        if sep in s:
+            parts = [p.strip() for p in s.split(sep) if p.strip()]
+            if parts:
+                s = parts[-1]
+    # 若是“河南省郑州市/新疆维吾尔自治区乌鲁木齐市”这类串联，取最后一级行政区名
+    for token in ("特别行政区", "自治区", "省"):
+        idx = s.rfind(token)
+        if idx >= 0:
+            tail = s[idx + len(token) :].strip()
+            if tail:
+                s = tail
+            else:
+                # “香港特别行政区”尾部无 tail，则取 token 前的主体
+                s = s[:idx].strip() or s
+            break
+    # 去末尾后缀（可能需要多次：如“郑州市”）
+    for _ in range(2):
+        s2 = _CN_ADMIN_SUFFIX.sub("", s).strip()
+        if s2 == s:
+            break
+        s = s2
+    return s
+
 
 def _is_route_like_road(street: str) -> bool:
     """判断是否为线路/国道类道路名（展示时可省略，避免「山深线」等掩盖真实区县感知）。"""
@@ -163,6 +206,36 @@ async def _nominatim_reverse(
         return None
 
 
+async def _nominatim_search_city(
+    client: httpx.AsyncClient, name: str
+) -> Optional[Tuple[float, float, str]]:
+    """
+    Nominatim 正向地理编码（按城市名搜索），返回 (lat, lon, display_name)。
+    仅作为 open-meteo search 无结果时的兜底。
+    """
+    q = _normalize_city_query(name)
+    if not q:
+        return None
+    url = (
+        "https://nominatim.openstreetmap.org/search"
+        f"?q={quote(q)}&format=json&limit=1&accept-language=zh-CN"
+    )
+    try:
+        res = await client.get(url, headers={"User-Agent": NOMINATIM_UA}, timeout=15.0)
+        res.raise_for_status()
+        arr = res.json() or []
+        if not isinstance(arr, list) or not arr:
+            return None
+        r0 = arr[0] or {}
+        lat = float(r0.get("lat"))
+        lon = float(r0.get("lon"))
+        dn = str(r0.get("display_name") or q).strip()
+        return lat, lon, dn[:240]
+    except Exception as e:
+        logger.warning(f"nominatim search failed: {e}")
+        return None
+
+
 async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, Any]:
     """
     高精度经纬度：Open-Meteo 逆地理 + 必要时 Nominatim 补全；**不在展示字段中出现经纬度数字**。
@@ -268,25 +341,59 @@ async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, 
 
 async def fetch_weather_by_city_name(name: str) -> Optional[Dict[str, Any]]:
     """按地名搜索，结构与 fetch_weather_lat_lon 一致。"""
-    q = name.strip()
+    q = (name or "").strip()
     if not q:
         return None
+    q_norm = _normalize_city_query(q)
     async with httpx.AsyncClient(timeout=25.0) as client:
-        geo_url = (
-            "https://geocoding-api.open-meteo.com/v1/search"
-            f"?name={quote(q)}&count=1&language=zh&format=json"
-        )
         try:
-            gr = await client.get(geo_url)
-            gr.raise_for_status()
-            gj = gr.json()
-            results = gj.get("results") or []
-            if not results:
-                return None
-            r0 = results[0]
-            lat = float(r0["latitude"])
-            lon = float(r0["longitude"])
-            cname = str(r0.get("name") or q).strip()
+            # 先用 open-meteo search（中文），无结果再尝试去后缀版本与英文兜底
+            candidates = [q, q_norm] if q_norm and q_norm != q else [q]
+            r0 = None
+            lat = lon = None
+            cname = ""
+            for cand in candidates:
+                geo_url = (
+                    "https://geocoding-api.open-meteo.com/v1/search"
+                    f"?name={quote(cand)}&count=1&language=zh&format=json"
+                )
+                gr = await client.get(geo_url)
+                gr.raise_for_status()
+                gj = gr.json()
+                results = gj.get("results") or []
+                if results:
+                    r0 = results[0]
+                    lat = float(r0["latitude"])
+                    lon = float(r0["longitude"])
+                    cname = str(r0.get("name") or cand).strip()
+                    break
+
+            # 英文兜底（部分城市中文拼写未命中时）
+            if r0 is None:
+                for cand in candidates:
+                    geo_url = (
+                        "https://geocoding-api.open-meteo.com/v1/search"
+                        f"?name={quote(cand)}&count=1&language=en&format=json"
+                    )
+                    gr = await client.get(geo_url)
+                    gr.raise_for_status()
+                    gj = gr.json()
+                    results = gj.get("results") or []
+                    if results:
+                        r0 = results[0]
+                        lat = float(r0["latitude"])
+                        lon = float(r0["longitude"])
+                        cname = str(r0.get("name") or cand).strip()
+                        break
+
+            # Nominatim 正向兜底（open-meteo search 全失败时）
+            if r0 is None:
+                nom_fwd = await _nominatim_search_city(client, q)
+                if not nom_fwd:
+                    return None
+                lat, lon, cname = nom_fwd
+                r0 = {}
+
             om_struct = _structured_from_open_meteo(r0)
             op, oc, od, os = om_struct
             line_om = _full_address_spaced([op, oc, od, os])

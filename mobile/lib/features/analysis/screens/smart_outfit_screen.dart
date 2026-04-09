@@ -88,15 +88,19 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
     super.dispose();
   }
 
-  /// Web：高精度；超时 25s（与天气接口一致，避免用户点「允许」稍慢即失败）；
-  /// maximumAge 允许浏览器复用数十秒内坐标，对城市级天气/逆地理仍足够准确。
-  LocationSettings _gpsLocationSettings() {
+  /// Web：高精度；超时 25s（与天气接口一致，避免用户点「允许」稍慢即失败）。
+  ///
+  /// 注意：浏览器可能返回“粗略位置”(approximate) 或复用缓存坐标。
+  /// 为提升精度，默认尽量拿“新鲜坐标”（maximumAge 很小），必要时再重试一次。
+  LocationSettings _gpsLocationSettings({bool preferFresh = true}) {
     if (kIsWeb) {
       return WebSettings(
         accuracy: LocationAccuracy.best,
         distanceFilter: 0,
         timeLimit: const Duration(seconds: 25),
-        maximumAge: const Duration(seconds: 45),
+        maximumAge: preferFresh
+            ? const Duration(seconds: 2)
+            : const Duration(seconds: 45),
       );
     }
     return const LocationSettings(
@@ -106,13 +110,28 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
     );
   }
 
+  bool _isPoorAccuracy(Position p) {
+    // accuracy 单位：米；> 500 通常是粗略定位（Wi‑Fi/IP 级）或权限未开“精确位置”
+    final a = p.accuracy;
+    return a.isNaN || a <= 0 || a > 500;
+  }
+
   Future<Position> _getCurrentPositionWithRetry() async {
     Object? last;
     for (var attempt = 0; attempt < 2; attempt++) {
       try {
-        return await Geolocator.getCurrentPosition(
-          locationSettings: _gpsLocationSettings(),
+        // 第一次尽量拿新鲜坐标；若精度仍很差，允许再等一次（浏览器/系统可能需要更多时间收敛）
+        final p = await Geolocator.getCurrentPosition(
+          locationSettings: _gpsLocationSettings(preferFresh: true),
         );
+        if (attempt == 0 && _isPoorAccuracy(p)) {
+          await Future.delayed(const Duration(milliseconds: 900));
+          final p2 = await Geolocator.getCurrentPosition(
+            locationSettings: _gpsLocationSettings(preferFresh: true),
+          );
+          return _isPoorAccuracy(p2) ? p : p2;
+        }
+        return p;
       } catch (e) {
         last = e;
         if (attempt < 1) {
@@ -205,12 +224,18 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
     String s = _fullAddressLine.trim();
     if (s.isEmpty) s = _displayAddress.trim();
     if (s.isEmpty) s = _cityShort.trim();
+    // 禁止显示占位符“当前位置”
+    if (s == '当前位置') {
+      if (_weatherLoading) return '正在解析地址…';
+      return '定位解析失败，请手动选择';
+    }
     if (s.startsWith('经纬度')) {
       return '未能解析详细地址，请使用手动选择';
     }
     if (s.isNotEmpty) return s;
     if (_weatherFallback) return '未获取到详细地址（已用默认天气）';
-    return '正在解析地址…';
+    if (_weatherLoading) return '正在解析地址…';
+    return '定位解析失败，请手动选择';
   }
 
   /// 生成接口 `location` 参数：完整地址，不用经纬度
@@ -285,6 +310,14 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
       }
 
       final pos = await _getCurrentPositionWithRetry();
+      if (mounted && _isPoorAccuracy(pos)) {
+        showAppSnackBar(
+          context,
+          '当前位置精度较低（≈${pos.accuracy.toStringAsFixed(0)}m）。'
+          '请在浏览器地址栏左侧「位置」权限中选择“精确位置”，或改用「手动选择地址」。',
+          backgroundColor: palette.textBody,
+        );
+      }
       final r = await api.getSmartOutfitWeather(pos.latitude, pos.longitude);
       if (r['error'] != null) {
         throw Exception('${r['error']}');
