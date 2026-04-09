@@ -14,6 +14,10 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     tf = None
 
+# Broken/namespace tensorflow import guard
+if tf is not None and not hasattr(tf, "keras"):  # pragma: no cover
+    tf = None
+
 from app.core.logging import setup_logging
 from app.ml.image_preprocessor import ImagePreprocessor
 from app.ml.model_loader import ModelLoader

@@ -10,12 +10,18 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.db.base import Base
-from app.db.session import get_db
-from app.main import app
+# Transformers may mis-detect a broken/namespace tensorflow and crash when checking tf.Tensor.
+# Force-disable TF integration for this test suite (we use torch-based paths).
+# NOTE: transformers computes availability at import time; USE_TORCH is respected there.
+os.environ.setdefault("USE_TORCH", "1")
+os.environ.setdefault("USE_TF", "0")
+
+from app.db.base import Base  # noqa: E402
+from app.db.session import get_db  # noqa: E402
+from app.main import app  # noqa: E402
 
 # Import all models to register them with Base.metadata
-from app.models import garment, outfit_collection, user, user_profile  # noqa: F401
+from app.models import garment, outfit_collection, user, user_profile  # noqa: F401,E402
 
 # Use a temp file for test DB so Windows doesn't lock it between runs
 _test_db_fd, TEST_DB_PATH = tempfile.mkstemp(suffix=".db")

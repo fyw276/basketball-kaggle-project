@@ -14,7 +14,7 @@ from app.services.auth import hash_password, verify_password
 
 
 def test_password_encryption():
-    """Test that passwords are encrypted using bcrypt"""
+    """Test that passwords are encrypted (pbkdf2_sha256 by default)"""
     plain_password = "SecurePassword123!"
 
     # Hash password
@@ -23,8 +23,8 @@ def test_password_encryption():
     # Verify hash is different from plain text
     assert hashed != plain_password
 
-    # Verify hash starts with bcrypt identifier
-    assert hashed.startswith("$2b$")
+    # Verify hash starts with pbkdf2 identifier
+    assert hashed.startswith("$pbkdf2-sha256$")
 
     # Verify password can be verified
     assert verify_password(plain_password, hashed)

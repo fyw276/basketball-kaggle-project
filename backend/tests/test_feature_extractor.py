@@ -182,8 +182,9 @@ class TestFeatureExtractor:
         features1 = extractor.extract(image1)
         features2 = extractor.extract(image2)
 
-        # Features should be different
-        assert not np.allclose(features1, features2, atol=0.1)
+        # Features should be different (use cosine similarity for L2-normalized vectors)
+        similarity = float(np.dot(features1, features2))
+        assert similarity < 0.99
 
         # But both should be normalized
         assert np.isclose(np.linalg.norm(features1), 1.0, atol=1e-5)

@@ -338,8 +338,8 @@ class TestPasswordSecurity:
 
         assert hashed != password
         assert len(hashed) > 0
-        # Bcrypt hashes start with $2b$
-        assert hashed.startswith("$2b$")
+        # Project prefers pbkdf2 to avoid passlib+bcrypt backend compatibility issues.
+        assert hashed.startswith("$pbkdf2-sha256$")
 
     def test_password_verification_correct(self):
         """Test password verification with correct password"""

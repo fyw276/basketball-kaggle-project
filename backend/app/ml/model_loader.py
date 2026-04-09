@@ -12,6 +12,12 @@ except Exception:  # pragma: no cover - optional dependency
     tf = None
     MobileNetV2 = None
 
+# Some environments may have a broken/namespace `tensorflow` import (e.g. leftover folder),
+# which lacks `keras`/`Tensor` and will crash at runtime. Treat it as unavailable.
+if tf is not None and not hasattr(tf, "keras"):  # pragma: no cover
+    tf = None
+    MobileNetV2 = None
+
 from app.core.logging import setup_logging
 
 logger = setup_logging()
@@ -25,10 +31,49 @@ class _FallbackFeatureModel:
     trainable = False
 
     def predict(self, preprocessed, verbose=0):
+        """
+        Produce a cheap, deterministic 1280-d feature vector from image pixels.
+
+        This keeps similarity/normalization logic meaningful even without TensorFlow.
+        Input is expected to be a numpy array shaped (B, H, W, 3).
+        """
         import numpy as np
 
-        batch = getattr(preprocessed, "shape", [1])[0] or 1
-        return np.zeros((batch, 1280), dtype=float)
+        x = np.asarray(preprocessed)
+        if x.ndim == 3:
+            x = x[None, ...]
+        b, h, w, c = x.shape
+        if c != 3:
+            x = x[..., :3]
+
+        # Ensure float32 in [0, 1] where possible.
+        xf = x.astype(np.float32, copy=False)
+        if xf.max() > 1.5:
+            xf = xf / 255.0
+
+        # Downsample to 20x20 then flatten: 20*20*3 = 1200 dims
+        # Simple mean pooling without external deps.
+        target_h, target_w = 20, 20
+        sh = max(1, h // target_h)
+        sw = max(1, w // target_w)
+        pooled = (
+            xf[:, : target_h * sh, : target_w * sw, :]
+            .reshape(b, target_h, sh, target_w, sw, 3)
+            .mean(axis=(2, 4))
+        )
+        flat = pooled.reshape(b, -1)  # (b, 1200)
+
+        # Add 80 dims of simple stats to reach 1280.
+        mean = xf.mean(axis=(1, 2))  # (b, 3)
+        std = xf.std(axis=(1, 2))  # (b, 3)
+        mins = xf.min(axis=(1, 2))
+        maxs = xf.max(axis=(1, 2))
+        stats = np.concatenate([mean, std, mins, maxs], axis=1)  # (b, 12)
+        # Repeat/pad deterministically
+        reps = int(np.ceil(80 / stats.shape[1]))
+        stats80 = np.tile(stats, (1, reps))[:, :80]
+
+        return np.concatenate([flat, stats80], axis=1)
 
     def count_params(self):
         return 0
