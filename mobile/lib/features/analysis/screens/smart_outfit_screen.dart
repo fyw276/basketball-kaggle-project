@@ -200,9 +200,92 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
   }
 
   void _applyWeatherPayload(Map<String, dynamic> r, {required bool fallback}) {
-    final full = (r['full_address'] ?? r['display_address'])?.toString().trim();
-    final disp = r['display_address']?.toString().trim();
-    final city = r['city']?.toString().trim();
+    String ensureSuffix(String s, String kind) {
+      var t = s.trim();
+      if (t.isEmpty) return '';
+      if (kind == 'province') {
+        if (t.endsWith('省') || t.endsWith('自治区') || t.endsWith('特别行政区'))
+          return t;
+        if (t == '北京' || t == '上海' || t == '天津' || t == '重庆') return '$t市';
+        return '$t省';
+      }
+      if (kind == 'city') {
+        if (t.endsWith('市') ||
+            t.endsWith('自治州') ||
+            t.endsWith('地区') ||
+            t.endsWith('盟')) return t;
+        return '$t市';
+      }
+      if (kind == 'district') {
+        if (t.endsWith('区') ||
+            t.endsWith('县') ||
+            t.endsWith('市') ||
+            t.endsWith('旗')) return t;
+        return '$t区';
+      }
+      return t;
+    }
+
+    String base(String s) {
+      var t = s.trim();
+      for (final suf in [
+        '特别行政区',
+        '自治区',
+        '自治州',
+        '地区',
+        '盟',
+        '省',
+        '市',
+        '县',
+        '区',
+        '旗',
+        '镇',
+        '乡',
+        '街道'
+      ]) {
+        if (t.endsWith(suf) && t.length > suf.length) {
+          return t.substring(0, t.length - suf.length);
+        }
+      }
+      return t;
+    }
+
+    String formatLine(String p, String c, String d, String s) {
+      final parts =
+          [p, c, d, s].map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+      final out = <String>[];
+      final seen = <String>{};
+      for (final part in parts) {
+        final b = base(part);
+        if (b.isEmpty || seen.contains(b)) continue;
+        seen.add(b);
+        out.add(part);
+      }
+      return out.join(' ');
+    }
+
+    final rp = (r['province'] ?? '').toString().trim();
+    final rc = (r['addr_city'] ?? '').toString().trim();
+    final rd = (r['district'] ?? '').toString().trim();
+    final rs = (r['street'] ?? '').toString().trim();
+    var p = ensureSuffix(rp, 'province');
+    var c = ensureSuffix(rc, 'city');
+    var d = rd.isNotEmpty ? ensureSuffix(rd, 'district') : '';
+    var s = rs;
+
+    // 禁止重复：区/街道 不允许复用市名
+    if (base(d) == base(c)) d = '';
+    if (base(s) == base(c) || base(s) == base(d)) s = '';
+
+    final formatted = formatLine(p, c, d, s);
+
+    final full = formatted.isNotEmpty
+        ? formatted
+        : (r['full_address'] ?? r['display_address'])?.toString().trim();
+    final disp = formatted.isNotEmpty
+        ? formatted
+        : r['display_address']?.toString().trim();
+    final city = (c.isNotEmpty ? c : r['city']?.toString().trim());
     setState(() {
       _fullAddressLine =
           (full != null && full.isNotEmpty) ? full : (disp ?? '');

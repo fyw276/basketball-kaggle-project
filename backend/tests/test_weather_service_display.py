@@ -4,7 +4,9 @@ import pytest
 
 from app.services.weather_service import (
     _display_address_after_route_filter,
+    _format_full_address,
     _is_route_like_road,
+    _normalize_admin_parts,
     _normalize_city_query,
 )
 
@@ -54,3 +56,11 @@ def test_normalize_city_query_strips_cn_suffixes():
     assert _normalize_city_query("河南省郑州市") == "郑州"
     assert _normalize_city_query("  郑州 市  ") == "郑州"
     assert _normalize_city_query("香港特别行政区") == "香港"
+
+
+def test_normalize_admin_parts_dedup_city_district():
+    p, c, d, s = _normalize_admin_parts("河南", "郑州", "郑州", "")
+    assert p == "河南省"
+    assert c == "郑州市"
+    assert d == ""
+    assert _format_full_address(p, c, d, s) == "河南省 郑州市"

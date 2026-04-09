@@ -20,6 +20,11 @@ _ROUTE_NAME_HINT = re.compile(r"(国道|省道|县道|乡道|高速公路|快速
 # 常见中文行政区后缀（用于 city 查询容错）
 _CN_ADMIN_SUFFIX = re.compile(r"(特别行政区|自治区|自治州|地区|盟|省|市|县|区|旗|镇|乡|街道)$")
 
+# 行政区常见后缀（用于“是否已带后缀”的判断）
+_CN_PROVINCE_SUFFIX = ("省", "自治区", "特别行政区")
+_CN_CITY_SUFFIX = ("市", "自治州", "地区", "盟")
+_CN_DISTRICT_SUFFIX = ("区", "县", "市", "旗")
+
 
 def _normalize_city_query(name: str) -> str:
     """
@@ -59,6 +64,84 @@ def _normalize_city_query(name: str) -> str:
             break
         s = s2
     return s
+
+
+def _ensure_suffix(part: str, kind: str) -> str:
+    """
+    为省/市/区字段补全常见后缀。
+    kind: province | city | district
+    """
+    s = (part or "").strip()
+    if not s:
+        return ""
+    if kind == "province":
+        if any(s.endswith(x) for x in _CN_PROVINCE_SUFFIX):
+            return s
+        if s in ("北京", "上海", "天津", "重庆"):
+            return s + "市"
+        return s + "省"
+    if kind == "city":
+        if any(s.endswith(x) for x in _CN_CITY_SUFFIX):
+            return s
+        return s + "市"
+    if kind == "district":
+        if any(s.endswith(x) for x in _CN_DISTRICT_SUFFIX):
+            return s
+        return s + "区"
+    return s
+
+
+def _normalize_admin_parts(
+    province: str, city: str, district: str, street: str
+) -> Tuple[str, str, str, str]:
+    """
+    严格清洗省/市/区/街道：
+    - 禁止字段重复（如 district==city）
+    - 禁止用市名填充区/街道
+    - 补全省/市/区后缀（不强行修改 street，避免误加“街道”）
+    """
+    p = (province or "").strip()
+    c = (city or "").strip()
+    d = (district or "").strip()
+    s = (street or "").strip()
+
+    def _base(x: str) -> str:
+        return _CN_ADMIN_SUFFIX.sub("", (x or "").strip())
+
+    bp, bc, bd, bs = _base(p), _base(c), _base(d), _base(s)
+
+    if bd and (bd == bc or bd == bp):
+        d = ""
+        bd = ""
+    if bs and (bs == bd or bs == bc or bs == bp):
+        s = ""
+
+    p2 = _ensure_suffix(p, "province")
+    c2 = _ensure_suffix(c, "city")
+    d2 = _ensure_suffix(d, "district") if d else ""
+
+    if d2 and _base(d2) == _base(c2):
+        d2 = ""
+    if s and _base(s) in (_base(d2), _base(c2), _base(p2)):
+        s = ""
+
+    return p2, c2, d2, s
+
+
+def _format_full_address(province: str, city: str, district: str, street: str) -> str:
+    """统一展示格式：省 市 区 街道（空段剔除，且按 base 去重）。"""
+    out: List[str] = []
+    seen: set[str] = set()
+    for part in (province, city, district, street):
+        t = (part or "").strip()
+        if not t:
+            continue
+        b = _CN_ADMIN_SUFFIX.sub("", t)
+        if not b or b in seen:
+            continue
+        seen.add(b)
+        out.append(t)
+    return _full_address_spaced(out)
 
 
 def _is_route_like_road(street: str) -> bool:
@@ -308,7 +391,9 @@ async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, 
         if not full_line.strip():
             full_line = "未能解析详细地址，请点击「手动选择地址」"
 
-        p, c, d, s, full_line = _display_address_after_route_filter(p, c, d, s)
+        p, c, d, s = _normalize_admin_parts(p, c, d, s)
+        p, c, d, s, _ = _display_address_after_route_filter(p, c, d, s)
+        full_line = _format_full_address(p, c, d, s) or full_line
 
         wx_url = (
             "https://api.open-meteo.com/v1/forecast"
@@ -322,6 +407,8 @@ async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, 
         temp = float(cur.get("temperature_2m", 20.0))
         code = int(cur.get("weather_code", 0))
         wcn = wmo_to_cn(code)
+
+        city_short = c or city_short
 
         return {
             "city": city_short,
@@ -414,7 +501,10 @@ async def fetch_weather_by_city_name(name: str) -> Optional[Dict[str, Any]]:
                     full_line = nline
             if not full_line.strip():
                 full_line = cname or "未能解析详细地址，请重新选择"
-            p, c, d, s, full_line = _display_address_after_route_filter(p, c, d, s)
+
+            p, c, d, s = _normalize_admin_parts(p, c, d, s)
+            p, c, d, s, _ = _display_address_after_route_filter(p, c, d, s)
+            full_line = _format_full_address(p, c, d, s) or full_line
         except Exception as e:
             logger.warning(f"city geocode failed: {e}")
             return None
