@@ -51,7 +51,11 @@ class FeatureExtractor:
             self.cache = None
 
         # Load the feature extraction model
-        self.model = self.model_loader.load_feature_extractor()
+        try:
+            self.model = self.model_loader.load_feature_extractor()
+        except Exception as e:
+            logger.warning("Feature model unavailable, using zero-vector fallback: %s", e)
+            self.model = None
 
         # Thread pool for async operations
         self._executor = ThreadPoolExecutor(max_workers=4)
@@ -86,6 +90,9 @@ class FeatureExtractor:
         preprocessed = self.preprocessor.preprocess_single(image_source)
 
         # Extract features
+        if self.model is None:
+            return np.zeros(1280, dtype=float)
+
         features = self.model.predict(preprocessed, verbose=0)
 
         # L2 normalization

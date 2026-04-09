@@ -4,6 +4,7 @@ import 'package:image_picker/image_picker.dart';
 import 'dart:typed_data';
 import 'package:provider/provider.dart';
 import '../../../core/services/api_client.dart';
+import '../../../core/providers/auth_provider.dart';
 import '../../../core/utils/app_snackbar.dart';
 import '../../../core/providers/theme_provider.dart';
 import '../../../core/theme/style_tokens.dart';
@@ -18,8 +19,9 @@ class OutfitScreen extends StatefulWidget {
 }
 
 class _OutfitScreenState extends State<OutfitScreen> {
-  final _apiClient = ApiClient();
   final _imagePicker = ImagePicker();
+
+  ApiClient get _apiClient => context.read<AuthProvider>().apiClient;
 
   XFile? _selectedImage;
   bool _isGenerating = false;

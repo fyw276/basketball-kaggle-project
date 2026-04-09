@@ -7,7 +7,7 @@ import sys
 import requests
 
 # Configuration
-BASE_URL = "http://localhost:8000/api/v1"
+BASE_URL = "http://127.0.0.1:8010/api/v1"
 
 
 def test_simple_api():

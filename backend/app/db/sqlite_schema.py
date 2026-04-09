@@ -5,9 +5,41 @@ SQLite 开发库轻量补丁：模型新增列后，旧表不会自动变更，�
 - 新增 gender_expression, explore_cross_gender (user_profiles)
 """
 
-from loguru import logger
+import logging
+
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
+
+try:
+    from loguru import logger as _loguru_logger
+except Exception:  # pragma: no cover - optional dependency
+    _loguru_logger = None
+
+
+class _CompatLogger:
+    def __init__(self):
+        self._std = logging.getLogger("sqlite_schema")
+
+    def warning(self, msg, *args):
+        if _loguru_logger is not None:
+            _loguru_logger.warning(msg, *args)
+        else:
+            self._std.warning(msg.replace("{}", "%s"), *args)
+
+    def info(self, msg, *args):
+        if _loguru_logger is not None:
+            _loguru_logger.info(msg, *args)
+        else:
+            self._std.info(msg.replace("{}", "%s"), *args)
+
+    def error(self, msg, *args):
+        if _loguru_logger is not None:
+            _loguru_logger.error(msg, *args)
+        else:
+            self._std.error(msg.replace("{}", "%s"), *args)
+
+
+logger = _CompatLogger()
 
 # (表名, 列名, ALTER 语句片段) — 仅当表中不存在该列时执行
 _GARMENTS_SQLITE_PATCHES: list[tuple[str, str]] = [
@@ -57,7 +89,6 @@ def apply_sqlite_schema_patches(engine: Engine) -> None:
             logger.error("SQLite 补丁失败 ({}): {}", col_name, e)
             raise
 
-    # user_profiles 表补丁
     if not insp.has_table("user_profiles"):
         return
 

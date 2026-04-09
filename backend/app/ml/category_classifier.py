@@ -3,17 +3,32 @@ Category classification for garment images using MobileNetV2
 """
 
 from pathlib import Path
-from typing import Tuple, Union
+from typing import Any, Tuple, Union
 
 import numpy as np
-import tensorflow as tf
 from PIL import Image
+
+try:
+    import tensorflow as tf
+except Exception:  # pragma: no cover - optional dependency
+    tf = None
 
 from app.core.logging import setup_logging
 from app.ml.image_preprocessor import ImagePreprocessor
 from app.ml.model_loader import ModelLoader
 
 logger = setup_logging()
+
+
+class _FallbackCategoryModel:
+    def predict(self, preprocessed, verbose=0):
+        import numpy as np
+
+        batch = getattr(preprocessed, "shape", [1])[0] or 1
+        preds = np.zeros((batch, 1000), dtype=float)
+        preds[:, 0] = 1.0
+        return preds
+
 
 # 6 garment categories as specified in requirements
 GARMENT_CATEGORIES = {
@@ -59,14 +74,18 @@ class CategoryClassifier:
 
         logger.info(f"CategoryClassifier initialized with threshold={confidence_threshold}")
 
-    def _load_classification_model(self) -> tf.keras.Model:
+    def _load_classification_model(self) -> Any:
         """
         Load MobileNetV2 with classification head
 
         Returns:
-            tf.keras.Model: Classification model
+            Classification model
         """
         logger.info("Loading MobileNetV2 classification model")
+
+        if tf is None:
+            logger.warning("TensorFlow unavailable; using fallback category model")
+            return _FallbackCategoryModel()
 
         # Load MobileNetV2 with ImageNet classification head
         model = tf.keras.applications.MobileNetV2(

@@ -73,11 +73,31 @@ async def _app_lifespan(app: FastAPI):
             e,
         )
 
+    try:
+        from app.services.external_enhance_client import (
+            get_external_enhance_status,
+            probe_external_enhance,
+        )
+
+        ok, reason = probe_external_enhance(timeout_ms=settings.EXTERNAL_INFER_TIMEOUT_MS)
+        if ok:
+            logger.info("External enhancement ready: %s", reason)
+        else:
+            logger.warning("External enhancement degraded to local-only: %s", reason)
+        status_ok, status_reason = get_external_enhance_status()
+        logger.info(
+            "External enhancement status: enabled=%s reason=%s",
+            status_ok,
+            status_reason,
+        )
+    except Exception as e:
+        logger.warning("External enhancement probe skipped due to error: %s", e)
+
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
     logger.info(f"Debug mode: {settings.DEBUG}")
     logger.info(
-        "CORS: {}",
+        "CORS: %s",
         (
             "宽松（本机 localhost/127.0.0.1 任意端口，回显 Origin）"
             if _cors_permissive

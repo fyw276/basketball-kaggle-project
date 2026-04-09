@@ -704,6 +704,95 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
       body: Column(
         children: [
           Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+            child: Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    palette.surface.withValues(alpha: 0.96),
+                    palette.primary.withValues(alpha: 0.06),
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(18),
+                border:
+                    Border.all(color: palette.divider.withValues(alpha: 0.9)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.03),
+                    blurRadius: 14,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.checkroom_outlined,
+                          color: palette.primary, size: 18),
+                      const SizedBox(width: 8),
+                      Text(
+                        '衣橱概览',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: palette.textTitle,
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        '共 ${_items.length} 件',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: palette.primary,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    '在这里管理你的单品，快速添加、整套拆分，或者拖到左侧分类栏进行整理。',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: palette.textBody,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      _WardrobeActionChip(
+                        label: '添加单品',
+                        icon: Icons.add_photo_alternate_outlined,
+                        color: Colors.blue,
+                        onTap: _openAdd,
+                      ),
+                      _WardrobeActionChip(
+                        label: '整套拆分',
+                        icon: Icons.view_comfy_alt_outlined,
+                        color: Colors.green,
+                        onTap: _openSplitUpload,
+                      ),
+                      _WardrobeActionChip(
+                        label: '切换编辑',
+                        icon: Icons.drag_indicator_outlined,
+                        color: Colors.orange,
+                        onTap: () => setState(() => _editMode = !_editMode),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
             child: TextField(
               controller: _searchCtrl,
@@ -738,6 +827,35 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                 contentPadding:
                     const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Row(
+              children: [
+                _WardrobeStatPill(
+                  label: '全部',
+                  value: _items.length.toString(),
+                  color: palette.primary,
+                ),
+                const SizedBox(width: 8),
+                _WardrobeStatPill(
+                  label: '当前筛选',
+                  value: filtered.length.toString(),
+                  color: palette.secondary,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _editMode ? '编辑模式：长按拖动可调整分类，底部可删除' : '浏览模式：点左侧分类快速筛选衣物',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: palette.textBody,
+                      height: 1.35,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
           Expanded(
@@ -921,6 +1039,98 @@ class _Cat {
   final String name;
   final IconData icon;
   _Cat(this.name, this.icon);
+}
+
+class _WardrobeActionChip extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _WardrobeActionChip({
+    required this.label,
+    required this.icon,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(999),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: color.withValues(alpha: 0.18)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16, color: color),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: color.withValues(alpha: 0.95),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _WardrobeStatPill extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+
+  const _WardrobeStatPill({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(right: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              color: color.withValues(alpha: 0.85),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 12,
+              color: color,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _GarmentCard extends StatelessWidget {

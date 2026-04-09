@@ -15,7 +15,10 @@ import pandas as pd
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
-from app.services.external_enhance_client import call_external_enhance
+from app.services.external_enhance_client import (
+    call_external_enhance,
+    is_external_enhance_available,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -115,6 +118,7 @@ def predict_impl(body: PredictRequest) -> PredictResponse:
     should_enhance = (
         settings.HYBRID_INFERENCE_ENABLED
         and settings.EXTERNAL_ENHANCE_ENABLED
+        and is_external_enhance_available()
         and confidence < settings.HIGH_CONF_THRESHOLD
         and trigger_reason is not None
     )

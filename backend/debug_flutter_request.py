@@ -16,7 +16,7 @@ def test_register_with_details():
     print("测试注册 API")
     print("=" * 60)
 
-    url = "http://localhost:8000/api/v1/auth/register"
+    url = "http://127.0.0.1:8010/api/v1/auth/register"
 
     # 测试 1: 正常请求
     print("\n1. 正常请求:")
@@ -85,7 +85,7 @@ def test_login_with_details():
     print("测试登录 API")
     print("=" * 60)
 
-    url = "http://localhost:8000/api/v1/auth/login"
+    url = "http://127.0.0.1:8010/api/v1/auth/login"
 
     # 测试 1: 用户不存在
     print("\n1. 用户不存在 (应该返回 401):")

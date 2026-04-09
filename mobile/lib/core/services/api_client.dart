@@ -141,7 +141,7 @@ class ApiClient {
     }
   }
 
-  /// AI 穿搭风格分：`POST /predict`（默认 `127.0.0.1:8765`，与 `backend.main` 一致）。
+  /// AI 穿搭风格分：`POST /predict`（默认 `127.0.0.1:8010`，与当前后端主服务一致）。
   ///
   /// 成功时含 `score`、`recommendations`、`explanation`；失败时含 `error`。
   Future<Map<String, dynamic>> predictOutfitStyle(
@@ -640,8 +640,12 @@ class ApiClient {
       var errMsg = 'Virtual try-on failed with status: ${response.statusCode}';
       try {
         final body = json.decode(response.body);
-        if (body is Map && body['detail'] != null) {
-          errMsg = body['detail'].toString();
+        if (body is Map) {
+          if (body['detail'] != null) {
+            errMsg = body['detail'].toString();
+          } else if (body['error'] is Map && body['error']['message'] != null) {
+            errMsg = body['error']['message'].toString();
+          }
         }
       } catch (_) {}
       return {'error': errMsg};

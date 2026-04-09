@@ -8,11 +8,20 @@ from typing import Optional
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from passlib.hash import pbkdf2_sha256
+
+try:
+    import bcrypt as _bcrypt
+except Exception:  # pragma: no cover
+    _bcrypt = None
 
 from app.core.config import settings
 
 # Password hashing context
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(
+    schemes=["pbkdf2_sha256", "bcrypt"],
+    deprecated="auto",
+)
 
 
 def hash_password(password: str) -> str:
@@ -25,7 +34,8 @@ def hash_password(password: str) -> str:
     Returns:
         Hashed password
     """
-    return pwd_context.hash(password)
+    # Prefer pbkdf2 to avoid passlib+bcrypt backend compatibility issues.
+    return pbkdf2_sha256.hash(password)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -39,7 +49,18 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     Returns:
         True if password matches, False otherwise
     """
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        if hashed_password.startswith("$2"):
+            if _bcrypt is None:
+                return False
+            return _bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+
+        if hashed_password.startswith("$pbkdf2-sha256$"):
+            return pbkdf2_sha256.verify(plain_password, hashed_password)
+
+        return pwd_context.verify(plain_password, hashed_password)
+    except Exception:
+        return False
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:

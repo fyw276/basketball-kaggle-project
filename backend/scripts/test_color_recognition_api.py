@@ -28,7 +28,7 @@ def create_test_image(color_rgb: tuple, size: tuple = (200, 200)) -> bytes:
 
 async def test_color_recognition_endpoint():
     """Test the color recognition API endpoint"""
-    base_url = "http://localhost:8000"
+    base_url = "http://127.0.0.1:8010"
     endpoint = f"{base_url}/api/v1/recognition/colors"
 
     # Test cases: (RGB, Expected Color Name)
@@ -99,7 +99,7 @@ if __name__ == "__main__":
     import asyncio
 
     print("Starting color recognition API test...")
-    print("Make sure the FastAPI server is running on http://localhost:8000")
+    print("Make sure the FastAPI server is running on http://127.0.0.1:8010")
     print()
 
     try:

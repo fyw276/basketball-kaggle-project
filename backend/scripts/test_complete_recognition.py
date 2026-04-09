@@ -102,7 +102,7 @@ def test_api_endpoint():
         # Check if server is running
         print("\n1. Checking if server is running...")
         try:
-            response = requests.get("http://localhost:8000/health", timeout=2)
+            response = requests.get("http://127.0.0.1:8010/health", timeout=2)
             if response.status_code == 200:
                 print("   ✓ Server is running")
             else:
@@ -128,7 +128,7 @@ def test_api_endpoint():
         # Send request
         print("\n3. Sending POST request to /api/v1/recognition/analyze...")
         files = {"file": ("test.png", img_bytes, "image/png")}
-        response = requests.post("http://localhost:8000/api/v1/recognition/analyze", files=files)
+        response = requests.post("http://127.0.0.1:8010/api/v1/recognition/analyze", files=files)
 
         if response.status_code == 200:
             print("   ✓ Request successful (200 OK)")

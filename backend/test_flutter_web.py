@@ -22,7 +22,7 @@ def test_health_check():
     """测试健康检查端点"""
     print_section("1. 健康检查")
     try:
-        response = requests.get("http://localhost:8000/health")
+        response = requests.get("http://127.0.0.1:8010/health")
         print(f"✅ 状态码: {response.status_code}")
         print(f"✅ 响应: {json.dumps(response.json(), indent=2, ensure_ascii=False)}")
         return True
@@ -43,7 +43,7 @@ def test_register():
 
     try:
         response = requests.post(
-            "http://localhost:8000/api/v1/auth/register",
+            "http://127.0.0.1:8010/api/v1/auth/register",
             json={"username": username, "email": email, "password": password},
             headers={"Content-Type": "application/json"},
         )
@@ -72,7 +72,7 @@ def test_login(username, password):
 
     try:
         response = requests.post(
-            "http://localhost:8000/api/v1/auth/login",
+            "http://127.0.0.1:8010/api/v1/auth/login",
             json={"username": username, "password": password},
             headers={"Content-Type": "application/json"},
         )
@@ -100,7 +100,7 @@ def test_authenticated_request(token):
 
     try:
         response = requests.get(
-            "http://localhost:8000/api/v1/users/me",
+            "http://127.0.0.1:8010/api/v1/users/me",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         )
 
@@ -128,7 +128,7 @@ def test_cors():
     try:
         # 模拟来自 Flutter Web 的请求
         response = requests.options(
-            "http://localhost:8000/api/v1/auth/login",
+            "http://127.0.0.1:8010/api/v1/auth/login",
             headers={
                 "Origin": "http://localhost:50850",
                 "Access-Control-Request-Method": "POST",

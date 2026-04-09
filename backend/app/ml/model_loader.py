@@ -3,14 +3,35 @@ Model loader for MobileNetV2 pretrained model
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-import tensorflow as tf
-from tensorflow.keras.applications import MobileNetV2
+try:
+    import tensorflow as tf
+    from tensorflow.keras.applications import MobileNetV2
+except Exception:  # pragma: no cover - optional dependency
+    tf = None
+    MobileNetV2 = None
 
 from app.core.logging import setup_logging
 
 logger = setup_logging()
+
+
+class _FallbackFeatureModel:
+    """Fallback model used when tensorflow is unavailable."""
+
+    input_shape = (224, 224, 3)
+    output_shape = (None, 1280)
+    trainable = False
+
+    def predict(self, preprocessed, verbose=0):
+        import numpy as np
+
+        batch = getattr(preprocessed, "shape", [1])[0] or 1
+        return np.zeros((batch, 1280), dtype=float)
+
+    def count_params(self):
+        return 0
 
 
 class ModelLoader:
@@ -31,13 +52,13 @@ class ModelLoader:
         self.model_dir = Path(model_dir)
         self.model_dir.mkdir(parents=True, exist_ok=True)
 
-        self._feature_extractor_model: Optional[tf.keras.Model] = None
+        self._feature_extractor_model: Optional[Any] = None
 
         logger.info(f"ModelLoader initialized with model_dir: {self.model_dir}")
 
     def load_feature_extractor(
         self, input_shape: tuple = (224, 224, 3), weights: str = "imagenet"
-    ) -> tf.keras.Model:
+    ) -> Any:
         """
         Load MobileNetV2 as feature extractor
 
@@ -46,10 +67,15 @@ class ModelLoader:
             weights: Pretrained weights to use ('imagenet' or None)
 
         Returns:
-            tf.keras.Model: MobileNetV2 model for feature extraction
+            MobileNetV2 model for feature extraction
         """
         if self._feature_extractor_model is not None:
             logger.info("Returning cached feature extractor model")
+            return self._feature_extractor_model
+
+        if tf is None or MobileNetV2 is None:
+            logger.warning("TensorFlow unavailable; using fallback feature model")
+            self._feature_extractor_model = _FallbackFeatureModel()
             return self._feature_extractor_model
 
         logger.info(
@@ -108,4 +134,5 @@ class ModelLoader:
             logger.info("Clearing cached feature extractor model")
             del self._feature_extractor_model
             self._feature_extractor_model = None
-            tf.keras.backend.clear_session()
+            if tf is not None:
+                tf.keras.backend.clear_session()

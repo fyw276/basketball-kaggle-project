@@ -191,7 +191,7 @@ def main():
         print("\n✅ 所有检查通过！后端配置正确。")
         print("\n下一步:")
         print("  1. 启动服务: python run.py")
-        print("  2. 访问文档: http://localhost:8000/docs")
+        print("  2. 访问文档: http://127.0.0.1:8010/docs")
         print("  3. 运行测试: pytest -v")
         return 0
     else:

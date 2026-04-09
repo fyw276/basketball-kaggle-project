@@ -70,7 +70,7 @@ MODEL_PATH=../models
 MODEL_CACHE_SIZE=1000
 
 # CORS
-CORS_ORIGINS=http://localhost:3000,http://localhost:8080,http://localhost:8000
+CORS_ORIGINS=http://localhost:3000,http://localhost:8080,http://127.0.0.1:8010
 
 # Logging
 LOG_LEVEL=INFO
@@ -158,7 +158,7 @@ RATE_LIMIT_PER_MINUTE=60
     print()
     print("下一步:")
     print("1. 重启后端服务: python run.py")
-    print("2. 访问 Swagger UI: http://localhost:8000/docs")
+    print("2. 访问 Swagger UI: http://127.0.0.1:8010/docs")
     print("3. 尝试注册新用户")
     print()
     print("注意:")

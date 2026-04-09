@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:ui' as ui;
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import '../../../core/providers/auth_provider.dart';
@@ -21,6 +22,7 @@ class VirtualTryonScreen extends StatefulWidget {
 
 class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
   XFile? _garmentImage;
+  String? _garmentQualityHint;
   // 人物多视角：正面必填，侧面/背面可选
   XFile? _personFront;
   XFile? _personSide;
@@ -58,7 +60,17 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
   Future<void> _pickGarment() async {
     final picker = ImagePicker();
     final img = await picker.pickImage(source: ImageSource.gallery);
-    if (img != null) setState(() => _garmentImage = img);
+    if (img != null) {
+      setState(() {
+        _garmentImage = img;
+        _garmentQualityHint = '正在评估衣服图是否适合试衣...';
+      });
+      final hint = await _evaluateGarmentQuality(img);
+      if (!mounted) return;
+      setState(() {
+        _garmentQualityHint = hint;
+      });
+    }
   }
 
   Future<void> _pickPerson() async {
@@ -99,6 +111,14 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
       return;
     }
 
+    final precheckError = await _precheckTryOnInputs();
+    if (precheckError != null) {
+      if (mounted) {
+        showAppSnackBar(context, precheckError);
+      }
+      return;
+    }
+
     // 新生成时清空旧结果与本地缓存，避免“看起来没对应/还是旧图”的错觉
     FeatureLocalStore.saveJson(_cacheKey, {'results': []});
     setState(() {
@@ -128,7 +148,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
           if (mounted) {
             showAppSnackBar(
               context,
-              '试衣服务暂不可用：${userFacingApiError(map['error'])}',
+              '试衣失败：${userFacingApiError(map['error'])}',
             );
           }
           setState(() {
@@ -183,6 +203,161 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
     }
   }
 
+  Future<String?> _precheckTryOnInputs() async {
+    final garment = _garmentImage;
+    final person = _personFront;
+    if (garment == null || person == null) return '请先上传衣服图和正面照';
+
+    final garmentCheck = await _inspectImage(garment);
+    if (garmentCheck != null) return garmentCheck;
+
+    final personCheck = await _inspectImage(person);
+    if (personCheck != null) return personCheck;
+
+    return null;
+  }
+
+  Future<String?> _evaluateGarmentQuality(XFile file) async {
+    try {
+      final bytes = await file.readAsBytes();
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      final width = frame.image.width;
+      final height = frame.image.height;
+
+      if (bytes.length < 12 * 1024) {
+        return '适配度：较低，图片太小，建议换更清晰的商品图';
+      }
+      if (width < 256 || height < 256) {
+        return '适配度：较低，分辨率偏低，建议至少 256px 以上';
+      }
+
+      final isPortrait = height > width * 1.15;
+      final isLargeEnough = bytes.length > 80 * 1024;
+      if (isPortrait && isLargeEnough) {
+        return '适配度：较低，看起来像人物照，建议换无模特白底商品图';
+      }
+
+      if (width >= 512 && height >= 512) {
+        return '适配度：较高，适合试衣';
+      }
+      return '适配度：中等，建议再找一张更清晰的商品图';
+    } catch (_) {
+      return '适配度：未知，后端会继续做校验';
+    }
+  }
+
+  void _showTryOnTips() {
+    showDialog<void>(
+      context: context,
+      builder: (context) {
+        final palette = context.read<ThemeProvider>().palette;
+        return AlertDialog(
+          title: const Text('建议上传图样'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _TipRow(
+                icon: Icons.check_circle_outline,
+                color: Colors.green,
+                title: '推荐',
+                text: '无模特、白底、主体清晰、占画面比例较大的商品图。',
+              ),
+              const SizedBox(height: 10),
+              _TipRow(
+                icon: Icons.remove_circle_outline,
+                color: Colors.orange,
+                title: '谨慎',
+                text: '纯色背景、轻微裁切但衣服主体完整的图片。',
+              ),
+              const SizedBox(height: 10),
+              _TipRow(
+                icon: Icons.cancel_outlined,
+                color: Colors.redAccent,
+                title: '不推荐',
+                text: '含模特、多人、自拍、海报拼图、分辨率过低的图片。',
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('知道了'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  _TryOnQualityLevel _garmentQualityLevel(String? hint) {
+    final text = (hint ?? '').toLowerCase();
+    if (text.contains('较高') || text.contains('适合试衣')) {
+      return _TryOnQualityLevel.good;
+    }
+    if (text.contains('较低') || text.contains('不建议') || text.contains('像人物照')) {
+      return _TryOnQualityLevel.poor;
+    }
+    if (text.contains('中等') || text.contains('未知')) {
+      return _TryOnQualityLevel.medium;
+    }
+    return _TryOnQualityLevel.unknown;
+  }
+
+  Color _garmentQualityColor(String? hint, Palette palette) {
+    switch (_garmentQualityLevel(hint)) {
+      case _TryOnQualityLevel.good:
+        return Colors.green;
+      case _TryOnQualityLevel.medium:
+        return Colors.orange;
+      case _TryOnQualityLevel.poor:
+        return Colors.redAccent;
+      case _TryOnQualityLevel.unknown:
+        return palette.accent;
+    }
+  }
+
+  String _garmentQualityTitle(String? hint) {
+    switch (_garmentQualityLevel(hint)) {
+      case _TryOnQualityLevel.good:
+        return '可直接试衣';
+      case _TryOnQualityLevel.medium:
+        return '建议优化后再试';
+      case _TryOnQualityLevel.poor:
+        return '不建议试衣';
+      case _TryOnQualityLevel.unknown:
+        return '待评估';
+    }
+  }
+
+  Future<String?> _inspectImage(XFile file) async {
+    try {
+      final bytes = await file.readAsBytes();
+      if (bytes.length < 12 * 1024) {
+        return '图片太小，请上传更清晰的图片';
+      }
+
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      final width = frame.image.width;
+      final height = frame.image.height;
+      if (width < 256 || height < 256) {
+        return '图片分辨率过低，请上传至少 256px 的清晰图片';
+      }
+
+      // 经验性预检：衣服图若明显像人物竖图，优先提醒用户改成商品图。
+      final isPortrait = height > width * 1.15;
+      final isLargeEnough = bytes.length > 80 * 1024;
+      if (file == _garmentImage && isPortrait && isLargeEnough) {
+        return '衣服图看起来像人物照，请改用无模特白底商品图';
+      }
+    } catch (_) {
+      // 预检失败不阻断主流程，由后端继续兜底校验。
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final palette = context.watch<ThemeProvider>().palette;
@@ -202,10 +377,24 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: palette.surface.withValues(alpha: 0.75),
+                gradient: LinearGradient(
+                  colors: [
+                    palette.surface.withValues(alpha: 0.92),
+                    palette.primary.withValues(alpha: 0.06),
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
                 borderRadius: BorderRadius.circular(12),
                 border:
                     Border.all(color: palette.divider.withValues(alpha: 0.85)),
+                boxShadow: [
+                  BoxShadow(
+                    color: palette.primary.withValues(alpha: 0.06),
+                    blurRadius: 20,
+                    offset: const Offset(0, 10),
+                  ),
+                ],
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -213,15 +402,147 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                   Icon(Icons.info_outline, size: 18, color: palette.accent),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text(
-                      '请上传无模特的衣服图，否则效果会出现重影。'
-                      '尽量使用白底或平铺商品主图；含人像的商品图会被拒绝。未加载 AI 扩散模型时，后端会用去背景+粘贴合成。',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: palette.textBody,
-                        height: 1.4,
-                      ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '请上传无模特的衣服图，否则效果会出现重影。'
+                          '尽量使用白底或平铺商品主图；含人像的商品图会被拒绝。未加载 AI 扩散模型时，后端会用去背景+粘贴合成。',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: palette.textBody,
+                            height: 1.4,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: OutlinedButton.icon(
+                            onPressed: _showTryOnTips,
+                            style: OutlinedButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                              foregroundColor: palette.primary,
+                              side: BorderSide(
+                                color: palette.primary.withValues(alpha: 0.35),
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 8,
+                              ),
+                            ),
+                            icon: const Icon(
+                              Icons.tips_and_updates_outlined,
+                              size: 16,
+                            ),
+                            label: const Text(
+                              '查看建议图样',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: palette.surface,
+                borderRadius: BorderRadius.circular(16),
+                border:
+                    Border.all(color: palette.divider.withValues(alpha: 0.9)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.03),
+                    blurRadius: 12,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.rule_outlined,
+                          size: 18, color: palette.primary),
+                      const SizedBox(width: 8),
+                      Text(
+                        '上传标准',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: palette.textTitle,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: const [
+                      _StandardChip(
+                        label: '无模特',
+                        icon: Icons.person_off_outlined,
+                        color: Colors.green,
+                      ),
+                      _StandardChip(
+                        label: '白底/纯背景',
+                        icon: Icons.wallpaper_outlined,
+                        color: Colors.blue,
+                      ),
+                      _StandardChip(
+                        label: '主体清晰',
+                        icon: Icons.high_quality_outlined,
+                        color: Colors.orange,
+                      ),
+                      _StandardChip(
+                        label: '分辨率足够',
+                        icon: Icons.photo_size_select_actual_outlined,
+                        color: Colors.purple,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    '优先上传商品详情页主图，不要用模特图、海报拼图或分辨率过低的图片。',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: palette.textBody,
+                      height: 1.35,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: const [
+                      Expanded(
+                        child: _ExampleTile(
+                          label: '推荐示例',
+                          text: '白底平铺商品图\n无模特\n主体完整',
+                          icon: Icons.check_circle,
+                          color: Colors.green,
+                        ),
+                      ),
+                      SizedBox(width: 10),
+                      Expanded(
+                        child: _ExampleTile(
+                          label: '不推荐示例',
+                          text: '模特海报图\n多人合照\n低分辨率',
+                          icon: Icons.cancel,
+                          color: Colors.redAccent,
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -235,7 +556,10 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                     label: '衣服图',
                     image: _garmentImage,
                     onTap: _pickGarment,
-                    onClear: () => setState(() => _garmentImage = null),
+                    onClear: () => setState(() {
+                      _garmentImage = null;
+                      _garmentQualityHint = null;
+                    }),
                     palette: palette,
                   ),
                 ),
@@ -251,6 +575,14 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                 ),
               ],
             ),
+            if (_garmentQualityHint != null) ...[
+              const SizedBox(height: 10),
+              _QualityBadge(
+                title: _garmentQualityTitle(_garmentQualityHint),
+                message: _garmentQualityHint!,
+                color: _garmentQualityColor(_garmentQualityHint, palette),
+              ),
+            ],
             const SizedBox(height: 12),
             Row(
               children: [
@@ -357,6 +689,206 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
   }
 
   // (placeholder moved into _TryOnCarousel for better layout control)
+}
+
+enum _TryOnQualityLevel { good, medium, poor, unknown }
+
+class _StandardChip extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final Color color;
+
+  const _StandardChip({
+    required this.label,
+    required this.icon,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Chip(
+      avatar: Icon(icon, size: 16, color: color),
+      label: Text(
+        label,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: color.withValues(alpha: 0.92),
+        ),
+      ),
+      backgroundColor: color.withValues(alpha: 0.08),
+      side: BorderSide(color: color.withValues(alpha: 0.18)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(999),
+      ),
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+    );
+  }
+}
+
+class _QualityBadge extends StatelessWidget {
+  final String title;
+  final String message;
+  final Color color;
+
+  const _QualityBadge({
+    required this.title,
+    required this.message,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            color.withValues(alpha: 0.12),
+            color.withValues(alpha: 0.04),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.34)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.bolt, size: 14, color: color),
+                const SizedBox(width: 4),
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                    color: color,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(
+                fontSize: 12,
+                height: 1.35,
+                color: Colors.black.withValues(alpha: 0.72),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ExampleTile extends StatelessWidget {
+  final String label;
+  final String text;
+  final IconData icon;
+  final Color color;
+
+  const _ExampleTile({
+    required this.label,
+    required this.text,
+    required this.icon,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 16, color: color),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: color,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            text,
+            style: TextStyle(
+              fontSize: 11,
+              height: 1.45,
+              color: color.withValues(alpha: 0.88),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TipRow extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final String title;
+  final String text;
+
+  const _TipRow({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.text,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 18, color: color),
+        const SizedBox(width: 8),
+        Expanded(
+          child: RichText(
+            text: TextSpan(
+              style: DefaultTextStyle.of(context)
+                  .style
+                  .copyWith(fontSize: 13, height: 1.4),
+              children: [
+                TextSpan(
+                  text: '$title：',
+                  style: TextStyle(color: color, fontWeight: FontWeight.w700),
+                ),
+                TextSpan(text: text),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class _PickBox extends StatelessWidget {

@@ -9,7 +9,7 @@ import requests
 
 def test_cors_from_different_ports():
     """Test CORS from different localhost ports"""
-    base_url = "http://localhost:8000"
+    base_url = "http://127.0.0.1:8010"
 
     # Simulate requests from different ports (like Flutter Web would send)
     test_origins = [
@@ -17,7 +17,7 @@ def test_cors_from_different_ports():
         "http://localhost:8080",
         "http://localhost:50850",  # Flutter Web random port
         "http://localhost:54321",  # Another random port
-        "http://127.0.0.1:8000",
+        "http://127.0.0.1:8010",
     ]
 
     print("Testing CORS configuration...")
@@ -51,7 +51,7 @@ def test_cors_from_different_ports():
 
 def test_registration_and_login():
     """Test user registration and login"""
-    base_url = "http://localhost:8000/api/v1"
+    base_url = "http://127.0.0.1:8010/api/v1"
 
     print("\nTesting Registration and Login...")
     print("=" * 60)
@@ -114,7 +114,7 @@ def test_registration_and_login():
 def check_backend_health():
     """Check if backend is running"""
     try:
-        response = requests.get("http://localhost:8000/health", timeout=5)
+        response = requests.get("http://127.0.0.1:8010/health", timeout=5)
         if response.status_code == 200:
             print("✓ Backend is running")
             print(f"  Version: {response.json().get('version')}")

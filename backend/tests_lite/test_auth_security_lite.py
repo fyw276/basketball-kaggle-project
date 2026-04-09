@@ -16,7 +16,7 @@ def test_password_encryption():
     hashed = hash_password(plain_value)
 
     assert hashed != plain_value
-    assert hashed.startswith("$2")
+    assert hashed.startswith("$pbkdf2-sha256$") or hashed.startswith("$2")
     assert verify_password(plain_value, hashed)
     assert not verify_password("WrongPassword", hashed)
 

@@ -7,9 +7,12 @@ const int kApiPort = int.fromEnvironment('API_PORT', defaultValue: 8010);
 /// 默认 ApiClient baseUrl（无 [resolveApiBaseUrl] 时回退）。
 String get kDefaultApiBaseUrl => 'http://127.0.0.1:$kApiPort/api/v1';
 
-/// AI 穿搭风格分 `POST /predict` 端口（与 `scripts/run_predict_api.ps1`、Vite `VITE_API_BASE` 默认一致）。
+/// AI 穿搭风格分 `POST /predict` 端口。
+///
+/// 当前后端已把 `/predict` 挂在主服务（8010）上，默认保持同端口；
+/// 如需独立预测服务，可通过 `--dart-define=PREDICT_API_PORT=xxxx` 覆盖。
 const int kPredictApiPort =
-    int.fromEnvironment('PREDICT_API_PORT', defaultValue: 8765);
+    int.fromEnvironment('PREDICT_API_PORT', defaultValue: 8010);
 
 /// 默认预测服务根 URL（无 `/api/v1`，路径为 `/predict`）。
 String get kDefaultPredictApiBaseUrl => 'http://127.0.0.1:$kPredictApiPort';

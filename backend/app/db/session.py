@@ -5,6 +5,7 @@ Database session management
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import app.models  # noqa: F401  # Ensure ORM mappers are registered before first query
 from app.core.config import settings
 
 # Create database engine

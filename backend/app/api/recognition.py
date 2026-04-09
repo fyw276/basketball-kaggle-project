@@ -2,15 +2,13 @@
 Image recognition API endpoints
 """
 
-from typing import List
+from typing import Any, List
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 
 from app.core.logging import setup_logging
-from app.ml.category_classifier import CategoryClassifier
-from app.ml.color_extractor import ColorExtractor
-from app.ml.image_recognizer import ImageRecognizer, RecognitionResult
+from app.ml.image_recognizer import RecognitionResult
 from app.schemas.garment import ColorSchema
 
 logger = setup_logging()
@@ -23,29 +21,35 @@ _color_extractor = None
 _image_recognizer = None
 
 
-def get_category_classifier() -> CategoryClassifier:
+def get_category_classifier() -> Any:
     """Get or create category classifier instance"""
     global _category_classifier
     if _category_classifier is None:
         logger.info("Initializing CategoryClassifier")
+        from app.ml.category_classifier import CategoryClassifier
+
         _category_classifier = CategoryClassifier()
     return _category_classifier
 
 
-def get_color_extractor() -> ColorExtractor:
+def get_color_extractor() -> Any:
     """Get or create color extractor instance"""
     global _color_extractor
     if _color_extractor is None:
         logger.info("Initializing ColorExtractor")
+        from app.ml.color_extractor import ColorExtractor
+
         _color_extractor = ColorExtractor(n_colors=3)
     return _color_extractor
 
 
-def get_image_recognizer() -> ImageRecognizer:
+def get_image_recognizer() -> Any:
     """Get or create image recognizer instance"""
     global _image_recognizer
     if _image_recognizer is None:
         logger.info("Initializing ImageRecognizer")
+        from app.ml.image_recognizer import ImageRecognizer
+
         _image_recognizer = ImageRecognizer()
     return _image_recognizer
 

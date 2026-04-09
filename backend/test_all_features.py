@@ -9,7 +9,7 @@ import sys
 import requests
 
 # 配置
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://127.0.0.1:8010"
 TEST_USERNAME = "test_all_features_user"
 TEST_EMAIL = "test_all@example.com"
 TEST_PASSWORD = "TestPassword123"
@@ -392,7 +392,7 @@ def print_summary(results):
     print("注意:")
     print("- 图像识别、相似度分析、搭配推荐、适合度评分需要上传图片")
     print("- 这些功能请在 Swagger UI 中手动测试")
-    print("- 访问: http://localhost:8000/docs")
+    print("- 访问: http://127.0.0.1:8010/docs")
     print()
 
 

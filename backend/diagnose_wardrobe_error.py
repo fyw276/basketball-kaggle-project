@@ -6,7 +6,7 @@ import json
 
 import requests
 
-BASE_URL = "http://localhost:8000/api/v1"
+BASE_URL = "http://127.0.0.1:8010/api/v1"
 
 # Use existing test user
 username = "test_simple_user"

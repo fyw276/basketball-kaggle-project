@@ -26,6 +26,19 @@ String userFacingApiError(Object? error) {
       return '无法连接服务器，请检查网络后重试';
     }
   }
+  if (s.contains('garment_contains_face') ||
+      s.contains('衣服图检测到人像') ||
+      s.contains('无模特') ||
+      s.contains('白底商品图')) {
+    return '衣服图里检测到人像，请改用无模特白底商品图';
+  }
+  if (s.contains('Garment cutout too small') ||
+      s.contains('cutout too small')) {
+    return '衣服主体过小或背景干扰过大，请换清晰近景商品图';
+  }
+  if (s.contains('Virtual try-on failed with status: 400')) {
+    return '试衣请求被拒绝，请更换衣服图后重试';
+  }
   if (s.length > 160) {
     return '${s.substring(0, 157)}…';
   }

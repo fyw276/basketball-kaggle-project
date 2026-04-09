@@ -102,6 +102,78 @@ class _SimilarityAnalysisScreenState extends State<SimilarityAnalysisScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    palette.surface.withValues(alpha: 0.96),
+                    palette.primary.withValues(alpha: 0.06),
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(16),
+                border:
+                    Border.all(color: palette.divider.withValues(alpha: 0.9)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.03),
+                    blurRadius: 12,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.auto_graph_outlined,
+                          color: palette.primary, size: 18),
+                      const SizedBox(width: 8),
+                      Text(
+                        '功能说明',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: palette.textTitle,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    '上传一张清晰的单品图，系统会在衣橱中查找相似单品，帮助你避免重复购买。',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: palette.textBody,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: const [
+                      _SimilarityHintChip(
+                          label: '清晰单品图',
+                          icon: Icons.photo_outlined,
+                          color: Colors.blue),
+                      _SimilarityHintChip(
+                          label: '主体完整',
+                          icon: Icons.crop_free_outlined,
+                          color: Colors.green),
+                      _SimilarityHintChip(
+                          label: '避免拼图',
+                          icon: Icons.grid_off_outlined,
+                          color: Colors.orange),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
             ImagePickerSection(
               images: _images,
               onImagesChanged: (list) => setState(() => _images = list),
@@ -131,7 +203,7 @@ class _SimilarityAnalysisScreenState extends State<SimilarityAnalysisScreen> {
                       )
                     : const Icon(Icons.layers_outlined),
                 label: Text(
-                  _loading ? '正在检测…' : '开始检测',
+                  _loading ? '生成中…' : '生成检测结果',
                   style: const TextStyle(
                       fontSize: 16, fontWeight: FontWeight.w700),
                 ),
@@ -139,6 +211,52 @@ class _SimilarityAnalysisScreenState extends State<SimilarityAnalysisScreen> {
             ),
             const SizedBox(height: 24),
             if (_result != null) ...[
+              if ((_result!['avoid_duplicates'] == true) ||
+                  ((_result!['similar_items'] as List?)?.isNotEmpty ??
+                      false)) ...[
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: (_result!['avoid_duplicates'] == true
+                            ? Colors.redAccent
+                            : palette.primary)
+                        .withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: (_result!['avoid_duplicates'] == true
+                              ? Colors.redAccent
+                              : palette.primary)
+                          .withValues(alpha: 0.25),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        _result!['avoid_duplicates'] == true
+                            ? Icons.warning_amber_rounded
+                            : Icons.info_outline,
+                        color: _result!['avoid_duplicates'] == true
+                            ? Colors.redAccent
+                            : palette.primary,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _result!['avoid_duplicates'] == true
+                              ? '检测到较高重复购买风险，建议先看看下面的相似单品。'
+                              : '已找到相似单品，可对比后决定是否购买。',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: palette.textBody,
+                            height: 1.35,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
               if ((_result!['tip']?.toString() ?? '').isNotEmpty) ...[
                 Container(
                   padding: const EdgeInsets.all(12),
@@ -241,6 +359,40 @@ class _SimilarityAnalysisScreenState extends State<SimilarityAnalysisScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _SimilarityHintChip extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final Color color;
+
+  const _SimilarityHintChip({
+    required this.label,
+    required this.icon,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Chip(
+      avatar: Icon(icon, size: 16, color: color),
+      label: Text(
+        label,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: color.withValues(alpha: 0.92),
+        ),
+      ),
+      backgroundColor: color.withValues(alpha: 0.08),
+      side: BorderSide(color: color.withValues(alpha: 0.18)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(999),
+      ),
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
     );
   }
 }

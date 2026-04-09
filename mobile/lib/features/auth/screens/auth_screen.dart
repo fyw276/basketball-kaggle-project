@@ -80,7 +80,6 @@ class _AuthScreenState extends State<AuthScreen>
                           fontSize: 22,
                           fontWeight: FontWeight.w800,
                           color: p.textTitle,
-                          height: 1.35,
                         ),
                       ),
                       const SizedBox(height: 8),
@@ -90,7 +89,6 @@ class _AuthScreenState extends State<AuthScreen>
                         style: TextStyle(
                           fontSize: 14,
                           color: p.textBody.withValues(alpha: 0.85),
-                          height: 1.4,
                         ),
                       ),
                       const SizedBox(height: 32),
@@ -518,7 +516,8 @@ class _AuthField extends StatelessWidget {
       obscureText: obscure,
       validator: validator,
       decoration: InputDecoration(
-        labelText: label,
+        hintText: label,
+        hintStyle: TextStyle(color: _kAuthTextMuted.withValues(alpha: 0.7)),
         prefixIcon: Icon(prefix, color: mist.withValues(alpha: 0.85)),
         suffixIcon: suffix,
         border: OutlineInputBorder(

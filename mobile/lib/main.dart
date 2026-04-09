@@ -157,14 +157,6 @@ class _AppRouterHostState extends State<_AppRouterHost> {
       darkTheme: themeProvider.darkTheme,
       themeMode: themeProvider.themeMode,
       routerConfig: _router!,
-      builder: (context, child) {
-        return MediaQuery(
-          data: MediaQuery.of(context).copyWith(
-            textScaler: TextScaler.noScaling,
-          ),
-          child: child ?? const SizedBox.shrink(),
-        );
-      },
     );
   }
 }

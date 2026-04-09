@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/services/api_client.dart';
+import '../../../core/providers/auth_provider.dart';
 import '../../../core/utils/app_snackbar.dart';
 import '../../../core/providers/theme_provider.dart';
 import '../../../core/theme/style_tokens.dart';
@@ -16,7 +17,8 @@ class ProfileFormScreen extends StatefulWidget {
 
 class _ProfileFormScreenState extends State<ProfileFormScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _apiClient = ApiClient();
+
+  ApiClient get _apiClient => context.read<AuthProvider>().apiClient;
 
   bool _isLoading = false;
   bool _hasExistingProfile = false;

@@ -7,7 +7,11 @@ from typing import List, Tuple, Union
 
 import numpy as np
 from PIL import Image
-from sklearn.cluster import KMeans
+
+try:
+    from sklearn.cluster import KMeans
+except Exception:  # pragma: no cover - optional dependency
+    KMeans = None
 
 from app.core.logging import setup_logging
 from app.schemas.garment import ColorSchema
@@ -43,6 +47,7 @@ class ColorExtractor:
         """
         self.n_colors = n_colors
         self.resize_dim = resize_dim
+        self._kmeans_available = KMeans is not None
         logger.info(
             f"ColorExtractor initialized with n_colors={n_colors}, " f"resize_dim={resize_dim}"
         )
@@ -79,20 +84,27 @@ class ColorExtractor:
             # Convert to numpy array and reshape to pixels
             pixels = np.array(image_resized).reshape(-1, 3)
 
-            # Apply K-Means clustering
-            kmeans = KMeans(n_clusters=self.n_colors, random_state=42, n_init=10)
-            kmeans.fit(pixels)
+            if self._kmeans_available:
+                # Apply K-Means clustering
+                kmeans = KMeans(n_clusters=self.n_colors, random_state=42, n_init=10)
+                kmeans.fit(pixels)
 
-            # Get cluster centers (dominant colors)
-            colors_rgb = kmeans.cluster_centers_.astype(int)
+                # Get cluster centers (dominant colors)
+                colors_rgb = kmeans.cluster_centers_.astype(int)
 
-            # Calculate color percentages
-            labels = kmeans.labels_
-            counts = np.bincount(labels)
-            percentages = counts / len(labels)
+                # Calculate color percentages
+                labels = kmeans.labels_
+                counts = np.bincount(labels)
+                percentages = counts / len(labels)
 
-            # Sort by percentage (descending)
-            sorted_indices = np.argsort(percentages)[::-1]
+                # Sort by percentage (descending)
+                sorted_indices = np.argsort(percentages)[::-1]
+            else:
+                # Fallback: no sklearn available, use average color as main color.
+                logger.warning("sklearn unavailable; using average-color fallback")
+                avg = np.mean(pixels, axis=0).astype(int)
+                colors_rgb = np.array([avg], dtype=int)
+                sorted_indices = [0]
 
             # Convert to ColorSchema objects
             color_schemas = []

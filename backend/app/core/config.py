@@ -4,7 +4,7 @@ Application configuration using Pydantic Settings
 
 from typing import List
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -63,6 +63,8 @@ class Settings(BaseSettings):
     EXTERNAL_API_BASE_URL: str = ""
     EXTERNAL_API_KEY: str = ""
     EXTERNAL_API_PATH: str = "/infer"
+    EXTERNAL_HEALTHCHECK_ENABLED: bool = True
+    EXTERNAL_API_HEALTH_PATH: str = "/health"
 
     # Hugging Face（写入 os.environ，供 huggingface_hub / diffusers 使用；仅配 .env 即可）
     HF_ENDPOINT: str = Field(
@@ -94,6 +96,31 @@ class Settings(BaseSettings):
             "Overrides CORS_ORIGINS when set."
         ),
     )
+
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def parse_debug(cls, value):
+        """Allow DEBUG env values like release/dev/true/false/0/1."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        text = str(value).strip().lower()
+        if text in {"1", "true", "t", "yes", "y", "on", "debug", "dev", "development"}:
+            return True
+        if text in {
+            "0",
+            "false",
+            "f",
+            "no",
+            "n",
+            "off",
+            "release",
+            "prod",
+            "production",
+        }:
+            return False
+        return value
 
     @property
     def cors_origins_list(self) -> List[str]:

@@ -85,6 +85,66 @@ class _MoodOutfitScreenState extends State<MoodOutfitScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: palette.cardBg,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: palette.divider),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.favorite_rounded,
+                          color: palette.primary, size: 18),
+                      const SizedBox(width: 8),
+                      Text(
+                        '功能说明',
+                        style: TextStyle(
+                          color: palette.textTitle,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '系统会根据你的当前情绪，优先给出色彩与风格方向，再从衣橱里筛选更贴近该情绪语义的单品。',
+                    style: TextStyle(
+                      color: palette.textBody,
+                      fontSize: 12,
+                      height: 1.45,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      _HintChip(
+                        text: '先整理衣橱，推荐更准',
+                        icon: Icons.checkroom_outlined,
+                        color: Colors.blue,
+                      ),
+                      _HintChip(
+                        text: '低落情绪更偏暖色',
+                        icon: Icons.wb_sunny_outlined,
+                        color: Colors.orange,
+                      ),
+                      _HintChip(
+                        text: '可多次切换心情对比',
+                        icon: Icons.compare_arrows_outlined,
+                        color: Colors.green,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
             Text(
               '告诉助手你此刻的心情，我们会结合色彩心理学给出风格、颜色建议，并尽量从你衣橱里挑出更契合的单品。',
               style: TextStyle(color: palette.textBody, height: 1.45),
@@ -105,6 +165,34 @@ class _MoodOutfitScreenState extends State<MoodOutfitScreen> {
                   child: Padding(
                       padding: EdgeInsets.all(24),
                       child: CircularProgressIndicator()))
+            else if (_quick.isEmpty)
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                  border:
+                      Border.all(color: Colors.orange.withValues(alpha: 0.22)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.info_outline,
+                        size: 16, color: Colors.orange),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '暂未获取到心情选项，请稍后重试。',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: palette.textBody,
+                          height: 1.35,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              )
             else
               Wrap(
                 spacing: 8,
@@ -146,11 +234,117 @@ class _MoodOutfitScreenState extends State<MoodOutfitScreen> {
               ),
             ),
             if (_result != null) ...[
+              const SizedBox(height: 14),
+              _MoodSummaryCard(result: _result!, palette: palette),
+            ],
+            if (_result != null) ...[
               const SizedBox(height: 24),
               _ResultCard(result: _result!, palette: palette, apiBase: base),
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _HintChip extends StatelessWidget {
+  final String text;
+  final IconData icon;
+  final Color color;
+
+  const _HintChip({
+    required this.text,
+    required this.icon,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 6),
+          Text(
+            text,
+            style: TextStyle(
+              color: color.withValues(alpha: 0.95),
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MoodSummaryCard extends StatelessWidget {
+  final Map<String, dynamic> result;
+  final dynamic palette;
+
+  const _MoodSummaryCard({
+    required this.result,
+    required this.palette,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final moodCn = result['mood_cn']?.toString() ?? '未知';
+    final styles = result['recommended_styles'];
+    final occasions = result['recommended_occasions'];
+    final items = result['matching_garments'];
+    final styleCount = styles is List ? styles.length : 0;
+    final occasionCount = occasions is List ? occasions.length : 0;
+    final itemCount = items is List ? items.length : 0;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: palette.primary.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: palette.primary.withValues(alpha: 0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '结果摘要',
+            style: TextStyle(
+              color: palette.textTitle,
+              fontWeight: FontWeight.w700,
+              fontSize: 13,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '当前情绪：$moodCn  |  推荐风格 $styleCount 项  |  场景 $occasionCount 项  |  匹配单品 $itemCount 件',
+            style: TextStyle(
+              color: palette.textBody,
+              fontSize: 12,
+              height: 1.4,
+            ),
+          ),
+          if (itemCount == 0) ...[
+            const SizedBox(height: 6),
+            Text(
+              '当前没有检索到匹配衣橱单品，可先去衣橱补充几件常用基础款再重试。',
+              style: TextStyle(
+                color: palette.textBody,
+                fontSize: 11,
+                height: 1.35,
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }

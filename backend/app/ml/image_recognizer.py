@@ -3,16 +3,12 @@ Complete image recognition pipeline integrating all recognition modules
 """
 
 from pathlib import Path
-from typing import List, Union
+from typing import Any, List, Union
 
 from PIL import Image
 from pydantic import BaseModel, Field
 
 from app.core.logging import setup_logging
-from app.ml.category_classifier import CategoryClassifier
-from app.ml.color_extractor import ColorExtractor
-from app.ml.feature_extractor import FeatureExtractor
-from app.ml.style_classifier import StyleClassifier
 from app.schemas.garment import ColorSchema
 
 logger = setup_logging()
@@ -68,10 +64,10 @@ class ImageRecognizer:
 
     def __init__(
         self,
-        category_classifier: CategoryClassifier = None,
-        color_extractor: ColorExtractor = None,
-        style_classifier: StyleClassifier = None,
-        feature_extractor: FeatureExtractor = None,
+        category_classifier: Any = None,
+        color_extractor: Any = None,
+        style_classifier: Any = None,
+        feature_extractor: Any = None,
     ):
         """
         Initialize image recognizer with all recognition modules
@@ -85,6 +81,11 @@ class ImageRecognizer:
         logger.info("Initializing ImageRecognizer with all recognition modules")
 
         # Initialize all modules
+        from app.ml.category_classifier import CategoryClassifier
+        from app.ml.color_extractor import ColorExtractor
+        from app.ml.feature_extractor import FeatureExtractor
+        from app.ml.style_classifier import StyleClassifier
+
         self.category_classifier = category_classifier or CategoryClassifier()
         self.color_extractor = color_extractor or ColorExtractor(n_colors=3)
         self.style_classifier = style_classifier or StyleClassifier()

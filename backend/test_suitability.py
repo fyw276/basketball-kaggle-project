@@ -7,7 +7,7 @@ import io
 import requests
 from PIL import Image
 
-BASE_URL = "http://localhost:8000/api/v1"
+BASE_URL = "http://127.0.0.1:8010/api/v1"
 
 # Login
 print("1. Logging in...")

@@ -10,7 +10,7 @@ from pathlib import Path
 import requests
 
 # API 基础 URL
-BASE_URL = "http://localhost:8000/api/v1"
+BASE_URL = "http://127.0.0.1:8010/api/v1"
 
 # 测试用户凭据
 USERNAME = "testuser"
@@ -115,7 +115,7 @@ def main():
     print("测试完成！")
     print("=" * 60)
     print("\n如何在 Swagger UI 中使用:")
-    print("1. 访问 http://localhost:8000/docs")
+    print("1. 访问 http://127.0.0.1:8010/docs")
     print("2. 点击右上角的 'Authorize' 按钮")
     print(f"3. 输入: Bearer {token}")
     print("4. 点击 'Authorize' 然后 'Close'")

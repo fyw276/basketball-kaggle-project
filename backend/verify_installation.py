@@ -101,7 +101,7 @@ def main():
         print()
         print("下一步:")
         print("  1. 运行 'python run.py' 启动服务器")
-        print("  2. 访问 http://localhost:8000/docs 查看 API 文档")
+        print("  2. 访问 http://127.0.0.1:8010/docs 查看 API 文档")
     else:
         print("✗ 安装不完整，请运行:")
         print("  pip install --upgrade pip")

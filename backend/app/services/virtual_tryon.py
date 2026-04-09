@@ -418,7 +418,7 @@ class VirtualTryOnService:
         """
         import numpy as np
         from PIL import Image as PILImage
-        from scipy import ndimage
+        from PIL import ImageFilter
 
         img_array = np.array(garment_image.convert("RGB"))
         h, w = img_array.shape[:2]
@@ -431,10 +431,12 @@ class VirtualTryOnService:
         bg_mask = (gray > 230) & (sat < 15)
         mask[bg_mask] = 0
 
-        # Inflate foreground slightly
-        mask = ndimage.binary_dilation(mask, iterations=3).astype(np.uint8) * 255
+        # Inflate foreground slightly without scipy dependency.
+        pil_mask = PILImage.fromarray(mask, mode="L")
+        for _ in range(3):
+            pil_mask = pil_mask.filter(ImageFilter.MaxFilter(3))
 
-        return PILImage.fromarray(mask, mode="L").resize((w, h), PILImage.Resampling.BILINEAR)
+        return pil_mask.resize((w, h), PILImage.Resampling.BILINEAR)
 
     def _build_tryon_prompt(self, garment_image: Image.Image, model_gender: str = "neutral") -> str:
         """

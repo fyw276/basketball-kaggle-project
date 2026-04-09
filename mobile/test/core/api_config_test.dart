@@ -25,7 +25,7 @@ void main() {
 
   test('kPredictApiPort matches int.fromEnvironment default', () {
     const expected =
-        int.fromEnvironment('PREDICT_API_PORT', defaultValue: 8765);
+        int.fromEnvironment('PREDICT_API_PORT', defaultValue: 8010);
     expect(kPredictApiPort, expected);
   });
 

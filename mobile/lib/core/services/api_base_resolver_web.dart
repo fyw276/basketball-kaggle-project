@@ -27,7 +27,7 @@ String resolveApiBaseUrl() {
   return 'http://127.0.0.1:$apiPort/api/v1';
 }
 
-/// AI 穿搭风格分（`POST /predict`），与主 API 端口分离时默认 8765。
+/// AI 穿搭风格分（`POST /predict`），默认与主 API 同端口（8010）。
 String resolvePredictApiBaseUrl() {
   const predictPort = kPredictApiPort;
   final b = Uri.base;

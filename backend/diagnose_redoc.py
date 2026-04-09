@@ -118,7 +118,7 @@ def diagnose_redoc():
         routes = [route.path for route in app.routes if hasattr(route, "path")]
         if "/redoc-alt" in routes:
             print("  ✓ 备用 ReDoc 端点已配置: /redoc-alt")
-            suggestions.append("尝试访问: http://localhost:8000/redoc-alt")
+            suggestions.append("尝试访问: http://127.0.0.1:8010/redoc-alt")
         else:
             print("  ⚠ 备用 ReDoc 端点未配置")
             suggestions.append("运行: python fix_redoc.py 添加备用端点")
@@ -155,8 +155,8 @@ def diagnose_redoc():
 
     print()
     print("其他解决方案：")
-    print("  • 使用 Swagger UI 代替: http://localhost:8000/docs")
-    print("  • 使用备用 ReDoc: http://localhost:8000/redoc-alt")
+    print("  • 使用 Swagger UI 代替: http://127.0.0.1:8010/docs")
+    print("  • 使用备用 ReDoc: http://127.0.0.1:8010/redoc-alt")
     print("  • 查看详细指南: REDOC_FIX.md")
     print()
 

@@ -23,7 +23,7 @@ String? resolveGarmentImageUrl(String? raw, String apiBaseUrl) {
   return '$origin/$t';
 }
 
-/// 将 `http://localhost:8000/...` 与 `http://127.0.0.1:8000/...` 等与 [apiOrigin] 对齐，避免 Web 跨 host 导致图片/请求失败。
+/// 将 `http://127.0.0.1:8010/...` 与 `http://127.0.0.1:8010/...` 等与 [apiOrigin] 对齐，避免 Web 跨 host 导致图片/请求失败。
 String _normalizeAbsoluteToApiOrigin(String url, String apiOrigin) {
   try {
     final o = Uri.parse(apiOrigin);

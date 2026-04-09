@@ -95,6 +95,7 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final palette = context.watch<ThemeProvider>().palette;
     return AnalysisFeatureLayout(
       title: '穿搭推荐',
       body: SingleChildScrollView(
@@ -102,10 +103,88 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    palette.surface.withValues(alpha: 0.96),
+                    palette.primary.withValues(alpha: 0.06),
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(16),
+                border:
+                    Border.all(color: palette.divider.withValues(alpha: 0.9)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.03),
+                    blurRadius: 12,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.auto_awesome_outlined,
+                          color: palette.primary, size: 18),
+                      const SizedBox(width: 8),
+                      Text(
+                        '功能说明',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: palette.textTitle,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    '支持最多 5 张图片合并推荐。建议上传同一风格或同一套穿搭的单品图，系统会结合衣橱与性别表达指数给出更合适的搭配方案。',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: palette.textBody,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: const [
+                      _RecommendHintChip(
+                        label: '同风格更准',
+                        icon: Icons.style_outlined,
+                        color: Colors.blue,
+                      ),
+                      _RecommendHintChip(
+                        label: '最多 5 张',
+                        icon: Icons.photo_library_outlined,
+                        color: Colors.green,
+                      ),
+                      _RecommendHintChip(
+                        label: '可选场景',
+                        icon: Icons.location_on_outlined,
+                        color: Colors.orange,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
             // Scene selection
             Text(
               '选择场景',
-              style: Theme.of(context).textTheme.titleSmall,
+              style: Theme.of(context)
+                  .textTheme
+                  .titleSmall
+                  ?.copyWith(color: palette.textTitle),
             ),
             const SizedBox(height: 8),
             Wrap(
@@ -128,7 +207,10 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
             // Image picker
             Text(
               '上传图片',
-              style: Theme.of(context).textTheme.titleSmall,
+              style: Theme.of(context)
+                  .textTheme
+                  .titleSmall
+                  ?.copyWith(color: palette.textTitle),
             ),
             const SizedBox(height: 8),
             ImagePickerSection(
@@ -145,6 +227,35 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
               hintText: '可选多张（将合并识别后一起推荐）',
               allowMultiple: true,
             ),
+            const SizedBox(height: 10),
+            if (_images.isNotEmpty)
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: palette.primary.withValues(alpha: 0.06),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                      color: palette.primary.withValues(alpha: 0.16)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.check_circle_outline,
+                        size: 18, color: palette.primary),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '已选择 ${_images.length} 张图片，点击生成推荐结果即可查看搭配方案。',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: palette.textBody,
+                          height: 1.35,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             const SizedBox(height: 24),
             // Analyze button
             FilledButton.icon(
@@ -157,7 +268,7 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
                           strokeWidth: 2, color: Colors.white),
                     )
                   : const Icon(Icons.auto_awesome),
-              label: Text(_isLoading ? '分析中...' : '开始推荐'),
+              label: Text(_isLoading ? '生成中…' : '生成推荐结果'),
             ),
             const SizedBox(height: 24),
             // Results
@@ -170,9 +281,63 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
                   showAppSnackBar(context, '已保存到收藏');
                 },
               ),
+            if (_result == null && !_isLoading && _images.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: palette.surface,
+                  borderRadius: BorderRadius.circular(14),
+                  border:
+                      Border.all(color: palette.divider.withValues(alpha: 0.9)),
+                ),
+                child: Text(
+                  '选好图片后点击“生成推荐结果”，系统会结合场景、衣橱和性别表达指数输出搭配建议。',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: palette.textBody,
+                    height: 1.35,
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
+    );
+  }
+}
+
+class _RecommendHintChip extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final Color color;
+
+  const _RecommendHintChip({
+    required this.label,
+    required this.icon,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Chip(
+      avatar: Icon(icon, size: 16, color: color),
+      label: Text(
+        label,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: color.withValues(alpha: 0.92),
+        ),
+      ),
+      backgroundColor: color.withValues(alpha: 0.08),
+      side: BorderSide(color: color.withValues(alpha: 0.18)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(999),
+      ),
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
     );
   }
 }

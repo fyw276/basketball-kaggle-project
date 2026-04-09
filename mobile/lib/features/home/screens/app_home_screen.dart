@@ -13,6 +13,7 @@ import '../../analysis/screens/smart_outfit_screen.dart';
 import '../../analysis/screens/similarity_analysis_screen.dart';
 import '../../analysis/screens/suitability_analysis_screen.dart';
 import '../../analysis/screens/virtual_tryon_screen.dart';
+import '../../wardrobe/screens/wardrobe_screen.dart';
 
 /// 主页：功能入口列表；配色随全局性别表达指数；底部滑块仅在 Shell 中展示。
 class AppHomeScreen extends StatelessWidget {
@@ -92,7 +93,72 @@ class AppHomeScreen extends StatelessWidget {
                   );
                 },
               ),
-              const SizedBox(height: 22),
+              const SizedBox(height: 18),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: palette.cardBg,
+                  borderRadius: BorderRadius.circular(_radius),
+                  border: Border.all(color: palette.divider),
+                  boxShadow: palette.cardShadows,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.tips_and_updates_outlined,
+                            color: palette.primary, size: 20),
+                        const SizedBox(width: 8),
+                        Text(
+                          '今天先做什么',
+                          style:
+                              Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    color: palette.textTitle,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '从衣橱整理开始，再去做推荐、试衣和适合度分析，整条链路会更顺。',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: palette.textBody,
+                            height: 1.4,
+                          ),
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        _QuickActionChip(
+                          palette: palette,
+                          icon: Icons.checkroom_outlined,
+                          label: '我的衣橱',
+                          onTap: () => _push(context, const WardrobeScreen()),
+                        ),
+                        _QuickActionChip(
+                          palette: palette,
+                          icon: Icons.view_in_ar_rounded,
+                          label: '虚拟试衣',
+                          onTap: () =>
+                              _push(context, const VirtualTryonScreen()),
+                        ),
+                        _QuickActionChip(
+                          palette: palette,
+                          icon: Icons.auto_awesome_rounded,
+                          label: '智能穿搭',
+                          onTap: () =>
+                              _push(context, const SmartOutfitScreen()),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
               _HomeRow(
                 palette: palette,
                 radius: _radius,
@@ -106,8 +172,8 @@ class AppHomeScreen extends StatelessWidget {
                 palette: palette,
                 radius: _radius,
                 icon: Icons.view_day_outlined,
-                title: '场景穿搭推荐',
-                subtitle: '选择场景并上传图片，智能推荐搭配方案',
+                title: '穿搭推荐',
+                subtitle: '选择场景并上传图片，生成更贴近场景的搭配建议',
                 onTap: () => _push(context, const OutfitRecommendScreen()),
               ),
               const SizedBox(height: 12),
@@ -116,7 +182,7 @@ class AppHomeScreen extends StatelessWidget {
                 radius: _radius,
                 icon: Icons.favorite_outline_rounded,
                 title: '情绪穿搭',
-                subtitle: '心情不好时也能给你更暖的配色与衣橱匹配',
+                subtitle: '按当前心情推荐颜色和风格，并匹配衣橱单品',
                 onTap: () => _push(context, const MoodOutfitScreen()),
               ),
               const SizedBox(height: 12),
@@ -152,12 +218,57 @@ class AppHomeScreen extends StatelessWidget {
                 radius: _radius,
                 icon: Icons.accessibility_new_rounded,
                 title: '体型感知',
-                subtitle: '结合画像的穿搭建议',
+                subtitle: '结合身高体型与偏好，给出可执行穿搭方向',
                 onTap: () => _push(context, const BodyShapeInsightScreen()),
               ),
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _QuickActionChip extends StatelessWidget {
+  final Palette palette;
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  const _QuickActionChip({
+    required this.palette,
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(999),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          color: palette.primary.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: palette.primary.withValues(alpha: 0.16)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16, color: palette.primary),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: palette.primary,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
