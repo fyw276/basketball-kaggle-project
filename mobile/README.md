@@ -12,9 +12,10 @@
 - ✅ 相似度分析
 - ✅ 搭配推荐（支持多图同次请求，合并识别）
 - ✅ 智能穿搭（参考图 + 自动天气 + 可选心情；接口：`/api/v1/smart-outfit/*`）
-- ✅ 适合度评分
+- ✅ 适合度分析（场景/体型/风格三维评分 + 每维原因说明）
 - ✅ 情绪穿搭（心情 → 配色/风格方向 + 衣橱匹配）
 - ✅ 虚拟试衣（伪 3D 三视角：正/侧/背，支持多视角人物照）
+- ✅ 体型感知（读取画像，一键生成 3 套体型专属穿搭）
 
 ## 技术栈
 
@@ -48,9 +49,10 @@ mobile/
 │       ├── wardrobe/               # 衣橱管理
 │       └── analysis/               # 分析功能
 │           └── screens/
-│               ├── similarity_screen.dart
-│               ├── outfit_screen.dart
-│               └── suitability_screen.dart
+│               ├── similarity_analysis_screen.dart
+│               ├── outfit_recommend_screen.dart
+│               ├── suitability_analysis_screen.dart
+│               └── body_shape_insight_screen.dart
 └── pubspec.yaml                     # 依赖配置
 ```
 

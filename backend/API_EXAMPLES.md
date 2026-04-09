@@ -768,9 +768,10 @@ print(f"Color Score: {result['color_score']}/100")
 print(f"Fit Score: {result['fit_score']}/100")
 print(f"Style Score: {result['style_score']}/100")
 
-print("\nExplanations:")
-for key, explanation in result["explanation"].items():
-    print(f"  {key}: {explanation}")
+print("\nReasons:")
+print("  scene:", result.get("scene_match_reason") or result["explanation"].get("scene", ""))
+print("  body :", result.get("body_fit_reason") or result["explanation"].get("body", ""))
+print("  style:", result.get("style_coordination_reason") or result["explanation"].get("style", ""))
 
 print(f"\nRecommended Occasions: {', '.join(result['recommended_occasions'])}")
 
@@ -817,10 +818,11 @@ print("   Login successful")
 print("\n3. Creating user profile...")
 profile_data = {
     "height": 170,
-    "body_type": "沙漏型",
+    "body_type": "沙漏",
     "skin_tone": "冷白",
     "style_preference": ["通勤", "简约"],
-    "budget_range": "中档"
+    "budget_range": "中等",
+    "avoid_body_parts": ["腰", "臀"],
 }
 response = requests.post(f"{BASE_URL}/profile", json=profile_data, headers=headers)
 print("   Profile created")

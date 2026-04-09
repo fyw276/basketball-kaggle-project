@@ -1,6 +1,6 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-04-04（补充 AI 打分 `/predict`、Vite 前端、虚拟试衣与 Web 根路径说明，见 [docs/AI_OUTFIT_PREDICT_AND_TRYON.md](docs/AI_OUTFIT_PREDICT_AND_TRYON.md)）
+**最后更新**: 2026-04-09（补充体型感知「生成 3 套穿搭」、适合度分析三维原因说明，并同步文档与测试）
 **状态**: ✅ 可用于演示与迭代（后端 FastAPI + Flutter Web/移动端）
 
 ## 项目简介
@@ -31,6 +31,7 @@
 - 版型适合度：基于体型和不希望强化的身体部位
 - 风格适合度：基于用户风格偏好
 - 综合评分并提供个性化改进建议
+- 返回 **三维原因说明**：`scene_match_reason` / `body_fit_reason` / `style_coordination_reason`（在每个维度进度条下展示原因）
 
 ### 4. 情绪穿搭（Mood → Outfit）
 - 快捷心情选择（例如「心情不好 · 想暖一点」）
@@ -177,6 +178,18 @@ flutter run -d chrome
 > 若文档或旧需求里写成 `/api/smart-outfit/...`（缺少 **`/v1`**），请改为上表路径，否则客户端会 404。
 
 更完整的 curl 示例见 [`backend/API_EXAMPLES.md`](backend/API_EXAMPLES.md)。
+
+### 适合度分析接口（原因说明）
+
+适合度分析接口位于：
+
+- `POST /api/v1/analysis/suitability`（`multipart/form-data` 字段：`file`，可选 `scene`）
+
+响应中除 `suitability_score/color_score/fit_score/style_score` 外，还会返回三段“原因说明”字段：
+
+- `scene_match_reason`：场景匹配原因
+- `body_fit_reason`：体型适配原因
+- `style_coordination_reason`：风格协调原因
 
 ### 模型下载/离线提示（重要）
 
