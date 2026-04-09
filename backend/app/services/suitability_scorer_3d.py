@@ -591,6 +591,8 @@ class SuitabilityScorer3D:
         from app.schemas.suitability import SuitabilityResult
 
         return SuitabilityResult(
+            scene_score=scene_score,
+            body_score=body_score,
             suitability_score=overall,
             color_score=color_score,
             fit_score=body_score,  # "fit" dimension = body score

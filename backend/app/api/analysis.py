@@ -587,6 +587,15 @@ class SuitabilityAnalysisResponse(BaseModel):
     fit_score: int = Field(..., ge=0, le=100, description="Body fit suitability score (体型适配)")
     style_score: int = Field(..., ge=0, le=100, description="Style suitability score")
     explanation: Dict[str, str] = Field(..., description="Score explanations per dimension")
+    scene_match_reason: str = Field("", description="场景匹配原因说明")
+    body_fit_reason: str = Field("", description="体型适配原因说明")
+    style_coordination_reason: str = Field("", description="风格协调原因说明")
+
+    # Frontend legacy-friendly fields (0-1 floats)
+    overall_score: float = Field(0.0, ge=0.0, le=1.0, description="Overall score (0-1)")
+    scene_score: float = Field(0.0, ge=0.0, le=1.0, description="Scene score (0-1)")
+    body_shape_score: float = Field(0.0, ge=0.0, le=1.0, description="Body score (0-1)")
+    analysis: str = Field("", description="Summary analysis text")
     recommended_occasions: List[str] = Field(
         default_factory=list, description="Recommended occasions"
     )
@@ -726,6 +735,59 @@ async def analyze_suitability(
                 detail=f"Score calculation failed: {str(e)}",
             )
 
+        def _reason_fallback(key: str) -> str:
+            exp = (suitability_result.explanation or {}).get(key, "").strip()
+            if exp:
+                return exp
+
+            body_type = getattr(user_profile, "body_type", "") or ""
+            prefs = getattr(user_profile, "style_preference", []) or []
+            pref_str = "、".join([str(x) for x in prefs if str(x).strip()][:3])
+            gcat = str(clip_result.get("category") or "").strip()
+            gfit = str(clip_result.get("fit_type") or "").strip()
+            gst = clip_result.get("style_tags") or []
+            gst_str = "、".join([str(x) for x in gst if str(x).strip()][:3])
+
+            if key == "scene":
+                if gst_str:
+                    return f"基于识别到的风格标签（{gst_str}）推断场景适配；可结合你选择的场景做进一步判断。"
+                return "缺少可用的风格标签，场景适配主要参考你的偏好与服装类别。"
+            if key == "body":
+                if body_type and gfit and gcat:
+                    return (
+                        f"{gcat}的{gfit}版型会影响整体比例，与{body_type}体型的重点修饰方向相关。"
+                    )
+                if body_type:
+                    return f"体型适配会结合你的体型（{body_type}）与衣物的版型/剪裁特征进行判断。"
+                return "体型信息不足，建议先在个人设置完善体型与希望修饰部位。"
+            if key == "style":
+                if pref_str and gst_str:
+                    return f"服装风格标签（{gst_str}）与个人偏好（{pref_str}）共同决定风格协调度。"
+                if pref_str:
+                    return f"风格协调度主要参考你的风格偏好（{pref_str}）与衣物风格特征。"
+                return "风格偏好信息不足，建议先在个人设置补充风格偏好。"
+            return ""
+
+        scene_reason = _reason_fallback("scene")
+        body_reason = _reason_fallback("body")
+        style_reason = _reason_fallback("style")
+
+        overall = float(suitability_result.suitability_score) / 100.0
+        scene_score = float(getattr(suitability_result, "scene_score", 0) or 0) / 100.0
+        body_score = (
+            float(getattr(suitability_result, "body_score", suitability_result.fit_score) or 0)
+            / 100.0
+        )
+
+        summary_bits = []
+        if scene_reason:
+            summary_bits.append(f"场景：{scene_reason}")
+        if body_reason:
+            summary_bits.append(f"体型：{body_reason}")
+        if style_reason:
+            summary_bits.append(f"风格：{style_reason}")
+        summary = "；".join(summary_bits)[:520]
+
         return SuitabilityAnalysisResponse(
             garment={
                 "category": clip_result["category"],
@@ -741,6 +803,13 @@ async def analyze_suitability(
             fit_score=suitability_result.fit_score,
             style_score=suitability_result.style_score,
             explanation=suitability_result.explanation,
+            scene_match_reason=scene_reason,
+            body_fit_reason=body_reason,
+            style_coordination_reason=style_reason,
+            overall_score=overall,
+            scene_score=scene_score,
+            body_shape_score=body_score,
+            analysis=summary,
             recommended_occasions=suitability_result.recommended_occasions,
             suggestions=suitability_result.suggestions,
         )

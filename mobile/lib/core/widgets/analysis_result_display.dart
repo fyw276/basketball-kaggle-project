@@ -511,13 +511,33 @@ class SuitabilityResultCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final overall =
-        (result['overall_score'] ?? result['suitability'] ?? 0.0) as double;
+    final overallRaw = result['overall_score'] ??
+        result['suitability'] ??
+        result['suitability_score'] ??
+        0.0;
+    final overall = _toUnitScore(overallRaw);
     final scene = result['scene'] ?? result['recommended_scene'] ?? '';
-    final sceneScore = (result['scene_score'] ?? 0.0) as double;
-    final bodyScore =
-        (result['body_score'] ?? result['body_shape_score'] ?? 0.0) as double;
-    final styleScore = (result['style_score'] ?? 0.0) as double;
+    final sceneScore = _toUnitScore(result['scene_score'] ?? 0.0);
+    final bodyScore = _toUnitScore(
+      result['body_score'] ??
+          result['body_shape_score'] ??
+          result['fit_score'] ??
+          0.0,
+    );
+    final styleScore = _toUnitScore(result['style_score'] ?? 0.0);
+
+    final exp = result['explanation'];
+    final expMap = exp is Map ? exp : null;
+    final sceneReason = (result['scene_match_reason'] ??
+            expMap?['scene'] ??
+            result['scene_reason'] ??
+            '')
+        .toString();
+    final bodyReason =
+        (result['body_fit_reason'] ?? expMap?['body'] ?? '').toString();
+    final styleReason =
+        (result['style_coordination_reason'] ?? expMap?['style'] ?? '')
+            .toString();
 
     return Card(
       child: Padding(
@@ -546,15 +566,24 @@ class SuitabilityResultCard extends StatelessWidget {
             const SizedBox(height: 16),
             const Divider(),
             const SizedBox(height: 16),
-            _buildScoreRow(context, '场景匹配', sceneScore),
+            _buildScoreRow(context, '场景匹配', sceneScore, sceneReason),
             const SizedBox(height: 12),
-            _buildScoreRow(context, '体型适配', bodyScore),
+            _buildScoreRow(context, '体型适配', bodyScore, bodyReason),
             const SizedBox(height: 12),
-            _buildScoreRow(context, '风格协调', styleScore),
+            _buildScoreRow(context, '风格协调', styleScore, styleReason),
           ],
         ),
       ),
     );
+  }
+
+  double _toUnitScore(dynamic v) {
+    if (v is num) {
+      final x = v.toDouble();
+      if (x > 1.0) return (x / 100.0).clamp(0.0, 1.0);
+      return x.clamp(0.0, 1.0);
+    }
+    return 0.0;
   }
 
   Widget _buildOverallScore(BuildContext context, double score) {
@@ -591,38 +620,55 @@ class SuitabilityResultCard extends StatelessWidget {
     );
   }
 
-  Widget _buildScoreRow(BuildContext context, String label, double score) {
-    return Row(
+  Widget _buildScoreRow(
+      BuildContext context, String label, double score, String reason) {
+    final r = reason.trim();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        SizedBox(
-          width: 80,
-          child: Text(
-            label,
-            style: Theme.of(context).textTheme.bodyMedium,
-          ),
-        ),
-        Expanded(
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              value: score,
-              minHeight: 8,
-              backgroundColor:
-                  Theme.of(context).colorScheme.surfaceContainerHighest,
+        Row(
+          children: [
+            SizedBox(
+              width: 80,
+              child: Text(
+                label,
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
             ),
-          ),
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: score,
+                  minHeight: 8,
+                  backgroundColor:
+                      Theme.of(context).colorScheme.surfaceContainerHighest,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            SizedBox(
+              width: 48,
+              child: Text(
+                '${(score * 100).toStringAsFixed(0)}%',
+                textAlign: TextAlign.end,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+              ),
+            ),
+          ],
         ),
-        const SizedBox(width: 12),
-        SizedBox(
-          width: 48,
-          child: Text(
-            '${(score * 100).toStringAsFixed(0)}%',
-            textAlign: TextAlign.end,
+        if (r.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Text(
+            r,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  fontWeight: FontWeight.bold,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  height: 1.35,
                 ),
           ),
-        ),
+        ],
       ],
     );
   }

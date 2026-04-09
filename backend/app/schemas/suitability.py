@@ -2,7 +2,7 @@
 Suitability scoring schemas
 """
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 class SuitabilityResult(BaseModel):
     """适合度评分结果（场景-体型-风格 三维模型）"""
 
+    scene_score: Optional[int] = Field(None, ge=0, le=100, description="场景匹配度（含颜色子权重）")
+    body_score: Optional[int] = Field(None, ge=0, le=100, description="体型适配度")
     suitability_score: int = Field(..., ge=0, le=100, description="综合评分（加权平均）")
     color_score: int = Field(..., ge=0, le=100, description="颜色适合度（肤色匹配）")
     fit_score: int = Field(..., ge=0, le=100, description="版型适合度（体型适配）")
