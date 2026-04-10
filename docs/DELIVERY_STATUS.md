@@ -2,6 +2,55 @@
 
 ## Date
 
+2026-04-10
+
+## Scope
+
+This release focused on smart-outfit API contract normalization, AI recommendation output stabilization, and the home/smart-outfit UX feedback loop.
+
+## Completed
+
+1. API response contract standardized
+   - Added shared success/error envelope helpers in `backend/app/core/api_response.py`
+   - Wrapped successful JSON responses in `ApiEnvelopeMiddleware`
+   - Updated the error handlers to emit the same envelope shape
+
+2. Smart-outfit contract expanded
+   - Added structured `address` input/output support
+   - Added `ai_recommendation` with fixed fields: `outfit`, `style`, `score`, `reasons`
+   - Forced AI JSON parsing with fallback so the frontend always receives a stable schema
+   - Changed empty-wardrobe generation to a clear 400 error instead of a virtual fallback
+
+3. Weather/address diagnostics improved
+   - Added optional AMap reverse-geocoding support
+   - Added `geocode_source` and `geocode_error` to help diagnose partial address resolution
+
+4. Flutter UX closed the loop
+   - Home screen now shows city, weather, temperature, and a today-recommendation card
+   - Home recommendation card shows score, style, reasons, preview thumbnail, and last-viewed outfit index
+   - Smart-outfit screen adds one-tap generate, page indicators, current-card highlighting, and resume-to-index behavior
+   - `PlatformImage` now has a consistent failed-image placeholder
+
+5. Docs synchronized
+   - Updated root README, mobile README, backend README, and project status pages
+   - Added this release note for auditability
+
+## Verification
+
+- `pre-commit run --all-files` passed after auto-fixes were applied
+- `cd mobile; flutter test --no-pub` passed
+- `cd backend; python -m pytest tests_lite -v --tb=short -x` passed
+- `git push` completed successfully and pre-push hooks passed
+
+## Current Risks
+
+1. The full backend test suite was not run in this release; only the documented pre-push lite suite was executed.
+2. AI recommendation quality still depends on the configured external provider when `AI_RECOMMENDER_ENABLED=true`.
+
+---
+
+## Date
+
 2026-04-07
 
 ## Scope
