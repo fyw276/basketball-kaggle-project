@@ -191,12 +191,30 @@ class _PlatformImageState extends State<PlatformImage> {
 
   Widget _buildErrorOrFallback() {
     if (widget.errorWidget != null) return widget.errorWidget!;
+    if (widget.placeholder != null) return widget.placeholder!;
     return Container(
       width: widget.width,
       height: widget.height,
-      color: Colors.grey.shade100,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Colors.grey.shade100, Colors.grey.shade200],
+        ),
+      ),
       child: const Center(
-        child: Icon(Icons.image_not_supported, color: Colors.grey, size: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.image_not_supported_outlined,
+                color: Colors.grey, size: 34),
+            SizedBox(height: 6),
+            Text(
+              '图片加载失败',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
+        ),
       ),
     );
   }

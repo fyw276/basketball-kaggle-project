@@ -188,7 +188,7 @@ pre-commit run --all-files
   - `GET /api/v1/smart-outfit/weather` — 经纬度查天气
   - `GET /api/v1/smart-outfit/weather-by-city` — 城市名查天气
   - `POST /api/v1/smart-outfit/upload-reference` — 上传参考衣物图
-  - `POST /api/v1/smart-outfit/generate` — 生成多套搭配（JSON）
+  - `POST /api/v1/smart-outfit/generate` — 生成多套搭配（JSON，含 `ai_recommendation`）
  - `POST /api/v1/mood/recommend` - 情绪穿搭推荐（可选包含衣橱匹配）
  - `GET /api/v1/mood/quick-recall` - 心情快捷入口列表
  - `POST /api/v1/tryon/garment` - 虚拟试衣（FormData：garment_file/person_file，可选 prompt）
@@ -204,6 +204,10 @@ pre-commit run --all-files
 - `REDIS_URL` - Redis 缓存连接
 - `JWT_SECRET_KEY` - JWT 密钥（生产环境必须修改）
 - `CORS_ORIGINS` - 允许的跨域来源
+- `AI_RECOMMENDER_ENABLED` - 是否启用 AI 推荐解释层
+- `AI_RECOMMENDER_API_BASE_URL` - OpenAI 兼容接口地址
+- `AI_RECOMMENDER_API_KEY` - AI 推荐接口密钥
+- `AI_RECOMMENDER_MODEL` - AI 推荐模型名（默认 `gpt-4o-mini`）
 
 ## 下一步
 

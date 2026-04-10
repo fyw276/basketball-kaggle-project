@@ -57,6 +57,23 @@ class ApiClient {
     return h;
   }
 
+  dynamic _unwrapApiResponse(dynamic decoded) {
+    if (decoded is Map &&
+        decoded.containsKey('success') &&
+        decoded.containsKey('data') &&
+        decoded.containsKey('error')) {
+      if (decoded['success'] == true) {
+        return decoded['data'];
+      }
+      final error = decoded['error'];
+      if (error is Map && error['message'] != null) {
+        return {'error': error['message'].toString()};
+      }
+      return {'error': decoded['message']?.toString() ?? 'Request failed'};
+    }
+    return decoded;
+  }
+
   // ─── 工具：Web / 移动端统一用字节上传（避免 MultipartFile.fromPath 在 Web 不可用）──
 
   static Future<http.MultipartFile?> _multipartImage(
@@ -91,7 +108,10 @@ class ApiClient {
         headers: _jsonHeaders,
       );
       if (response.statusCode == 200) {
-        return json.decode(response.body);
+        final decoded = json.decode(response.body);
+        final unwrapped = _unwrapApiResponse(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
       }
       return {'error': 'Request failed with status: ${response.statusCode}'};
     } catch (e) {
@@ -106,7 +126,12 @@ class ApiClient {
         headers: _jsonHeaders,
       );
       if (response.statusCode == 200) {
-        return json.decode(response.body);
+        final decoded = json.decode(response.body);
+        final unwrapped = _unwrapApiResponse(decoded);
+        if (unwrapped is List) return unwrapped;
+        if (unwrapped is Map && unwrapped['data'] is List)
+          return unwrapped['data'];
+        return unwrapped;
       }
       return [];
     } catch (e) {
@@ -124,7 +149,10 @@ class ApiClient {
         body: json.encode(data),
       );
       if (response.statusCode == 200 || response.statusCode == 201) {
-        return json.decode(response.body);
+        final decoded = json.decode(response.body);
+        final unwrapped = _unwrapApiResponse(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
       }
       if (response.statusCode == 404) {
         return {
@@ -183,7 +211,10 @@ class ApiClient {
         if (response.body.isEmpty) {
           return <String, dynamic>{};
         }
-        return json.decode(response.body) as Map<String, dynamic>;
+        final decoded = json.decode(response.body);
+        final unwrapped = _unwrapApiResponse(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
       }
       return {'error': 'Request failed with status: ${response.statusCode}'};
     } catch (e) {
@@ -203,7 +234,10 @@ class ApiClient {
         if (response.body.isEmpty) {
           return <String, dynamic>{};
         }
-        return json.decode(response.body) as Map<String, dynamic>;
+        final decoded = json.decode(response.body);
+        final unwrapped = _unwrapApiResponse(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
       }
       return {'error': 'Request failed with status: ${response.statusCode}'};
     } catch (e) {
@@ -311,8 +345,10 @@ class ApiClient {
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         final decoded = json.decode(response.body) as dynamic;
-        if (decoded is Map) return decoded.cast<String, dynamic>();
-        return {'data': decoded};
+        final unwrapped = _unwrapApiResponse(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        if (unwrapped is List) return {'data': unwrapped};
+        return {'data': unwrapped};
       }
       return {'error': 'Upload failed with status: ${response.statusCode}'};
     } catch (e) {
@@ -412,7 +448,8 @@ class ApiClient {
       final response = await http.Response.fromStream(streamedResponse);
 
       if (response.statusCode == 200) {
-        return json.decode(response.body);
+        final decoded = json.decode(response.body);
+        return _unwrapApiResponse(decoded);
       }
       return {'error': 'Split failed with status: ${response.statusCode}'};
     } catch (e) {
@@ -446,7 +483,10 @@ class ApiClient {
       final response = await http.Response.fromStream(streamedResponse);
 
       if (response.statusCode == 200) {
-        return json.decode(response.body);
+        final decoded = json.decode(response.body);
+        final unwrapped = _unwrapApiResponse(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
       }
       return {'error': 'Analysis failed with status: ${response.statusCode}'};
     } catch (e) {
@@ -509,7 +549,10 @@ class ApiClient {
       final response = await http.Response.fromStream(streamedResponse);
 
       if (response.statusCode == 200) {
-        return json.decode(response.body);
+        final decoded = json.decode(response.body);
+        final unwrapped = _unwrapApiResponse(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
       }
       return {
         'error': 'Recommendation failed with status: ${response.statusCode}'
@@ -575,7 +618,10 @@ class ApiClient {
       final response = await http.Response.fromStream(streamedResponse);
 
       if (response.statusCode == 200) {
-        return json.decode(response.body);
+        final decoded = json.decode(response.body);
+        final unwrapped = _unwrapApiResponse(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
       }
       return {'error': 'Analysis failed with status: ${response.statusCode}'};
     } catch (e) {
@@ -630,7 +676,10 @@ class ApiClient {
           await http.Response.fromStream(streamedResponse).timeout(timeout);
 
       if (response.statusCode == 200) {
-        return json.decode(response.body) as Map<String, dynamic>;
+        final decoded = json.decode(response.body);
+        final unwrapped = _unwrapApiResponse(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
       }
       if (response.statusCode == 401) {
         return {
@@ -670,7 +719,10 @@ class ApiClient {
           .get(uri, headers: _jsonHeaders)
           .timeout(const Duration(seconds: 25));
       if (response.statusCode == 200) {
-        return json.decode(response.body) as Map<String, dynamic>;
+        final decoded = json.decode(response.body);
+        final unwrapped = _unwrapApiResponse(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
       }
       return {'error': 'Weather failed: ${response.statusCode}'};
     } catch (e) {
@@ -686,7 +738,10 @@ class ApiClient {
           .get(uri, headers: _jsonHeaders)
           .timeout(const Duration(seconds: 25));
       if (response.statusCode == 200) {
-        return json.decode(response.body) as Map<String, dynamic>;
+        final decoded = json.decode(response.body);
+        final unwrapped = _unwrapApiResponse(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
       }
       return {'error': 'City weather failed: ${response.statusCode}'};
     } catch (e) {
@@ -722,6 +777,7 @@ class ApiClient {
     required String imageUrl,
     required String location,
     String city = '',
+    Map<String, String>? address,
     required String weather,
     required double temperature,
     String mood = '',
@@ -735,6 +791,7 @@ class ApiClient {
       'image_url': imageUrl,
       'location': loc,
       'city': city.trim().isNotEmpty ? city.trim() : loc,
+      if (address != null) 'address': address,
       'weather': weather,
       'temperature': temperature,
       'mood': moodNorm,
@@ -761,10 +818,12 @@ class ApiClient {
           .timeout(const Duration(seconds: 180));
       if (response.statusCode == 200) {
         final decoded = json.decode(response.body);
-        if (decoded is Map) {
-          return Map<String, dynamic>.from(decoded);
+        final unwrapped = _unwrapApiResponse(decoded);
+        if (unwrapped is Map && unwrapped['error'] != null) {
+          return {'error': unwrapped['error'].toString()};
         }
-        return {'error': '响应格式错误'};
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
       }
       final err = _parseFastApiErrorBody(response.body);
       if (err != null) return {'error': err};
@@ -779,8 +838,17 @@ class ApiClient {
     if (body.isEmpty) return null;
     try {
       final decoded = json.decode(body);
-      if (decoded is Map && decoded['detail'] != null) {
-        return decoded['detail'].toString();
+      if (decoded is Map) {
+        if (decoded['detail'] != null) {
+          return decoded['detail'].toString();
+        }
+        final error = decoded['error'];
+        if (error is Map && error['message'] != null) {
+          return error['message'].toString();
+        }
+        if (decoded['message'] != null) {
+          return decoded['message'].toString();
+        }
       }
     } catch (_) {}
     return null;

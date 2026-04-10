@@ -710,12 +710,29 @@ curl -X POST "http://127.0.0.1:8010/api/v1/recognition/category" \
 
 **请求体**: `application/json`
 - `image_url` (string, 必填)
+- `location`（可选，完整地址文本）
 - `city`, `weather`, `temperature`, `mood`（可选；`mood` 可为空字符串）
+- `address`（可选，结构化地址对象：`province/city/district/street/full_address/display_address`）
 - `count`（可选，默认 3，范围 1–5）
 - `regeneration_index`（可选，非负整数）
 - `gender_expression`（可选，0.0–1.0）
 
-**成功响应** (200 OK): JSON 含 `outfits`（数组，每项含效果图 URL、单品列表、风格与天气适配说明等），以及 `city`、`weather`、`temperature`、`mood`、`weather_fallback` 等。
+**成功响应** (200 OK): JSON 含 `outfits`（数组，每项含效果图 URL、单品列表、风格与天气适配说明等），以及 `city`、`address`、`weather`、`temperature`、`mood`、`weather_fallback` 等。
+
+**`outfits[i].ai_recommendation` 结构**:
+- `outfit`: string，推荐标题
+- `style`: string，推荐风格
+- `score`: number，范围 0-100
+- `reasons`: string[3]，固定 3 条推荐理由
+
+**AI 推荐解析规则**:
+- 后端向 AI 发送严格 JSON Prompt（只允许 `outfit/style/score/reasons`）。
+- 后端强制解析 JSON；若 AI 返回非 JSON、字段缺失、超时或未配置，将自动 fallback。
+- fallback 仍返回相同结构，保证前端渲染稳定。
+
+**业务约束**:
+- 推荐必须结合用户衣橱数据。
+- 若衣橱为空，接口返回 400，并提示先添加衣物后再生成推荐。
 
 ---
 

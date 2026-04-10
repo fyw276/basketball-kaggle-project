@@ -19,9 +19,12 @@ class SmartOutfitGenerateRequest(BaseModel):
     image_url: str = Field(..., description="参考衣物图片 URL（本账号 uploads 下）")
     location: str = Field("", description="完整定位地址（省市区街道），优先于 city")
     city: str = Field("", description="城市名或短地址（兼容旧字段）")
+    address: Dict[str, str] = Field(
+        default_factory=dict, description="结构化地址（province/city/district/street）"
+    )
     weather: str = Field("", description="天气状况（晴/阴/雨等）")
     temperature: float = Field(20.0, description="气温 ℃")
-    mood: str = Field("", max_length=2000, description="情绪描述，可空")
+    mood: str = Field("", max_length=120, description="情绪描述，可空")
     count: int = Field(3, ge=1, le=5, description="一次生成套数")
     regeneration_index: int = Field(0, ge=0, description="重新生成时递增，用于结果多样化")
     gender_expression: Optional[float] = Field(
@@ -32,6 +35,7 @@ class SmartOutfitGenerateRequest(BaseModel):
 class SmartOutfitGenerateResponse(BaseModel):
     outfits: List[Dict[str, Any]]
     city: str = ""
+    address: Dict[str, str] = Field(default_factory=dict)
     weather: str = ""
     temperature: float = 20.0
     mood: str = ""
@@ -50,17 +54,21 @@ async def get_weather_context(
         data = await fetch_weather_lat_lon(latitude, longitude)
         return {
             "city": data["city"],
-            "province": data.get("province", ""),
-            "addr_city": data.get("addr_city", ""),
-            "district": data.get("district", ""),
-            "street": data.get("street", ""),
-            "full_address": data.get("full_address", data.get("display_address", "")),
-            "display_address": data["display_address"],
+            "address": {
+                "province": data.get("province", ""),
+                "city": data.get("addr_city", ""),
+                "district": data.get("district", ""),
+                "street": data.get("street", ""),
+                "full_address": data.get("full_address", data.get("display_address", "")),
+                "display_address": data.get("display_address", ""),
+            },
             "latitude": data["latitude"],
             "longitude": data["longitude"],
             "temperature": data["temperature"],
             "weather": data["weather"],
             "weather_code": data["weather_code"],
+            "geocode_source": data.get("geocode_source", ""),
+            "geocode_error": data.get("geocode_error", ""),
             "fallback": False,
         }
     except Exception as e:
@@ -82,17 +90,21 @@ async def get_weather_by_city(
             raise HTTPException(status_code=404, detail="未找到该地区天气，请重试或换个地名")
         return {
             "city": res["city"],
-            "province": res.get("province", ""),
-            "addr_city": res.get("addr_city", ""),
-            "district": res.get("district", ""),
-            "street": res.get("street", ""),
-            "full_address": res.get("full_address", res.get("display_address", "")),
-            "display_address": res["display_address"],
+            "address": {
+                "province": res.get("province", ""),
+                "city": res.get("addr_city", ""),
+                "district": res.get("district", ""),
+                "street": res.get("street", ""),
+                "full_address": res.get("full_address", res.get("display_address", "")),
+                "display_address": res.get("display_address", ""),
+            },
             "latitude": res["latitude"],
             "longitude": res["longitude"],
             "temperature": res["temperature"],
             "weather": res["weather"],
             "weather_code": res["weather_code"],
+            "geocode_source": res.get("geocode_source", ""),
+            "geocode_error": res.get("geocode_error", ""),
             "fallback": False,
         }
     except HTTPException:
@@ -131,7 +143,14 @@ async def post_generate_smart_outfit(
     与前端约定：`/api/v1/smart-outfit/generate`。
     """
     try:
-        place = (body.location or body.city or "").strip()
+        addr = body.address or {}
+        place = (
+            addr.get("full_address")
+            or addr.get("display_address")
+            or body.location
+            or body.city
+            or ""
+        ).strip()
         out = await generate_smart_outfits(
             db=db,
             user_id=str(current_user.user_id),
@@ -144,7 +163,17 @@ async def post_generate_smart_outfit(
             regeneration_index=body.regeneration_index,
             gender_expression=body.gender_expression,
         )
-        return SmartOutfitGenerateResponse(**out)
+        return SmartOutfitGenerateResponse(
+            **out,
+            address={
+                "province": out.get("province", addr.get("province", "")),
+                "city": out.get("addr_city", out.get("city", addr.get("city", ""))),
+                "district": out.get("district", addr.get("district", "")),
+                "street": out.get("street", addr.get("street", "")),
+                "full_address": out.get("full_address", addr.get("full_address", "")),
+                "display_address": out.get("display_address", addr.get("display_address", "")),
+            },
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except FileNotFoundError as e:

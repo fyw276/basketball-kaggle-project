@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -22,6 +23,204 @@ from app.services.storage import StorageService
 from app.services.user_profile import get_profile_by_user_id
 
 logger = setup_logging()
+
+
+def _wardrobe_summary(wardrobe: List[Garment]) -> Dict[str, Any]:
+    cats: Dict[str, int] = {}
+    styles: Dict[str, int] = {}
+    for g in wardrobe:
+        c = (g.category or "").strip()
+        if c:
+            cats[c] = cats.get(c, 0) + 1
+        for t in g.style_tags or []:
+            tt = str(t).strip()
+            if tt:
+                styles[tt] = styles.get(tt, 0) + 1
+    top_categories = sorted(cats.items(), key=lambda x: x[1], reverse=True)[:5]
+    top_styles = sorted(styles.items(), key=lambda x: x[1], reverse=True)[:6]
+    return {
+        "total": len(wardrobe),
+        "top_categories": [f"{k}({v})" for k, v in top_categories],
+        "top_styles": [f"{k}({v})" for k, v in top_styles],
+    }
+
+
+def _fallback_ai_recommendation(
+    *,
+    outfit_name: str,
+    outfit_style: str,
+    score_hint: float,
+    weather_note: str,
+    mood: str,
+    item_names: List[str],
+) -> Dict[str, Any]:
+    reasons = [
+        f"优先使用你的衣橱单品：{('、'.join(item_names[:2]) if item_names else '当前搭配中的现有单品')}，减少重复购置。",
+        f"风格聚焦在{outfit_style}，与本套单品标签一致，整体更统一。",
+        weather_note or "已按当前天气条件做轻量适配。",
+    ]
+    if mood.strip():
+        reasons[1] = f"结合你当前情绪“{mood[:18]}”微调为{outfit_style}方向，保持穿着舒适感。"
+    return {
+        "outfit": outfit_name,
+        "style": outfit_style,
+        "score": round(max(0.0, min(1.0, score_hint)) * 100, 1),
+        "reasons": reasons[:3],
+    }
+
+
+def _extract_json_object(raw_text: str) -> Optional[Dict[str, Any]]:
+    text = (raw_text or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    s = text.find("{")
+    e = text.rfind("}")
+    if s == -1 or e == -1 or e <= s:
+        return None
+    try:
+        parsed = json.loads(text[s : e + 1])
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        return None
+    return None
+
+
+def _coerce_ai_recommendation(
+    parsed: Optional[Dict[str, Any]],
+    fallback: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not parsed:
+        return fallback
+    outfit = str(parsed.get("outfit") or "").strip() or fallback["outfit"]
+    style = str(parsed.get("style") or "").strip() or fallback["style"]
+    score_raw = parsed.get("score")
+    score_val: float
+    try:
+        score_val = float(score_raw)
+    except Exception:
+        score_val = float(fallback["score"])
+    if score_val <= 1.0:
+        score_val *= 100.0
+    score_val = round(max(0.0, min(100.0, score_val)), 1)
+
+    reasons_raw = parsed.get("reasons")
+    reasons: List[str] = []
+    if isinstance(reasons_raw, list):
+        for r in reasons_raw:
+            t = str(r).strip()
+            if t:
+                reasons.append(t)
+    if not reasons:
+        reasons = list(fallback["reasons"])
+    while len(reasons) < 3:
+        reasons.append(fallback["reasons"][len(reasons) % len(fallback["reasons"])])
+    return {
+        "outfit": outfit,
+        "style": style,
+        "score": score_val,
+        "reasons": reasons[:3],
+    }
+
+
+async def _generate_ai_recommendation(
+    *,
+    card_dict: Dict[str, Any],
+    weather_note: str,
+    mood: str,
+    wardrobe_info: Dict[str, Any],
+) -> Dict[str, Any]:
+    style_tags = card_dict.get("style_tags") or []
+    style_name = "、".join([str(x) for x in style_tags[:2]]) or "简约"
+    outfit_name = card_dict.get("description") or card_dict.get("scene") or "智能搭配"
+    item_names = [
+        str((it or {}).get("name") or "").strip() for it in (card_dict.get("items") or [])
+    ]
+    item_names = [x for x in item_names if x]
+    fallback = _fallback_ai_recommendation(
+        outfit_name=str(outfit_name),
+        outfit_style=style_name,
+        score_hint=float(card_dict.get("overall_score") or 0.65),
+        weather_note=weather_note,
+        mood=mood,
+        item_names=item_names,
+    )
+
+    if not getattr(settings, "AI_RECOMMENDER_ENABLED", False):
+        return fallback
+
+    api_base = str(getattr(settings, "AI_RECOMMENDER_API_BASE_URL", "") or "").strip()
+    api_key = str(getattr(settings, "AI_RECOMMENDER_API_KEY", "") or "").strip()
+    model = str(getattr(settings, "AI_RECOMMENDER_MODEL", "gpt-4o-mini") or "gpt-4o-mini").strip()
+    timeout_ms = int(getattr(settings, "AI_RECOMMENDER_TIMEOUT_MS", 8000) or 8000)
+    if not api_base or not api_key:
+        return fallback
+
+    system_prompt = (
+        "你是服装搭配助手。必须只输出一个 JSON 对象，不要 markdown，不要解释。"
+        "JSON 必须包含且只包含字段: outfit, style, score, reasons。"
+        "其中 score 是 0-100 数值，reasons 是恰好 3 条中文字符串，且必须体现用户衣橱信息。"
+    )
+    user_payload = {
+        "target_schema": {
+            "outfit": "string",
+            "style": "string",
+            "score": "number(0-100)",
+            "reasons": ["string", "string", "string"],
+        },
+        "input": {
+            "scene": card_dict.get("scene"),
+            "description": card_dict.get("description"),
+            "overall_score": card_dict.get("overall_score"),
+            "style_tags": style_tags,
+            "items": [
+                {
+                    "name": (it or {}).get("name"),
+                    "category": (it or {}).get("category"),
+                    "style_tags": (it or {}).get("style_tags") or [],
+                }
+                for it in (card_dict.get("items") or [])
+            ],
+            "weather_note": weather_note,
+            "mood": mood,
+            "wardrobe_summary": wardrobe_info,
+        },
+    }
+
+    url = f"{api_base.rstrip('/')}/chat/completions"
+    body = {
+        "model": model,
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+        ],
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=max(1.0, timeout_ms / 1000.0)) as client:
+            resp = await client.post(url, headers=headers, json=body)
+            resp.raise_for_status()
+            data = resp.json()
+            text = (
+                ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
+                if isinstance(data, dict)
+                else ""
+            )
+            parsed = _extract_json_object(str(text or ""))
+            return _coerce_ai_recommendation(parsed, fallback)
+    except Exception as e:
+        logger.warning("ai recommendation fallback due to error: %s", e)
+        return fallback
 
 
 def normalize_mood_input(mood: Optional[str]) -> str:
@@ -338,16 +537,7 @@ async def generate_smart_outfits(
 
     recommender = OutfitRecommender3D()
     if not wardrobe_ordered:
-        virtual = _fallback_virtual_outfits(clip_result, weather_note, count, seed)
-        return {
-            "outfits": virtual,
-            "city": city,
-            "weather": weather,
-            "temperature": temperature,
-            "mood": mood,
-            "weather_fallback": False,
-            "message": "衣橱为空，已返回款式方向建议",
-        }
+        raise ValueError("衣橱为空，请先添加衣物后再生成推荐")
 
     cards = recommender.recommend_outfits(
         target_garment=target,
@@ -364,8 +554,16 @@ async def generate_smart_outfits(
 
     base = f"http://127.0.0.1:{settings.PORT}"
     outfits_resp: List[Dict[str, Any]] = []
+    wardrobe_info = _wardrobe_summary(wardrobe_ordered)
     for c in cards[:count]:
-        outfits_resp.append(_card_to_response_dict(c, weather_note, base))
+        card_dict = _card_to_response_dict(c, weather_note, base)
+        card_dict["ai_recommendation"] = await _generate_ai_recommendation(
+            card_dict=card_dict,
+            weather_note=weather_note,
+            mood=mood,
+            wardrobe_info=wardrobe_info,
+        )
+        outfits_resp.append(card_dict)
 
     return {
         "outfits": outfits_resp,

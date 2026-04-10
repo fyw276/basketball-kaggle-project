@@ -79,6 +79,21 @@ class Settings(BaseSettings):
         description="下载超时秒数；空则由 hf_hub_env 默认 120",
     )
 
+    # 逆地理（可选）：高德 Web 服务 Key；国内部署时填写可提升「省市区街道」解析成功率（经纬度接口在 Open-Meteo 之后、Nominatim 之前尝试）
+    AMAP_WEB_KEY: str = Field(
+        default="", description="高德逆地理 key，空则仅用 Open-Meteo + Nominatim"
+    )
+
+    # AI 推荐解释层（OpenAI 兼容接口）
+    AI_RECOMMENDER_ENABLED: bool = False
+    AI_RECOMMENDER_API_BASE_URL: str = Field(
+        default="",
+        description="OpenAI 兼容接口基址，如 https://api.openai.com/v1",
+    )
+    AI_RECOMMENDER_API_KEY: str = Field(default="", description="AI 推荐接口密钥")
+    AI_RECOMMENDER_MODEL: str = Field(default="gpt-4o-mini", description="AI 推荐模型名")
+    AI_RECOMMENDER_TIMEOUT_MS: int = Field(default=8000, description="AI 推荐超时时间（毫秒）")
+
     # CORS
     CORS_ORIGINS: str = Field(
         default="http://localhost:3000,http://localhost:8080",

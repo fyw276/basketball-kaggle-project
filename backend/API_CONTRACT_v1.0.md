@@ -359,11 +359,29 @@
 - **认证**: 必需
 - **请求**: `application/json`
   - `image_url`: string（必填）
+  - `location`: string（可选，完整地址）
   - `city`, `weather`, `temperature`, `mood`: 可选；`mood` 可为 `""`
+  - `address`: object（可选，结构化地址）
+    - `province`, `city`, `district`, `street`, `full_address`, `display_address`
   - `count`: 可选，默认 3（1–5）
   - `regeneration_index`: 可选，重新生成时递增
   - `gender_expression`: 可选，0–1
-- **响应** (200): 含 `outfits: Array<Record<string, unknown>>` 及天气/城市回显字段
+- **响应** (200): 含 `outfits: Array<Record<string, unknown>>`、`city`、`address`、`weather`、`temperature`、`mood`、`weather_fallback`
+
+`outfits[i]` 关键字段约束：
+- `description`: string
+- `overall_score`: number（0-1）
+- `items`: Array<{ `name`, `category`, `image_url`, `style_tags` }>
+- `ai_recommendation`: object（固定结构）
+  - `outfit`: string
+  - `style`: string
+  - `score`: number（0-100）
+  - `reasons`: string[3]
+
+AI 解释层约束：
+- 后端对 AI 返回执行强制 JSON 解析，仅接受 `outfit/style/score/reasons`。
+- 解析失败、超时、未配置时自动 fallback，但仍返回相同结构（保证前端稳定）。
+- 推荐必须结合用户衣橱数据；若衣橱为空，接口返回 400（提示先添加衣物）。
 
 #### 5.4 适合度评分
 - **端点**: `POST /api/v1/analysis/suitability`

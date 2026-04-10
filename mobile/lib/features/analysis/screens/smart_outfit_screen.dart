@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:city_pickers/city_pickers.dart';
@@ -21,7 +22,14 @@ import '../../../core/widgets/platform_image.dart';
 /// 智能穿搭：参考图 + 自动天气 + 可选情绪 → 3 套衣橱搭配，可重新生成。
 /// 定位：浏览器/系统高精度 GPS（非 IP）；地址由服务端逆地理解析；失败时四级行政区选择器降级。
 class SmartOutfitScreen extends StatefulWidget {
-  const SmartOutfitScreen({super.key});
+  final bool autoPickAndGenerate;
+  final int initialResultIndex;
+
+  const SmartOutfitScreen({
+    super.key,
+    this.autoPickAndGenerate = false,
+    this.initialResultIndex = 0,
+  });
 
   @override
   State<SmartOutfitScreen> createState() => _SmartOutfitScreenState();
@@ -35,6 +43,8 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
   /// 短地名（接口 city 字段）
   String _cityShort = '';
 
+  Map<String, String> _addressParts = const {};
+
   /// 服务端逆地理完整一行（省 市 区 街道），**禁止展示经纬度**
   String _fullAddressLine = '';
   String _displayAddress = '';
@@ -44,7 +54,10 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
   bool _weatherFallback = false;
 
   List<Map<String, dynamic>> _outfits = [];
+  int _currentOutfitIndex = 0;
   bool _generating = false;
+  bool _oneTapBusy = false;
+  bool _didJumpToInitialIndex = false;
   int _regenIndex = 0;
 
   /// 1.0 避免 Web 窄屏下右侧露出下一张卡片被裁切；左右留白由卡片 Padding 承担。
@@ -73,6 +86,11 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
   void initState() {
     super.initState();
     Future.microtask(_restoreCachedThenFetch);
+    if (widget.autoPickAndGenerate) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _oneTapGenerate();
+      });
+    }
   }
 
   Future<void> _restoreCachedThenFetch() async {
@@ -200,100 +218,37 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
   }
 
   void _applyWeatherPayload(Map<String, dynamic> r, {required bool fallback}) {
-    String ensureSuffix(String s, String kind) {
-      var t = s.trim();
-      if (t.isEmpty) return '';
-      if (kind == 'province') {
-        if (t.endsWith('省') || t.endsWith('自治区') || t.endsWith('特别行政区'))
-          return t;
-        if (t == '北京' || t == '上海' || t == '天津' || t == '重庆') return '$t市';
-        return '$t省';
+    final addr = Map<String, dynamic>.from(r['address'] ?? const {});
+    final p = addr['province']?.toString().trim() ?? '';
+    final c = addr['city']?.toString().trim() ?? '';
+    final d = addr['district']?.toString().trim() ?? '';
+    final s = addr['street']?.toString().trim() ?? '';
+    final full = addr['full_address']?.toString().trim() ??
+        r['full_address']?.toString().trim() ??
+        '';
+    final disp = addr['display_address']?.toString().trim() ??
+        r['display_address']?.toString().trim() ??
+        full;
+    final city = c.isNotEmpty ? c : r['city']?.toString().trim();
+    if (kDebugMode) {
+      final gs = r['geocode_source']?.toString();
+      final ge = r['geocode_error']?.toString();
+      if ((gs != null && gs.isNotEmpty) || (ge != null && ge.isNotEmpty)) {
+        debugPrint(
+          '[smart_outfit weather] geocode_source=$gs geocode_error=$ge',
+        );
       }
-      if (kind == 'city') {
-        if (t.endsWith('市') ||
-            t.endsWith('自治州') ||
-            t.endsWith('地区') ||
-            t.endsWith('盟')) return t;
-        return '$t市';
-      }
-      if (kind == 'district') {
-        if (t.endsWith('区') ||
-            t.endsWith('县') ||
-            t.endsWith('市') ||
-            t.endsWith('旗')) return t;
-        return '$t区';
-      }
-      return t;
     }
-
-    String base(String s) {
-      var t = s.trim();
-      for (final suf in [
-        '特别行政区',
-        '自治区',
-        '自治州',
-        '地区',
-        '盟',
-        '省',
-        '市',
-        '县',
-        '区',
-        '旗',
-        '镇',
-        '乡',
-        '街道'
-      ]) {
-        if (t.endsWith(suf) && t.length > suf.length) {
-          return t.substring(0, t.length - suf.length);
-        }
-      }
-      return t;
-    }
-
-    String formatLine(String p, String c, String d, String s) {
-      final parts =
-          [p, c, d, s].map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
-      final out = <String>[];
-      final seen = <String>{};
-      for (final part in parts) {
-        final b = base(part);
-        if (b.isEmpty || seen.contains(b)) continue;
-        seen.add(b);
-        out.add(part);
-      }
-      return out.join(' ');
-    }
-
-    final rp = (r['province'] ?? '').toString().trim();
-    final rc = (r['addr_city'] ?? '').toString().trim();
-    final rd = (r['district'] ?? '').toString().trim();
-    final rs = (r['street'] ?? '').toString().trim();
-    var p = ensureSuffix(rp, 'province');
-    var c = ensureSuffix(rc, 'city');
-    var d = rd.isNotEmpty ? ensureSuffix(rd, 'district') : '';
-    var s = rs;
-
-    // 禁止重复：区/街道 不允许复用市名
-    if (base(d) == base(c)) d = '';
-    if (base(s) == base(c) || base(s) == base(d)) s = '';
-
-    final formatted = formatLine(p, c, d, s);
-
-    final full = formatted.isNotEmpty
-        ? formatted
-        : (r['full_address'] ?? r['display_address'])?.toString().trim();
-    final disp = formatted.isNotEmpty
-        ? formatted
-        : r['display_address']?.toString().trim();
-    final city = (c.isNotEmpty ? c : r['city']?.toString().trim());
     setState(() {
-      _fullAddressLine =
-          (full != null && full.isNotEmpty) ? full : (disp ?? '');
-      _displayAddress =
-          _fullAddressLine.isNotEmpty ? _fullAddressLine : (disp ?? '');
-      _cityShort = (city != null && city.isNotEmpty)
-          ? city
-          : (_fullAddressLine.isNotEmpty ? _fullAddressLine : '');
+      _addressParts = {
+        if (p.isNotEmpty) 'province': p,
+        if (c.isNotEmpty) 'city': c,
+        if (d.isNotEmpty) 'district': d,
+        if (s.isNotEmpty) 'street': s,
+      };
+      _fullAddressLine = full.isNotEmpty ? full : disp;
+      _displayAddress = disp;
+      _cityShort = city != null && city.isNotEmpty ? city : '';
       _weather = r['weather']?.toString() ?? '晴';
       _temp = (r['temperature'] as num?)?.toDouble() ?? 20;
       _weatherFallback = fallback;
@@ -304,28 +259,19 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
 
   /// 人类可读地址（不含经纬度）
   String _humanAddressLine() {
-    String s = _fullAddressLine.trim();
-    if (s.isEmpty) s = _displayAddress.trim();
-    if (s.isEmpty) s = _cityShort.trim();
-    // 禁止显示占位符“当前位置”
-    if (s == '当前位置') {
-      if (_weatherLoading) return '正在解析地址…';
-      return '定位解析失败，请手动选择';
-    }
-    if (s.startsWith('经纬度')) {
-      return '未能解析详细地址，请使用手动选择';
-    }
-    if (s.isNotEmpty) return s;
-    if (_weatherFallback) return '未获取到详细地址（已用默认天气）';
-    if (_weatherLoading) return '正在解析地址…';
-    return '定位解析失败，请手动选择';
+    if (_displayAddress.trim().isNotEmpty) return _displayAddress.trim();
+    if (_fullAddressLine.trim().isNotEmpty) return _fullAddressLine.trim();
+    if (_cityShort.trim().isNotEmpty) return _cityShort.trim();
+    return _weatherLoading ? '正在解析地址…' : '定位解析失败，请手动选择';
   }
 
   /// 生成接口 `location` 参数：完整地址，不用经纬度
   String get _locationForApi {
-    final s = _fullAddressLine.trim();
-    if (s.isNotEmpty) return s;
-    return _cityShort.trim().isNotEmpty ? _cityShort.trim() : '当前位置';
+    return _fullAddressLine.trim().isNotEmpty
+        ? _fullAddressLine.trim()
+        : _displayAddress.trim().isNotEmpty
+            ? _displayAddress.trim()
+            : _cityShort.trim();
   }
 
   /// 清空旧定位后重新请求 GPS → 天气
@@ -584,6 +530,82 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
     _imageUrl = url;
   }
 
+  Future<void> _cacheTodayRecommendationAt(int index) async {
+    try {
+      if (_outfits.isEmpty) return;
+      final safeIndex = index.clamp(0, _outfits.length - 1);
+      final outfit = _outfits[safeIndex];
+      final prefs = await SharedPreferences.getInstance();
+      final ai = outfit['ai_recommendation'];
+      final payload = {
+        'city': _cityShort,
+        'weather': _weather,
+        'temperature': _temp,
+        'recommendation_index': safeIndex,
+        'updated_at': DateTime.now().toIso8601String(),
+        'description': outfit['description']?.toString() ?? '',
+        'preview_image_url': outfit['preview_image_url']?.toString() ?? '',
+        'ai_recommendation': ai is Map ? Map<String, dynamic>.from(ai) : {},
+      };
+      await prefs.setString(
+        'home_today_recommendation',
+        jsonEncode(payload),
+      );
+      // 保持 json 版本，供首页稳定读取
+      await prefs.setString(
+        'home_today_recommendation_json',
+        jsonEncode(payload),
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _oneTapGenerate() async {
+    if (_oneTapBusy || _generating) return;
+    setState(() => _oneTapBusy = true);
+    try {
+      if (_images.isEmpty) {
+        final picker = ImagePicker();
+        final picked = await picker.pickImage(source: ImageSource.gallery);
+        if (picked == null) {
+          if (mounted) showAppSnackBar(context, '已取消选择图片');
+          return;
+        }
+        if (!mounted) return;
+        setState(() {
+          _images
+            ..clear()
+            ..add(picked);
+          _imageUrl = null;
+          _outfits = [];
+          _regenIndex = 0;
+        });
+      }
+      if (_weatherLoading) {
+        await _loadWeatherFromGps();
+      }
+      if (!mounted) return;
+      await _generate(regen: false);
+    } finally {
+      if (mounted) setState(() => _oneTapBusy = false);
+    }
+  }
+
+  void _maybeJumpToInitialIndex() {
+    if (_didJumpToInitialIndex) return;
+    final index = widget.initialResultIndex;
+    if (index <= 0 || _outfits.isEmpty || index >= _outfits.length) {
+      _didJumpToInitialIndex = true;
+      _currentOutfitIndex = 0;
+      return;
+    }
+    _didJumpToInitialIndex = true;
+    _currentOutfitIndex = index;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_pageCtrl.hasClients) return;
+      _pageCtrl.jumpToPage(index);
+    });
+  }
+
   Future<void> _generate({bool regen = false}) async {
     if (_images.isEmpty) {
       showAppSnackBar(context, '请先上传一张参考衣物图片');
@@ -614,6 +636,7 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
         imageUrl: _imageUrl!,
         location: _locationForApi,
         city: _cityShort,
+        address: _addressParts,
         weather: _weather,
         temperature: _temp,
         mood: _moodCtrl.text.trim(),
@@ -655,8 +678,13 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
       setState(() {
         _outfits =
             list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        _currentOutfitIndex = 0;
         _generating = false;
       });
+      if (_outfits.isNotEmpty) {
+        _maybeJumpToInitialIndex();
+        await _cacheTodayRecommendationAt(_currentOutfitIndex);
+      }
     } catch (e) {
       if (mounted) {
         final msg = userFacingApiError(e);
@@ -869,14 +897,15 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                                                 color: palette.textTitle,
                                               ),
                                             ),
-                                            const SizedBox(height: 6),
-                                            Text(
-                                              '当前位置：${_humanAddressLine()}',
-                                              style: TextStyle(
-                                                fontSize: 14,
-                                                height: 1.35,
-                                                color: palette.textBody,
-                                              ),
+                                            const SizedBox(height: 8),
+                                            _StructuredAddressView(
+                                              palette: palette,
+                                              addressParts: _addressParts,
+                                              fallbackText: _weatherLoading
+                                                  ? '正在解析地址…'
+                                                  : _weatherFallback
+                                                      ? '未获取到详细地址'
+                                                      : '地址已就绪',
                                             ),
                                             const SizedBox(height: 10),
                                             Text(
@@ -982,11 +1011,35 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                       hasImage: _images.isNotEmpty,
                       weatherLoading: _weatherLoading,
                       weatherFallback: _weatherFallback,
-                      locationText: _humanAddressLine(),
+                      addressParts: _addressParts,
                       moodText: _moodCtrl.text.trim(),
                       hasResult: _outfits.isNotEmpty,
                     ),
                     const SizedBox(height: 20),
+                    FilledButton.icon(
+                      onPressed:
+                          (_oneTapBusy || _generating) ? null : _oneTapGenerate,
+                      icon: (_oneTapBusy || _generating)
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Icon(Icons.bolt_rounded),
+                      label: Text(
+                        (_oneTapBusy || _generating) ? '正在一键生成…' : '一键生成穿搭',
+                      ),
+                      style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(22),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
                     if (_outfits.isEmpty)
                       FilledButton.icon(
                         onPressed:
@@ -1042,6 +1095,25 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                         ),
                       ),
                       const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: List.generate(_outfits.length, (index) {
+                          final active = index == _currentOutfitIndex;
+                          return AnimatedContainer(
+                            duration: const Duration(milliseconds: 180),
+                            width: active ? 18 : 8,
+                            height: 8,
+                            decoration: BoxDecoration(
+                              color: active
+                                  ? palette.primary
+                                  : palette.divider.withValues(alpha: 0.9),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                          );
+                        }),
+                      ),
+                      const SizedBox(height: 8),
                       ScrollConfiguration(
                         behavior: const _MouseDragScrollBehavior(),
                         child: SizedBox(
@@ -1049,10 +1121,38 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                           child: PageView.builder(
                             controller: _pageCtrl,
                             itemCount: _outfits.length,
+                            onPageChanged: (index) {
+                              if (!mounted) return;
+                              setState(() {
+                                _currentOutfitIndex = index;
+                              });
+                              _cacheTodayRecommendationAt(index);
+                            },
                             itemBuilder: (_, i) {
                               final o = _outfits[i];
                               final preview =
                                   o['preview_image_url']?.toString() ?? '';
+                              final aiRaw = o['ai_recommendation'];
+                              final ai = aiRaw is Map
+                                  ? Map<String, dynamic>.from(aiRaw)
+                                  : const <String, dynamic>{};
+                              final aiStyle = ai['style']?.toString() ?? '';
+                              final aiScore = (ai['score'] is num)
+                                  ? (ai['score'] as num).toDouble()
+                                  : double.tryParse('${ai['score']}') ??
+                                      ((o['overall_score'] is num)
+                                          ? (o['overall_score'] as num)
+                                                  .toDouble() *
+                                              100
+                                          : 0);
+                              final reasonsRaw = ai['reasons'];
+                              final reasons = reasonsRaw is List
+                                  ? reasonsRaw
+                                      .map((e) => e.toString().trim())
+                                      .where((e) => e.isNotEmpty)
+                                      .take(3)
+                                      .toList()
+                                  : <String>[];
                               final net =
                                   resolveGarmentImageUrl(preview, apiBase);
                               final items = o['items'];
@@ -1079,13 +1179,43 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                                         crossAxisAlignment:
                                             CrossAxisAlignment.stretch,
                                         children: [
-                                          Text(
-                                            '搭配 ${i + 1}',
-                                            style: TextStyle(
-                                              fontWeight: FontWeight.w800,
-                                              fontSize: 16,
-                                              color: palette.textTitle,
-                                            ),
+                                          Row(
+                                            children: [
+                                              Text(
+                                                '搭配 ${i + 1}',
+                                                style: TextStyle(
+                                                  fontWeight: FontWeight.w800,
+                                                  fontSize: 16,
+                                                  color: palette.textTitle,
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              if (i == _currentOutfitIndex)
+                                                Container(
+                                                  padding: const EdgeInsets
+                                                      .symmetric(
+                                                    horizontal: 8,
+                                                    vertical: 3,
+                                                  ),
+                                                  decoration: BoxDecoration(
+                                                    color: palette.primary
+                                                        .withValues(
+                                                            alpha: 0.12),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            999),
+                                                  ),
+                                                  child: Text(
+                                                    '当前',
+                                                    style: TextStyle(
+                                                      fontSize: 11,
+                                                      color: palette.primary,
+                                                      fontWeight:
+                                                          FontWeight.w700,
+                                                    ),
+                                                  ),
+                                                ),
+                                            ],
                                           ),
                                           const SizedBox(height: 8),
                                           if (net != null)
@@ -1126,6 +1256,99 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                                               color: palette.textBody,
                                             ),
                                           ),
+                                          if (ai.isNotEmpty) ...[
+                                            const SizedBox(height: 10),
+                                            Container(
+                                              padding: const EdgeInsets.all(10),
+                                              decoration: BoxDecoration(
+                                                color: palette.surface,
+                                                borderRadius:
+                                                    BorderRadius.circular(12),
+                                                border: Border.all(
+                                                  color: palette.divider,
+                                                ),
+                                              ),
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Row(
+                                                    children: [
+                                                      Text(
+                                                        'AI评分 ${aiScore.toStringAsFixed(1)}',
+                                                        style: TextStyle(
+                                                          fontSize: 12,
+                                                          fontWeight:
+                                                              FontWeight.w700,
+                                                          color:
+                                                              palette.textTitle,
+                                                        ),
+                                                      ),
+                                                      if (aiStyle
+                                                          .isNotEmpty) ...[
+                                                        const SizedBox(
+                                                            width: 8),
+                                                        Container(
+                                                          padding:
+                                                              const EdgeInsets
+                                                                  .symmetric(
+                                                            horizontal: 8,
+                                                            vertical: 4,
+                                                          ),
+                                                          decoration:
+                                                              BoxDecoration(
+                                                            color: palette
+                                                                .primary
+                                                                .withValues(
+                                                                    alpha:
+                                                                        0.10),
+                                                            borderRadius:
+                                                                BorderRadius
+                                                                    .circular(
+                                                                        999),
+                                                          ),
+                                                          child: Text(
+                                                            aiStyle,
+                                                            style: TextStyle(
+                                                              fontSize: 11,
+                                                              color: palette
+                                                                  .primary,
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .w600,
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ],
+                                                  ),
+                                                  if (reasons.isNotEmpty) ...[
+                                                    const SizedBox(height: 8),
+                                                    ...reasons
+                                                        .asMap()
+                                                        .entries
+                                                        .map(
+                                                          (entry) => Padding(
+                                                            padding:
+                                                                const EdgeInsets
+                                                                    .only(
+                                                                    bottom: 4),
+                                                            child: Text(
+                                                              '${entry.key + 1}. ${entry.value}',
+                                                              style: TextStyle(
+                                                                fontSize: 12,
+                                                                height: 1.35,
+                                                                color: palette
+                                                                    .textBody,
+                                                              ),
+                                                            ),
+                                                          ),
+                                                        ),
+                                                  ],
+                                                ],
+                                              ),
+                                            ),
+                                          ],
                                           if (weatherNote.isNotEmpty) ...[
                                             const SizedBox(height: 8),
                                             Text(
@@ -1306,12 +1529,108 @@ class _SmartHintChip extends StatelessWidget {
   }
 }
 
+class _StructuredAddressView extends StatelessWidget {
+  final dynamic palette;
+  final Map<String, String> addressParts;
+  final String fallbackText;
+
+  const _StructuredAddressView({
+    required this.palette,
+    required this.addressParts,
+    required this.fallbackText,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final chips = <Widget>[];
+    void addChip(String label, String key, Color color) {
+      final value = addressParts[key]?.trim() ?? '';
+      if (value.isEmpty) return;
+      chips.add(_AddressChip(label: label, value: value, color: color));
+    }
+
+    addChip('省', 'province', Colors.blue);
+    addChip('市', 'city', Colors.green);
+    addChip('区', 'district', Colors.orange);
+    addChip('街道', 'street', Colors.purple);
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: palette.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: palette.divider.withValues(alpha: 0.9)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '地址信息',
+            style: TextStyle(
+              color: palette.textTitle,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          if (chips.isEmpty)
+            Text(
+              fallbackText,
+              style: TextStyle(
+                color: palette.textBody,
+                fontSize: 11,
+              ),
+            )
+          else
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: chips,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AddressChip extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+
+  const _AddressChip({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
+      ),
+      child: Text(
+        '$label $value',
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          color: color.withValues(alpha: 0.95),
+        ),
+      ),
+    );
+  }
+}
+
 class _SmartSummaryCard extends StatelessWidget {
   final dynamic palette;
   final bool hasImage;
   final bool weatherLoading;
   final bool weatherFallback;
-  final String locationText;
+  final Map<String, String> addressParts;
   final String moodText;
   final bool hasResult;
 
@@ -1320,7 +1639,7 @@ class _SmartSummaryCard extends StatelessWidget {
     required this.hasImage,
     required this.weatherLoading,
     required this.weatherFallback,
-    required this.locationText,
+    required this.addressParts,
     required this.moodText,
     required this.hasResult,
   });
@@ -1361,16 +1680,15 @@ class _SmartSummaryCard extends StatelessWidget {
               height: 1.4,
             ),
           ),
-          const SizedBox(height: 4),
-          Text(
-            '地址：$locationText',
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: palette.textBody,
-              fontSize: 11,
-              height: 1.35,
-            ),
+          const SizedBox(height: 8),
+          _StructuredAddressView(
+            palette: palette,
+            addressParts: addressParts,
+            fallbackText: weatherLoading
+                ? '正在解析地址…'
+                : weatherFallback
+                    ? '未获取到详细地址'
+                    : '地址已就绪',
           ),
           if (hasResult) ...[
             const SizedBox(height: 6),

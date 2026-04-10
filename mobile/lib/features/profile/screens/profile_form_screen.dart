@@ -75,6 +75,12 @@ class _ProfileFormScreenState extends State<ProfileFormScreen> {
 
     try {
       final profile = await _apiClient.getProfile();
+      if (profile['error'] != null) {
+        if (mounted) {
+          setState(() => _hasExistingProfile = false);
+        }
+        return;
+      }
 
       if (mounted) {
         setState(() {
@@ -133,9 +139,15 @@ class _ProfileFormScreenState extends State<ProfileFormScreen> {
       };
 
       if (_hasExistingProfile) {
-        await _apiClient.updateProfile(data);
+        final res = await _apiClient.updateProfile(data);
+        if (res['error'] != null) {
+          throw Exception(res['error'].toString());
+        }
       } else {
-        await _apiClient.createProfile(data);
+        final res = await _apiClient.createProfile(data);
+        if (res['error'] != null) {
+          throw Exception(res['error'].toString());
+        }
       }
 
       if (mounted) {

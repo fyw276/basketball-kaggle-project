@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.core.api_response import error_payload
 from app.core.exceptions import AppException
 from app.core.logging import setup_logging
 
@@ -37,23 +38,15 @@ def create_error_response(
     Returns:
         JSONResponse with standardized error format
     """
-    error_response = {
-        "error": {
-            "type": error_type,
-            "message": message,
-            "status_code": status_code,
-        }
-    }
-
-    if details:
-        error_response["error"]["details"] = details
-
-    if path:
-        error_response["error"]["path"] = path
-
     return JSONResponse(
         status_code=status_code,
-        content=error_response,
+        content=error_payload(
+            message=message,
+            error_type=error_type,
+            status_code=status_code,
+            details=details,
+            path=path,
+        ),
     )
 
 

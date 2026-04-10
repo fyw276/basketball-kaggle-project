@@ -1,6 +1,6 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-04-09（补充体型感知「生成 3 套穿搭」、适合度分析三维原因说明，并同步文档与测试）
+**最后更新**: 2026-04-10（智能穿搭 API 契约统一 + AI 解释层 + 首页天气/今日推荐 UX 闭环）
 **状态**: ✅ 可用于演示与迭代（后端 FastAPI + Flutter Web/移动端）
 
 ## 项目简介
@@ -12,6 +12,7 @@
 - ⭐ **适合度评分**：颜色 / 风格 / 体型友好度建议
 - 🧠 **情绪穿搭**：根据心情给出更“治愈/更冷静/更有能量”的配色与风格方向，并匹配衣橱单品
 - 🧥 **虚拟试衣（伪 3D 多视角）**：正面 / 侧面 / 背面三视角生成与轮播预览（支持多视角人物照）
+- 🌤️ **首页天气与今日推荐卡**：展示城市/天气/温度、AI 评分/风格/理由，并支持回到上次浏览搭配
 
 ## 核心功能
 
@@ -124,6 +125,7 @@ clothing-assistant/
 ## 快速开始
 
 详细的启动指南请查看 [QUICK_START.md](QUICK_START.md)。**AI `/predict`、Vite 演示前端、虚拟试衣与 Web 根路径**见 [docs/AI_OUTFIT_PREDICT_AND_TRYON.md](docs/AI_OUTFIT_PREDICT_AND_TRYON.md)。搭配推荐多图上传见 [docs/OUTFIT_MULTI_IMAGE_UPLOAD.md](docs/OUTFIT_MULTI_IMAGE_UPLOAD.md)；衣橱整套拆分与删除提示见 [docs/WARDROBE_FEATURES.md](docs/WARDROBE_FEATURES.md)。**智能穿搭（Flutter Web 行为、CORS、认证顺序、响应式等）**见 [docs/SMART_OUTFIT_FLUTTER_WEB.md](docs/SMART_OUTFIT_FLUTTER_WEB.md)。**天气展示（道路名过滤）与 Hugging Face / 虚拟试衣下载配置**见 [docs/WEATHER_DISPLAY_AND_HF_ENV.md](docs/WEATHER_DISPLAY_AND_HF_ENV.md)。
+本次交付说明见 [docs/RELEASE_2026-04-10_SMART_OUTFIT_UX_AND_API.md](docs/RELEASE_2026-04-10_SMART_OUTFIT_UX_AND_API.md)。
 工程协作与最小质量门禁基线见 [docs/ENGINEERING_BASELINE.md](docs/ENGINEERING_BASELINE.md)。
 分支保护与合并门禁基线见 [docs/BRANCH_PROTECTION_BASELINE.md](docs/BRANCH_PROTECTION_BASELINE.md)。
 

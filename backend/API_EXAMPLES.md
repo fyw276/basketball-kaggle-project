@@ -579,7 +579,9 @@ curl -X POST "http://127.0.0.1:8010/api/v1/wardrobe/split-outfit" \
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `image_url` | string | 必填，参考图 URL（通常来自 `upload-reference` 返回） |
+| `location` | string | 可选，完整地址（省市区街道） |
 | `city` | string | 可选，城市名 |
+| `address` | object | 可选，结构化地址：`province/city/district/street/full_address/display_address` |
 | `weather` | string | 可选，天气描述（如 晴/阴/雨） |
 | `temperature` | number | 可选，气温 ℃ |
 | `mood` | string | 可选，情绪描述；空字符串则仅按图+天气 |
@@ -595,16 +597,121 @@ curl -X POST "http://127.0.0.1:8010/api/v1/smart-outfit/generate" \
   -H "Content-Type: application/json" \
   -d '{
     "image_url": "/uploads/user-id/ref.jpg",
+    "location": "上海市浦东新区世纪大道",
     "city": "上海",
+    "address": {
+      "province": "上海市",
+      "city": "上海市",
+      "district": "浦东新区",
+      "street": "世纪大道",
+      "full_address": "上海市浦东新区世纪大道",
+      "display_address": "上海市浦东新区"
+    },
     "weather": "晴",
     "temperature": 22,
-    "mood": "",
+    "mood": "今天想轻松一点",
     "count": 3,
     "regeneration_index": 0
   }'
 ```
+**响应要点**：
 
-**响应**：`outfits` 数组（多套搭配）；另含 `city`、`display_address`（省/市/区等拼接的展示用完整地址）、`latitude`、`longitude`、`weather`、`temperature`、`weather_fallback` 等字段。
+- 每套搭配都包含 `ai_recommendation`，结构固定为：
+  - `outfit`（搭配名称）
+  - `style`（风格）
+  - `score`（0-100）
+  - `reasons`（固定 3 条）
+- 当 AI 返回非 JSON、超时或未配置时，后端会自动 fallback，但仍返回同结构。
+- 推荐严格依赖用户衣橱数据；衣橱为空时会返回错误，提示先添加衣物。
+
+**响应示例（AI 正常返回）**：
+
+```json
+{
+  "success": true,
+  "data": {
+    "outfits": [
+      {
+        "outfit_id": "outfit_1",
+        "scene": "休闲日常",
+        "description": "浅色上衣搭配直筒下装，整体干净轻松。",
+        "overall_score": 0.87,
+        "items": [
+          {"name": "上衣 · 白", "category": "上衣"},
+          {"name": "裤子 · 蓝", "category": "裤子"}
+        ],
+        "ai_recommendation": {
+          "outfit": "通勤轻松感组合",
+          "style": "简约 · 休闲",
+          "score": 88.5,
+          "reasons": [
+            "优先使用你衣橱中的白色上衣和蓝色下装，复用率高。",
+            "风格与当前搭配标签一致，视觉更统一。",
+            "22℃晴天适合轻薄分层，通勤与日常都舒适。"
+          ]
+        }
+      }
+    ],
+    "city": "上海市浦东新区",
+    "address": {
+      "province": "上海市",
+      "city": "上海市",
+      "district": "浦东新区",
+      "street": "世纪大道",
+      "full_address": "上海市浦东新区世纪大道",
+      "display_address": "上海市浦东新区"
+    },
+    "weather": "晴",
+    "temperature": 22.0,
+    "mood": "今天想轻松一点",
+    "weather_fallback": false,
+    "message": "ok"
+  },
+  "error": null,
+  "message": "ok"
+}
+```
+
+**响应示例（AI 解析失败自动 fallback）**：
+
+```json
+{
+  "success": true,
+  "data": {
+    "outfits": [
+      {
+        "outfit_id": "outfit_2",
+        "scene": "休闲日常",
+        "description": "浅卡其外套配直筒牛仔裤，颜色协调。",
+        "overall_score": 0.82,
+        "items": [
+          {"name": "外套 · 卡其", "category": "外套"},
+          {"name": "裤子 · 牛仔", "category": "裤子"}
+        ],
+        "ai_recommendation": {
+          "outfit": "周末轻通勤",
+          "style": "简约",
+          "score": 82.0,
+          "reasons": [
+            "优先复用衣橱现有外套与裤装，减少重复购买。",
+            "整体风格保持简约，单品标签一致。",
+            "已结合当前天气做搭配适配，出行舒适度更高。"
+          ]
+        }
+      }
+    ],
+    "city": "上海",
+    "address": {},
+    "weather": "晴",
+    "temperature": 22.0,
+    "mood": "",
+    "weather_fallback": false,
+    "message": "ok"
+  },
+  "error": null,
+  "message": "ok"
+}
+```
 
 ### 天气（经纬度）`GET /api/v1/smart-outfit/weather`
 

@@ -8,9 +8,47 @@ from urllib.parse import quote
 
 import httpx
 
+from app.core.config import settings
 from app.core.logging import setup_logging
 
 logger = setup_logging()
+
+_FALLBACK_ADDR_LATLON = "未能解析详细地址，请点击「手动选择地址」"
+
+
+def _truncate_err(msg: str, max_len: int = 120) -> str:
+    s = (msg or "").strip().replace("\n", " ")
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 1] + "…"
+
+
+def _merge_external_with_om(
+    op: str,
+    oc: str,
+    od: str,
+    os: str,
+    line_om: str,
+    ext: Tuple[str, str, str, str, str],
+    cur: Tuple[str, str, str, str],
+) -> Tuple[str, str, str, str, str]:
+    """
+    将 Nominatim/高德 与 Open-Meteo 合并。
+    结构化字段仍以 op.. 为底与 ext 合并；若仅有 nline，则保留当前 cur的 p,c,d,s（与旧版 Nominatim elif nline 一致）。
+    """
+    np, nc, nd, ns, nline = ext
+    cp, cc, cd, cs = cur
+    if np or nc or nd or ns:
+        merged = _full_address_spaced([np or op, nc or oc, nd or od, ns or os])
+        if len(nline) >= len(merged) and len(nline) >= len(line_om):
+            return np or op, nc or oc, nd or od, ns or os, nline
+        p, c, d, s = np or op, nc or oc, nd or od, ns or os
+        full_line = merged or nline
+        return p, c, d, s, full_line
+    if nline:
+        return cp, cc, cd, cs, nline
+    return cp, cc, cd, cs, _full_address_spaced([cp, cc, cd, cs])
+
 
 NOMINATIM_UA = "ClothingAssistant/1.1 (weather; +https://github.com)"
 
@@ -227,11 +265,70 @@ def _line_from_om_result(r0: Dict[str, Any]) -> str:
     return _full_address_spaced([a1, a2, a3, a4, name, country])
 
 
+async def _amap_reverse(
+    client: httpx.AsyncClient,
+    latitude: float,
+    longitude: float,
+    api_key: str,
+) -> Tuple[Optional[Tuple[str, str, str, str, str]], Optional[str]]:
+    """
+    高德逆地理（Web 服务），location 为「经度,纬度」。
+    成功返回 (province, city, district, street, full_line), None；失败返回 None, 简短原因。
+    """
+    if not (api_key or "").strip():
+        return None, None
+    loc = f"{longitude},{latitude}"
+    url = "https://restapi.amap.com/v3/geocode/regeo"
+    try:
+        res = await client.get(
+            url,
+            params={
+                "key": api_key.strip(),
+                "location": loc,
+                "radius": 1000,
+                "extensions": "base",
+            },
+            timeout=15.0,
+        )
+        res.raise_for_status()
+        data = res.json()
+        if str(data.get("status")) != "1":
+            info = str(data.get("info") or data.get("infocode") or "err").strip()
+            return None, _truncate_err(f"status_{data.get('status')}: {info}")
+        regeo = data.get("regeocode") or {}
+        comp = regeo.get("addressComponent") or {}
+        province = str(comp.get("province") or "").strip()
+        raw_city = comp.get("city")
+        if isinstance(raw_city, list):
+            city = str(raw_city[0] or "").strip()
+        else:
+            city = str(raw_city or "").strip()
+        district = str(comp.get("district") or "").strip()
+        township = str(comp.get("township") or "").strip()
+        sn = comp.get("streetNumber") or {}
+        street = str(sn.get("street") or "").strip()
+        if not street and township:
+            street = township
+        fa = str(regeo.get("formatted_address") or "").strip()
+        if not (province or city or district or street) and fa:
+            return ("", "", "", "", fa[:240]), None
+        line = _full_address_spaced([province, city, district, street])
+        if not line.strip() and fa:
+            line = fa[:240]
+        if not line.strip():
+            return None, "empty_structured"
+        return (province, city, district, street, line), None
+    except Exception as e:
+        logger.warning(f"amap reverse failed: {e}")
+        return None, _truncate_err(str(e))
+
+
 async def _nominatim_reverse(
     client: httpx.AsyncClient, latitude: float, longitude: float
-) -> Optional[Tuple[str, str, str, str, str]]:
+) -> Tuple[Optional[Tuple[str, str, str, str, str]], Optional[str]]:
     """
-    Nominatim 逆地理，补全道路级地址。返回 (province, city, district, street, full_line)。
+    Nominatim 逆地理，补全道路级地址。
+    成功返回 (province, city, district, street, full_line), None；失败返回 None, 简短原因。
     """
     url = (
         "https://nominatim.openstreetmap.org/reverse"
@@ -275,18 +372,18 @@ async def _nominatim_reverse(
         if not province and not city:
             dl = str(data.get("display_name") or "").strip()
             if dl:
-                return ("", "", "", "", dl[:240])
-            return None
+                return ("", "", "", "", dl[:240]), None
+            return None, "no_admin_fields"
         line = _full_address_spaced([province, city, district, street])
         if not line.strip():
             dl = str(data.get("display_name") or "").strip()
             if dl:
-                return ("", "", "", "", dl[:240])
-            return None
-        return (province, city, district, street, line)
+                return ("", "", "", "", dl[:240]), None
+            return None, "no_line"
+        return (province, city, district, street, line), None
     except Exception as e:
         logger.warning(f"nominatim reverse failed: {e}")
-        return None
+        return None, _truncate_err(str(e))
 
 
 async def _nominatim_search_city(
@@ -321,8 +418,12 @@ async def _nominatim_search_city(
 
 async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, Any]:
     """
-    高精度经纬度：Open-Meteo 逆地理 + 必要时 Nominatim 补全；**不在展示字段中出现经纬度数字**。
+    高精度经纬度：Open-Meteo 逆地理 + 可选高德 + Nominatim；**不在展示字段中出现经纬度数字**。
+    返回含 geocode_source / geocode_error 便于排查「天气有、地址无」类问题。
     """
+    geocode_errors: List[str] = []
+    geocode_source = "none"
+
     async with httpx.AsyncClient(timeout=25.0) as client:
         geo_url = (
             "https://geocoding-api.open-meteo.com/v1/reverse"
@@ -338,33 +439,47 @@ async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, 
             if results:
                 r0 = results[0]
                 city_short = str(r0.get("name") or city_short).strip() or city_short
+            else:
+                geocode_errors.append("open_meteo_zh: empty_results")
         except Exception as e:
             logger.warning(f"open-meteo reverse failed: {e}")
+            geocode_errors.append(f"open_meteo_zh: {_truncate_err(str(e))}")
 
         om_struct = _structured_from_open_meteo(r0) if r0 else ("", "", "", "")
         op, oc, od, os = om_struct
         line_om = _full_address_spaced([op, oc, od, os])
         p, c, d, s = op, oc, od, os
         full_line = line_om
-        nom = await _nominatim_reverse(client, latitude, longitude)
+        if line_om.strip():
+            geocode_source = "open_meteo_zh"
+
+        amap_key = (settings.AMAP_WEB_KEY or "").strip()
+        if amap_key:
+            amap_row, amap_err = await _amap_reverse(client, latitude, longitude, amap_key)
+            if amap_err:
+                geocode_errors.append(f"amap: {amap_err}")
+            if amap_row:
+                p, c, d, s, full_line = _merge_external_with_om(
+                    op, oc, od, os, line_om, amap_row, (p, c, d, s)
+                )
+                geocode_source = "amap"
+
+        nom, nom_err = await _nominatim_reverse(client, latitude, longitude)
+        if nom_err:
+            geocode_errors.append(f"nominatim: {nom_err}")
         if nom:
-            np, nc, nd, ns, nline = nom
-            if np or nc or nd or ns:
-                merged = _full_address_spaced([np or op, nc or oc, nd or od, ns or os])
-                if len(nline) >= len(merged) and len(nline) >= len(line_om):
-                    p, c, d, s = np or op, nc or oc, nd or od, ns or os
-                    full_line = nline
-                else:
-                    p, c, d, s = np or op, nc or oc, nd or od, ns or os
-                    full_line = merged or nline
-            elif nline:
-                full_line = nline
+            p, c, d, s, full_line = _merge_external_with_om(
+                op, oc, od, os, line_om, nom, (p, c, d, s)
+            )
+            geocode_source = "nominatim"
+
         if not full_line.strip() and r0:
             fb = _line_from_om_result(r0)
             if fb.strip():
                 full_line = fb
                 om_struct = _structured_from_open_meteo(r0)
                 p, c, d, s = om_struct
+                geocode_source = "open_meteo_line"
         if not full_line.strip():
             try:
                 geo_url_en = (
@@ -384,12 +499,18 @@ async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, 
                         city_short = str(r_en.get("name") or city_short).strip() or city_short
                         om_struct = _structured_from_open_meteo(r_en)
                         p, c, d, s = om_struct
+                        geocode_source = "open_meteo_en"
+                else:
+                    geocode_errors.append("open_meteo_en: empty_results")
             except Exception as e:
                 logger.warning(f"open-meteo reverse (en fallback) failed: {e}")
+                geocode_errors.append(f"open_meteo_en: {_truncate_err(str(e))}")
         if not full_line.strip() and city_short and city_short != "当前位置":
             full_line = city_short
+            geocode_source = "city_label"
         if not full_line.strip():
-            full_line = "未能解析详细地址，请点击「手动选择地址」"
+            full_line = _FALLBACK_ADDR_LATLON
+            geocode_source = "none"
 
         p, c, d, s = _normalize_admin_parts(p, c, d, s)
         p, c, d, s, _ = _display_address_after_route_filter(p, c, d, s)
@@ -403,12 +524,18 @@ async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, 
         wr = await client.get(wx_url)
         wr.raise_for_status()
         wj = wr.json()
-        cur = wj.get("current") or {}
-        temp = float(cur.get("temperature_2m", 20.0))
-        code = int(cur.get("weather_code", 0))
+        cur_wx = wj.get("current") or {}
+        temp = float(cur_wx.get("temperature_2m", 20.0))
+        code = int(cur_wx.get("weather_code", 0))
         wcn = wmo_to_cn(code)
 
         city_short = c or city_short
+
+        err_join = "; ".join(geocode_errors)
+        if len(err_join) > 360:
+            err_join = err_join[:359] + "…"
+        if full_line == _FALLBACK_ADDR_LATLON and not err_join:
+            err_join = "no_usable_address_after_merge"
 
         return {
             "city": city_short,
@@ -423,6 +550,8 @@ async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, 
             "temperature": temp,
             "weather": wcn,
             "weather_code": code,
+            "geocode_source": geocode_source,
+            "geocode_error": err_join,
         }
 
 
@@ -433,6 +562,8 @@ async def fetch_weather_by_city_name(name: str) -> Optional[Dict[str, Any]]:
         return None
     q_norm = _normalize_city_query(q)
     async with httpx.AsyncClient(timeout=25.0) as client:
+        geocode_errors_city: List[str] = []
+        geocode_source_city = "open_meteo_search"
         try:
             # 先用 open-meteo search（中文），无结果再尝试去后缀版本与英文兜底
             candidates = [q, q_norm] if q_norm and q_norm != q else [q]
@@ -486,19 +617,16 @@ async def fetch_weather_by_city_name(name: str) -> Optional[Dict[str, Any]]:
             line_om = _full_address_spaced([op, oc, od, os])
             p, c, d, s = op, oc, od, os
             full_line = line_om or cname
-            nom = await _nominatim_reverse(client, lat, lon)
+            if not r0:
+                geocode_source_city = "nominatim_forward"
+            nom, nom_err = await _nominatim_reverse(client, lat, lon)
+            if nom_err:
+                geocode_errors_city.append(f"nominatim: {nom_err}")
             if nom:
-                np, nc, nd, ns, nline = nom
-                if np or nc or nd or ns:
-                    merged = _full_address_spaced([np or op, nc or oc, nd or od, ns or os])
-                    if len(nline) >= len(merged) and len(nline) >= len(line_om):
-                        p, c, d, s = np or op, nc or oc, nd or od, ns or os
-                        full_line = nline
-                    else:
-                        p, c, d, s = np or op, nc or oc, nd or od, ns or os
-                        full_line = merged or nline
-                elif nline:
-                    full_line = nline
+                p, c, d, s, full_line = _merge_external_with_om(
+                    op, oc, od, os, line_om, nom, (p, c, d, s)
+                )
+                geocode_source_city = "nominatim"
             if not full_line.strip():
                 full_line = cname or "未能解析详细地址，请重新选择"
 
@@ -522,6 +650,13 @@ async def fetch_weather_by_city_name(name: str) -> Optional[Dict[str, Any]]:
         code = int(cur.get("weather_code", 0))
         wcn = wmo_to_cn(code)
 
+        err_c = "; ".join(geocode_errors_city)
+        if len(err_c) > 360:
+            err_c = err_c[:359] + "…"
+        fb_city = "未能解析详细地址，请重新选择"
+        if full_line == fb_city and not err_c:
+            err_c = "no_usable_address_after_merge"
+
         return {
             "city": cname,
             "province": p,
@@ -535,4 +670,6 @@ async def fetch_weather_by_city_name(name: str) -> Optional[Dict[str, Any]]:
             "temperature": temp,
             "weather": wcn,
             "weather_code": code,
+            "geocode_source": geocode_source_city,
+            "geocode_error": err_c,
         }

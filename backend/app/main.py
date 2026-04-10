@@ -2,18 +2,19 @@
 Main FastAPI application entry point
 """
 
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError as PydanticValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from app.api import (
     analysis_router,
@@ -212,6 +213,42 @@ class PrivateNetworkAccessMiddleware(BaseHTTPMiddleware):
 
 # 须挂在 CORS 外层，以便为 OPTIONS 与 POST 等响应统一附加 PNA 头
 app.add_middleware(PrivateNetworkAccessMiddleware)
+
+
+class ApiEnvelopeMiddleware(BaseHTTPMiddleware):
+    """Wrap successful JSON responses in the standard envelope."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        content_type = response.headers.get("content-type", "")
+        if response.status_code >= 400 or "application/json" not in content_type.lower():
+            return response
+
+        body = b""
+        async for chunk in response.body_iterator:
+            body += chunk
+
+        if not body:
+            return JSONResponse(
+                status_code=response.status_code,
+                content={"success": True, "data": None, "error": None, "message": "ok"},
+            )
+
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except Exception:
+            return JSONResponse(status_code=response.status_code, content=body.decode("utf-8"))
+
+        if isinstance(payload, dict) and {"success", "data", "error"}.issubset(payload.keys()):
+            return JSONResponse(status_code=response.status_code, content=payload)
+
+        return JSONResponse(
+            status_code=response.status_code,
+            content={"success": True, "data": payload, "error": None, "message": "ok"},
+        )
+
+
+app.add_middleware(ApiEnvelopeMiddleware)
 
 
 # Register exception handlers

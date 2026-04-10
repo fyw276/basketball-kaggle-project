@@ -4,11 +4,12 @@
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
+from app.core.api_response import success_response
 from app.db.session import get_db
 from app.models.user import User
 from app.services.garment import get_garments_by_user
@@ -21,7 +22,8 @@ class MoodRecommendRequest(BaseModel):
     """情绪推荐请求"""
 
     mood: str = Field(
-        ...,
+        "",
+        max_length=120,
         description=(
             "用户当前情绪: happy, excited, confident, relaxed, romantic, energetic, neutral, focused, "
             "sad, anxious, angry, tired, stressed, lonely"
@@ -49,7 +51,7 @@ class MoodRecommendResponse(BaseModel):
 class MoodLogRequest(BaseModel):
     """记录情绪日志"""
 
-    mood: str = Field(..., description="情绪类型")
+    mood: str = Field("", max_length=120, description="情绪类型")
     note: Optional[str] = Field(None, description="备注")
     recommended_outfit_id: Optional[str] = Field(None, description="推荐的穿搭ID")
 
@@ -94,41 +96,46 @@ async def recommend_by_mood(
     - 冷色调（蓝绿紫）镇静，适合焦虑、愤怒时
     - 明亮的颜色提神，适合疲惫时
     """
-    recommender = MoodRecommender()
-    result = recommender.recommend(request.mood)
+    try:
+        recommender = MoodRecommender()
+        result = recommender.recommend(request.mood)
 
-    response_data = {
-        "mood": result.mood,
-        "mood_cn": result.mood_cn,
-        "recommended_styles": result.recommended_styles,
-        "recommended_colors": result.recommended_colors,
-        "recommended_occasions": result.recommended_occasions,
-        "advice": result.advice,
-        "color_explanation": result.color_explanation,
-        "mood_intensity_color": recommender.get_mood_intensity_color(request.mood),
-        "matching_garments": [],
-    }
+        response_data = {
+            "mood": result.mood,
+            "mood_cn": result.mood_cn,
+            "recommended_styles": result.recommended_styles,
+            "recommended_colors": result.recommended_colors,
+            "recommended_occasions": result.recommended_occasions,
+            "advice": result.advice,
+            "color_explanation": result.color_explanation,
+            "mood_intensity_color": recommender.get_mood_intensity_color(request.mood),
+            "matching_garments": [],
+        }
 
-    # 如果需要，从衣橱中筛选匹配的单品
-    if request.include_wardrobe:
-        from app.services.mood_filter import MoodFilter
+        # 如果需要，从衣橱中筛选匹配的单品
+        if request.include_wardrobe:
+            from app.services.mood_filter import MoodFilter
 
-        mood_filter = MoodFilter()
-        garments = get_garments_by_user(db, current_user.user_id, limit=200)
-        matching = mood_filter.filter_by_mood(garments, result)
-        response_data["matching_garments"] = [
-            {
-                "garment_id": str(g.garment_id),
-                "category": g.category,
-                "main_color": g.main_color.get("name") if isinstance(g.main_color, dict) else None,
-                "style_tags": g.style_tags or [],
-                "image_url": g.image_url,
-                "match_score": m.get("total_score", m.get("score", 0)),
-            }
-            for g, m in matching
-        ]
+            mood_filter = MoodFilter()
+            garments = get_garments_by_user(db, current_user.user_id, limit=200)
+            matching = mood_filter.filter_by_mood(garments, result)
+            response_data["matching_garments"] = [
+                {
+                    "garment_id": str(g.garment_id),
+                    "category": g.category,
+                    "main_color": (
+                        g.main_color.get("name") if isinstance(g.main_color, dict) else None
+                    ),
+                    "style_tags": g.style_tags or [],
+                    "image_url": g.image_url,
+                    "match_score": m.get("total_score", m.get("score", 0)),
+                }
+                for g, m in matching
+            ]
 
-    return response_data
+        return success_response(response_data)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.get("/quick-recall", response_model=List[dict])
@@ -151,7 +158,7 @@ async def get_quick_recall_moods(
         {"value": "stressed", "label": "压力大", "icon": "😰", "color": "#778899"},
         {"value": "lonely", "label": "孤独 · 想被陪伴感", "icon": "🫂", "color": "#E8A0BF"},
     ]
-    return quick_moods
+    return success_response(quick_moods)
 
 
 @router.post("/log", response_model=MoodLogResponse)
@@ -166,7 +173,7 @@ async def log_mood(
     """
     # 这里可以扩展为保存到数据库
     # 目前仅返回成功消息
-    return MoodLogResponse(status="success", message=f"情绪 '{request.mood}' 已记录")
+    return success_response({"status": "success", "message": f"情绪 '{request.mood}' 已记录"})
 
 
 @router.get("/insights", response_model=dict)
@@ -180,10 +187,12 @@ async def get_mood_insights(
     """
     # TODO: 从数据库获取历史情绪数据
     # 暂时返回示例数据
-    return {
-        "total_records": 0,
-        "dominant_mood": None,
-        "mood_distribution": {},
-        "outfit_satisfaction_by_mood": {},
-        "recommendations": "记录更多情绪数据后，将为您提供更精准的穿搭建议",
-    }
+    return success_response(
+        {
+            "total_records": 0,
+            "dominant_mood": None,
+            "mood_distribution": {},
+            "outfit_satisfaction_by_mood": {},
+            "recommendations": "记录更多情绪数据后，将为您提供更精准的穿搭建议",
+        }
+    )

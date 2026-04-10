@@ -33,15 +33,27 @@ class _MoodOutfitScreenState extends State<MoodOutfitScreen> {
 
   Future<void> _loadQuick() async {
     final auth = context.read<AuthProvider>();
-    final raw = await auth.apiClient.getMoodQuickRecall();
-    if (!mounted) return;
-    setState(() {
-      _loadingQuick = false;
-      if (raw is List) {
-        _quick = raw;
-        if (_quick.isNotEmpty) _selectedQuickIndex = 0;
+    try {
+      final raw = await auth.apiClient.getMoodQuickRecall();
+      if (!mounted) return;
+      if (raw is Map && raw['error'] != null) {
+        showAppSnackBar(
+            context, '加载快捷情绪失败：${userFacingApiError(raw['error'])}');
+        setState(() => _loadingQuick = false);
+        return;
       }
-    });
+      setState(() {
+        _loadingQuick = false;
+        if (raw is List) {
+          _quick = raw;
+          if (_quick.isNotEmpty) _selectedQuickIndex = 0;
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loadingQuick = false);
+      showAppSnackBar(context, '加载快捷情绪失败：${userFacingApiError(e)}');
+    }
   }
 
   Future<void> _go() async {
