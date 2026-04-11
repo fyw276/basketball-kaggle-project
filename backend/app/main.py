@@ -55,6 +55,43 @@ _cors_permissive = (
 )
 
 
+class ApiEnvelopeMiddleware(BaseHTTPMiddleware):
+    """Wrap successful JSON responses in the standard envelope."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        # Keep OpenAPI schema/docs raw so Swagger/Redoc can parse correctly.
+        if path == "/openapi.json" or path.startswith("/docs") or path.startswith("/redoc"):
+            return response
+        content_type = response.headers.get("content-type", "")
+        if response.status_code >= 400 or "application/json" not in content_type.lower():
+            return response
+
+        body = b""
+        async for chunk in response.body_iterator:
+            body += chunk
+
+        if not body:
+            return JSONResponse(
+                status_code=response.status_code,
+                content={"success": True, "data": None, "error": None, "message": "ok"},
+            )
+
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except Exception:
+            return JSONResponse(status_code=response.status_code, content=body.decode("utf-8"))
+
+        if isinstance(payload, dict) and {"success", "data", "error"}.issubset(payload.keys()):
+            return JSONResponse(status_code=response.status_code, content=payload)
+
+        return JSONResponse(
+            status_code=response.status_code,
+            content={"success": True, "data": payload, "error": None, "message": "ok"},
+        )
+
+
 @asynccontextmanager
 async def _app_lifespan(app: FastAPI):
     """应用启动/关闭：数据库补丁、日志（替代已弃用的 on_event）。"""
@@ -155,7 +192,23 @@ app = FastAPI(
     },
 )
 
-# Configure CORS
+
+class PrivateNetworkAccessMiddleware(BaseHTTPMiddleware):
+    """为预检/跨站请求补充 Chrome 私有网络访问 (PNA) 所需响应头。"""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+        return response
+
+
+# 最内层先统一包裹 JSON 响应，让外层 CORS / PNA 仍能补齐响应头
+app.add_middleware(ApiEnvelopeMiddleware)
+
+# 再补充 PNA 头，供外层 CORS 最终返回给浏览器
+app.add_middleware(PrivateNetworkAccessMiddleware)
+
+# 最外层 CORS 必须最后注册，这样它才能给最终响应补上 ACAO 等头
 # Flutter Web 端口随机；页面 Origin 为 http://localhost:<port>，API 常为 http://127.0.0.1:<后端端口>，属跨域。
 # 请求带 Authorization 时，部分浏览器对 ACAO: * 与实际 Origin 组合较严，易报「无 ACAO」类 CORS 错误。
 # 开发宽松模式改为 allow_origin_regex + 回显具体 Origin（Starlette fullmatch），避免通配符。
@@ -200,55 +253,6 @@ else:
         allow_methods=["*"],
         allow_headers=_CORS_ALLOW_HEADERS,
     )
-
-
-class PrivateNetworkAccessMiddleware(BaseHTTPMiddleware):
-    """为预检/跨站请求补充 Chrome 私有网络访问 (PNA) 所需响应头。"""
-
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        response.headers["Access-Control-Allow-Private-Network"] = "true"
-        return response
-
-
-# 须挂在 CORS 外层，以便为 OPTIONS 与 POST 等响应统一附加 PNA 头
-app.add_middleware(PrivateNetworkAccessMiddleware)
-
-
-class ApiEnvelopeMiddleware(BaseHTTPMiddleware):
-    """Wrap successful JSON responses in the standard envelope."""
-
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        content_type = response.headers.get("content-type", "")
-        if response.status_code >= 400 or "application/json" not in content_type.lower():
-            return response
-
-        body = b""
-        async for chunk in response.body_iterator:
-            body += chunk
-
-        if not body:
-            return JSONResponse(
-                status_code=response.status_code,
-                content={"success": True, "data": None, "error": None, "message": "ok"},
-            )
-
-        try:
-            payload = json.loads(body.decode("utf-8"))
-        except Exception:
-            return JSONResponse(status_code=response.status_code, content=body.decode("utf-8"))
-
-        if isinstance(payload, dict) and {"success", "data", "error"}.issubset(payload.keys()):
-            return JSONResponse(status_code=response.status_code, content=payload)
-
-        return JSONResponse(
-            status_code=response.status_code,
-            content={"success": True, "data": payload, "error": None, "message": "ok"},
-        )
-
-
-app.add_middleware(ApiEnvelopeMiddleware)
 
 
 # Register exception handlers

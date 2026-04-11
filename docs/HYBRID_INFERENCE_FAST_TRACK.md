@@ -165,6 +165,41 @@ CIRCUIT_BREAKER_RESET_SECONDS=300
 
 这样 Flutter 和 Web 不需要大改，只需可选展示增强信息。
 
+## 三点五、外部增强接口最小契约（已在代码中兼容）
+
+外部增强服务至少返回 `score`（推荐分）即可，支持以下三种响应形状：
+
+1. 直接对象：`{"score": 7.8, "explanation": "...", "model_version": "v1"}`
+2. 标准包裹：`{"success": true, "data": {"score": 7.8, ...}}`
+3. result 包裹：`{"result": {"score": 7.8, ...}}`
+
+分值尺度自动兼容：
+
+1. `0~1` 会自动换算为 `0~10`
+2. `0~10` 直接使用
+3. `0~100` 会自动换算为 `0~10`
+
+这意味着你可以先本地启动第三方项目，再通过网关/轻量适配层把响应整理成上面任一格式即可接入。
+
+## 三点六、与外部开源项目的落地方式（不改主链路）
+
+针对社区项目（如 `fashion-recommender` / `myntra-ai-virtual-tryon`）建议采用：
+
+1. 保持本地模型为主通道（默认）
+2. 将第三方服务作为增强通道（只在低置信度触发）
+3. 若外部服务异常，自动降级回本地（现有逻辑已支持）
+
+推荐配置示例：
+
+```env
+HYBRID_INFERENCE_ENABLED=True
+EXTERNAL_ENHANCE_ENABLED=True
+EXTERNAL_API_BASE_URL=http://127.0.0.1:9001
+EXTERNAL_API_PATH=/infer
+EXTERNAL_HEALTHCHECK_ENABLED=True
+EXTERNAL_API_HEALTH_PATH=/health
+```
+
 ## 四、30天速交付任务单（按周执行）
 
 ### Week 1（必须完成）

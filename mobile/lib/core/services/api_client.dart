@@ -161,6 +161,23 @@ class ApiClient {
               '浏览器打开 http://127.0.0.1:<端口>/ 应返回 Smart Outfit Assistant。',
         };
       }
+      if (response.body.isNotEmpty) {
+        try {
+          final decoded = json.decode(response.body);
+          final unwrapped = _unwrapApiResponse(decoded);
+          if (unwrapped is Map && unwrapped['error'] != null) {
+            return {'error': unwrapped['error'].toString()};
+          }
+          if (decoded is Map && decoded['detail'] != null) {
+            final detail = decoded['detail'];
+            if (detail is String) {
+              return {'error': detail};
+            }
+          }
+        } catch (_) {
+          // Fall back to generic status error.
+        }
+      }
       return {
         'error': 'Request failed with status: ${response.statusCode} ($uri)',
       };
@@ -248,12 +265,17 @@ class ApiClient {
   // ─── Auth ──────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> register(
-      String username, String email, String password) async {
-    return post('/auth/register', {
+      String username, String email, String password,
+      {String? phoneNumber}) async {
+    final payload = <String, dynamic>{
       'username': username,
       'email': email,
       'password': password,
-    });
+    };
+    if (phoneNumber != null && phoneNumber.trim().isNotEmpty) {
+      payload['phone_number'] = phoneNumber.trim();
+    }
+    return post('/auth/register', payload);
   }
 
   Future<Map<String, dynamic>> login(String username, String password) async {

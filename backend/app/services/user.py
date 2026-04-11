@@ -55,6 +55,20 @@ def get_user_by_email(db: Session, email: str) -> Optional[User]:
     return db.query(User).filter(User.email == email).first()
 
 
+def get_user_by_phone_number(db: Session, phone_number: str) -> Optional[User]:
+    """
+    Get user by phone number
+
+    Args:
+        db: Database session
+        phone_number: Phone number
+
+    Returns:
+        User object or None if not found
+    """
+    return db.query(User).filter(User.phone_number == phone_number).first()
+
+
 def create_user(db: Session, user_in: UserCreate) -> User:
     """
     Create a new user
@@ -73,6 +87,7 @@ def create_user(db: Session, user_in: UserCreate) -> User:
     db_user = User(
         username=user_in.username,
         email=user_in.email,
+        phone_number=user_in.phone_number,
         password_hash=hashed_password,
     )
 
@@ -144,7 +159,12 @@ def authenticate_user(db: Session, username: str, password: str) -> Optional[Use
     """
     from app.services.auth import verify_password
 
+    # Support login with either username or email in the same field.
     user = get_user_by_username(db, username)
+    if not user and "@" in username:
+        user = get_user_by_email(db, username)
+    if not user and username.replace("+", "").replace("-", "").replace(" ", "").isdigit():
+        user = get_user_by_phone_number(db, username)
     if not user:
         return None
 

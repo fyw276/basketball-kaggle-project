@@ -143,6 +143,9 @@ class _AuthScreenState extends State<AuthScreen>
                                 pageBg: p.background,
                                 radiusLarge: _radiusLarge,
                                 radiusField: _radiusField,
+                                onRegistered: () {
+                                  _tabController.animateTo(0);
+                                },
                               ),
                       ),
                     ],
@@ -208,7 +211,7 @@ class _LoginFormState extends State<_LoginForm> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _AuthField(
-            label: '用户名 / 手机号',
+            label: '用户名 / 邮箱 / 手机号',
             ctrl: _userCtrl,
             mist: widget.mist,
             radius: widget.radiusField,
@@ -309,6 +312,7 @@ class _RegisterForm extends StatefulWidget {
   final Color pageBg;
   final double radiusLarge;
   final double radiusField;
+  final VoidCallback onRegistered;
 
   const _RegisterForm({
     super.key,
@@ -316,6 +320,7 @@ class _RegisterForm extends StatefulWidget {
     required this.pageBg,
     required this.radiusLarge,
     required this.radiusField,
+    required this.onRegistered,
   });
 
   @override
@@ -326,6 +331,7 @@ class _RegisterFormState extends State<_RegisterForm> {
   final _formKey = GlobalKey<FormState>();
   final _userCtrl = TextEditingController();
   final _emailCtrl = TextEditingController();
+  final _phoneCtrl = TextEditingController();
   final _pwdCtrl = TextEditingController();
   final _repCtrl = TextEditingController();
   bool _obscure = true;
@@ -335,6 +341,7 @@ class _RegisterFormState extends State<_RegisterForm> {
   void dispose() {
     _userCtrl.dispose();
     _emailCtrl.dispose();
+    _phoneCtrl.dispose();
     _pwdCtrl.dispose();
     _repCtrl.dispose();
     super.dispose();
@@ -352,7 +359,7 @@ class _RegisterFormState extends State<_RegisterForm> {
 
   String? _pwd(String? v) {
     if (v == null || v.isEmpty) return '不能为空';
-    if (v.length < 6) return '密码至少6位';
+    if (v.length < 8) return '密码至少8位';
     return null;
   }
 
@@ -366,9 +373,13 @@ class _RegisterFormState extends State<_RegisterForm> {
     final ok = await auth.register(
       username: _userCtrl.text.trim(),
       email: _emailCtrl.text.trim(),
+      phoneNumber: _phoneCtrl.text.trim(),
       password: _pwdCtrl.text,
     );
-    if (ok && mounted) context.go('/shell');
+    if (ok && mounted) {
+      showAppSnackBar(context, '注册成功，请使用新账号登录');
+      widget.onRegistered();
+    }
   }
 
   @override
@@ -397,6 +408,22 @@ class _RegisterFormState extends State<_RegisterForm> {
           ),
           const SizedBox(height: 12),
           _AuthField(
+            label: '手机号（可选）',
+            ctrl: _phoneCtrl,
+            mist: widget.mist,
+            radius: widget.radiusField,
+            prefix: Icons.phone_android_outlined,
+            validator: (v) {
+              final text = v?.trim() ?? '';
+              if (text.isEmpty) return null;
+              if (!RegExp(r'^[0-9+\-\s]{6,20}$').hasMatch(text)) {
+                return '手机号格式不正确';
+              }
+              return null;
+            },
+          ),
+          const SizedBox(height: 12),
+          _AuthField(
             label: '密码',
             ctrl: _pwdCtrl,
             mist: widget.mist,
@@ -413,6 +440,14 @@ class _RegisterFormState extends State<_RegisterForm> {
               onPressed: () => setState(() => _obscure = !_obscure),
             ),
             validator: _pwd,
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '密码要求：至少 8 位，建议包含字母、数字和符号。',
+            style: TextStyle(
+              color: _kAuthTextMuted.withValues(alpha: 0.55),
+              fontSize: 12,
+            ),
           ),
           const SizedBox(height: 12),
           _AuthField(
@@ -431,7 +466,11 @@ class _RegisterFormState extends State<_RegisterForm> {
               ),
               onPressed: () => setState(() => _obscure2 = !_obscure2),
             ),
-            validator: _req,
+            validator: (v) {
+              if (_req(v) != null) return _req(v);
+              if (v != _pwdCtrl.text) return '两次密码不一致';
+              return null;
+            },
           ),
           const SizedBox(height: 18),
           Consumer<AuthProvider>(

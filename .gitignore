@@ -146,6 +146,7 @@ temp/
 # Documentation build
 docs/_build/
 site/
+docs/smart_outfit_project_tutorial.pdf
 
 # Flutter: always track app Dart sources. Keep this block LAST so it wins if anyone re-adds a broad `lib/` rule.
 !mobile/lib/

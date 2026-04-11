@@ -61,6 +61,13 @@ _USER_PROFILES_SQLITE_PATCHES: list[tuple[str, str]] = [
     ),
 ]
 
+_USERS_SQLITE_PATCHES: list[tuple[str, str]] = [
+    (
+        "phone_number",
+        "ALTER TABLE users ADD COLUMN phone_number VARCHAR(32)",
+    ),
+]
+
 
 def apply_sqlite_schema_patches(engine: Engine) -> None:
     """若为 SQLite 且表缺少 ORM 中的列，则补齐。"""
@@ -101,6 +108,22 @@ def apply_sqlite_schema_patches(engine: Engine) -> None:
             with engine.begin() as conn:
                 conn.execute(text(ddl))
             logger.info("SQLite 已执行补丁: user_profiles 增加列 {}", col_name)
+        except Exception as e:
+            logger.error("SQLite 补丁失败 ({}): {}", col_name, e)
+            raise
+
+    if not insp.has_table("users"):
+        return
+
+    users_cols = {c["name"] for c in insp.get_columns("users")}
+
+    for col_name, ddl in _USERS_SQLITE_PATCHES:
+        if col_name in users_cols:
+            continue
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(ddl))
+            logger.info("SQLite 已执行补丁: users 增加列 {}", col_name)
         except Exception as e:
             logger.error("SQLite 补丁失败 ({}): {}", col_name, e)
             raise

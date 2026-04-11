@@ -88,13 +88,10 @@ class AuthProvider extends ChangeNotifier {
         return true;
       }
 
-      // Demo mode fallback
-      _isAuthenticated = true;
-      _username = username;
-      await _saveToken('demo_token_$username', username);
+      _errorMessage = '登录失败：服务未返回有效令牌';
       _isLoading = false;
       notifyListeners();
-      return true;
+      return false;
     } catch (e) {
       _errorMessage = e.toString();
       _isLoading = false;
@@ -106,6 +103,7 @@ class AuthProvider extends ChangeNotifier {
   Future<bool> register({
     required String username,
     String? email,
+    String? phoneNumber,
     required String password,
   }) async {
     _isLoading = true;
@@ -114,7 +112,11 @@ class AuthProvider extends ChangeNotifier {
 
     try {
       final result = await _apiClient.register(
-          username, email ?? '$username@example.com', password);
+        username,
+        email ?? '$username@example.com',
+        password,
+        phoneNumber: phoneNumber,
+      );
 
       if (result.containsKey('error')) {
         _errorMessage = result['error'].toString();
@@ -123,8 +125,9 @@ class AuthProvider extends ChangeNotifier {
         return false;
       }
 
-      // After successful registration, log in
-      return await login(username: username, password: password);
+      _isLoading = false;
+      notifyListeners();
+      return true;
     } catch (e) {
       _errorMessage = e.toString();
       _isLoading = false;

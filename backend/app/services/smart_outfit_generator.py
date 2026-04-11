@@ -11,7 +11,6 @@ from uuid import UUID, uuid4
 
 import httpx
 
-from app.api.analysis import _coerce_str_list, _recognize_image_bytes_to_clip_dict
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.ml.color_extractor import ColorExtractor
@@ -471,6 +470,8 @@ async def generate_smart_outfits(
     """
     生成智能穿搭结果字典：outfits, city, weather, temperature, mood, weather_fallback 等。
     """
+    from app.api.analysis import _coerce_str_list, _recognize_image_bytes_to_clip_dict
+
     mood = normalize_mood_input(mood)
 
     if not _is_safe_image_url_for_user(user_id, image_url):

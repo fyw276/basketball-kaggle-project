@@ -64,8 +64,8 @@ flutter run -d chrome
    - 用户名: `test_user_001`
    - 邮箱: `test001@example.com`
    - 密码: `Test123!@#`
-4. 注册成功后应该自动登录并跳转到主页
-5. 如果没有自动跳转，手动登录测试
+4. 注册成功后应显示提示并返回登录页
+5. 使用用户名 / 邮箱 / 手机号 + 密码手动登录并跳转到主页
 
 ### 3. 查看浏览器控制台
 
@@ -87,8 +87,8 @@ flutter run -d chrome
 1. 用户填写注册表单
 2. 点击"注册"按钮
 3. API 调用成功
-4. 自动调用登录 API
-5. 登录成功后跳转到主页
+4. 显示注册成功提示并切回登录页
+5. 用户手动登录后跳转到主页
 
 ### 登录流程
 1. 用户填写登录表单
@@ -174,25 +174,27 @@ class _MyAppState extends State<MyApp> {
 3. Console 标签已选中
 4. 没有过滤掉日志
 
-### Q3: 注册后没有自动登录？
+### Q3: 注册后为什么没有自动登录？
 
 检查 `auth_provider.dart` 中的 `register` 方法：
 ```dart
 Future<bool> register(...) async {
   // ...
-  // 注册成功后自动登录
-  return await login(username: username, password: password);
+  // 注册成功后返回 true，由 UI 切回登录页
+  return true;
 }
 ```
+
+这是当前产品预期流程：注册成功后先回到登录页，再由用户登录进入系统。
 
 ## 验证修复
 
 ### 成功标志
 
-1. ✅ 注册后自动跳转到主页
-2. ✅ 登录后立即跳转到主页
-3. ✅ 主页显示功能卡片
-4. ✅ 浏览器控制台显示完整的调试日志
+1. ✅ 注册成功后回到登录页
+2. ✅ 使用刚注册账号可在登录页正常登录
+3. ✅ 登录后立即跳转到主页
+4. ✅ 主页显示功能卡片
 5. ✅ URL 从 `/login` 变为 `/home`
 
 ### 失败标志
@@ -213,5 +215,4 @@ Future<bool> register(...) async {
 
 - `mobile/lib/main.dart` - 应用入口和路由配置
 - `mobile/lib/core/providers/auth_provider.dart` - 认证状态管理
-- `mobile/lib/features/auth/screens/login_screen.dart` - 登录界面
-- `mobile/lib/features/auth/screens/register_screen.dart` - 注册界面
+- `mobile/lib/features/auth/screens/auth_screen.dart` - 登录/注册界面

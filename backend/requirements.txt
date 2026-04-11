@@ -47,6 +47,7 @@ opencv-python-headless>=4.9.0  # Lightweight OpenCV (no GUI)
 
 # Scientific Computing
 numpy>=1.26.0,<2.1.0
+pandas==2.2.3
 scikit-learn==1.6.1
 
 # Utilities

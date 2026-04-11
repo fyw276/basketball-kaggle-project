@@ -82,6 +82,44 @@ def _top2_margin(recs: list[RecommendationItem]) -> float:
     return abs(float(recs[0].score) - float(recs[1].score)) / 10.0
 
 
+def _normalize_external_score(raw_score: Any, local_score: float) -> float:
+    """Normalize external score to 0-10 scale with safe fallbacks."""
+    try:
+        value = float(raw_score)
+    except (TypeError, ValueError):
+        return float(local_score)
+
+    if value < 0:
+        return float(local_score)
+    if value <= 1:
+        return value * 10.0
+    if value <= 10:
+        return value
+    if value <= 100:
+        return value / 10.0
+    return float(local_score)
+
+
+def _extract_external_payload(raw_payload: dict[str, Any]) -> dict[str, Any]:
+    """Extract a usable payload from common response wrappers.
+
+    Supported shapes:
+    - {"score": ...}
+    - {"success": true, "data": {...}}
+    - {"result": {...}}
+    """
+    if not isinstance(raw_payload, dict):
+        return {}
+
+    if isinstance(raw_payload.get("data"), dict):
+        return raw_payload["data"]
+
+    if isinstance(raw_payload.get("result"), dict):
+        return raw_payload["result"]
+
+    return raw_payload
+
+
 def ensure_pipeline() -> Any:
     """加载并缓存 sklearn pipeline；缺失文件时抛错。"""
     global _pipeline
@@ -125,10 +163,11 @@ def predict_impl(body: PredictRequest) -> PredictResponse:
 
     if should_enhance:
         try:
-            external_payload = call_external_enhance(
+            raw_external_payload = call_external_enhance(
                 payload=payload, timeout_ms=settings.EXTERNAL_INFER_TIMEOUT_MS
             )
-            external_score = float(external_payload.get("score", score))
+            external_payload = _extract_external_payload(raw_external_payload)
+            external_score = _normalize_external_score(external_payload.get("score"), score)
             external_expl = str(external_payload.get("explanation", "")).strip()
             fused_score = score * settings.LOCAL_WEIGHT + external_score * settings.EXTERNAL_WEIGHT
             fused_recs = _build_recommendations(fused_score, body.top, body.bottom)

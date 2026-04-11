@@ -2,6 +2,54 @@
 
 ## Date
 
+2026-04-11
+
+## Scope
+
+This release focused on authentication reliability and UX alignment across backend, Flutter client, and operational verification docs.
+
+## Completed
+
+1. Multi-identifier login support completed
+   - Backend login now accepts username, email, or phone number in a single credential field
+   - Added phone-number user lookup path in auth service
+
+2. User schema/model updated for phone number
+   - Added optional `phone_number` to user model and request schema
+   - Added SQLite `users` table patch for backward-compatible column rollout
+
+3. Flutter auth flow corrected for production behavior
+   - Removed demo fallback path that previously allowed pseudo-login without token
+   - Updated login prompt to "用户名 / 邮箱 / 手机号"
+   - Registration now supports optional phone number
+
+4. Registration UX and validation aligned with backend policy
+   - Password minimum length aligned to 8 characters on frontend
+   - Added explicit password requirement hint on registration form
+   - Registration success now returns user to login tab (no auto-login)
+
+5. Docs synchronized
+   - Corrected outdated docs that still described auto-login after registration
+   - Added current ECS restart and login verification command sequence for fast operational checks
+
+## Verification
+
+- Backend and Flutter changed files pass static error checks in editor tools
+- Runtime verification command set prepared for ECS:
+  - backend service restart and health check
+  - register test account
+  - login via username/email/phone_number
+  - tail backend logs for diagnosis
+
+## Current Risks
+
+1. Historical docs may still include older routing screenshots/wording that reference legacy login flow.
+2. Full backend integration suite is still not part of the lightweight default pre-push gate.
+
+---
+
+## Date
+
 2026-04-10
 
 ## Scope
