@@ -33,4 +33,38 @@ void main() {
     final url = resolvePredictApiBaseUrl();
     expect(url, 'http://127.0.0.1:$kPredictApiPort');
   });
+
+  test('unwrapApiResponseEnvelope returns data from success envelope', () {
+    final decoded = unwrapApiResponseEnvelope({
+      'success': true,
+      'data': {
+        'image_url': '/uploads/u1/a.jpg',
+      },
+      'error': null,
+    });
+
+    expect(decoded, isA<Map>());
+    expect(
+      (decoded as Map)['image_url'],
+      '/uploads/u1/a.jpg',
+    );
+  });
+
+  test('unwrapApiResponseEnvelope preserves mapped error payloads', () {
+    final decoded = unwrapApiResponseEnvelope({
+      'success': false,
+      'data': null,
+      'error': {
+        'message': 'missing image_url',
+      },
+    });
+
+    expect(decoded, isA<Map>());
+    expect((decoded as Map)['error'], 'missing image_url');
+  });
+
+  test('parseFastApiErrorBody extracts detail from FastAPI JSON', () {
+    final msg = parseFastApiErrorBody('{"detail":"missing image_url"}');
+    expect(msg, 'missing image_url');
+  });
 }
