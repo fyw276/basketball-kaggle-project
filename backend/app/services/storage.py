@@ -15,11 +15,6 @@ from fastapi import UploadFile
 from app.core.config import settings
 
 
-def _public_base_url() -> str:
-    """与前端 Web 解析一致：IPv4 loopback + 当前服务端口，避免混用 localhost/127.0.0.1 与硬编码 8000。"""
-    return f"http://127.0.0.1:{settings.PORT}"
-
-
 class StorageService:
     """File storage service for managing uploaded images"""
 
@@ -87,10 +82,9 @@ class StorageService:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # Generate URL (full URL with base URL)
+        # 直接返回相对路径，交由前端或反向代理按当前站点解析。
         relative_path = f"{user_id}/{filename}"
-        base_url = _public_base_url()
-        file_url = f"{base_url}/uploads/{relative_path}"
+        file_url = f"/uploads/{relative_path}"
 
         return str(file_path), file_url
 
@@ -113,8 +107,7 @@ class StorageService:
         with open(file_path, "wb") as buffer:
             buffer.write(data)
         relative_path = f"{user_id}/{filename}"
-        base_url = _public_base_url()
-        file_url = f"{base_url}/uploads/{relative_path}"
+        file_url = f"/uploads/{relative_path}"
         return str(file_path), file_url
 
     def delete_image(self, file_path: str) -> bool:
@@ -212,8 +205,7 @@ class StorageService:
         file_path.parent.mkdir(parents=True, exist_ok=True)
         with open(file_path, "wb") as f:
             f.write(data)
-        base_url = _public_base_url()
-        file_url = f"{base_url}/uploads/{relative_path}"
+        file_url = f"/uploads/{relative_path}"
         return str(file_path), file_url
 
 

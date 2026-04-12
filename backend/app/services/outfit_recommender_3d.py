@@ -21,7 +21,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.config import settings
 from app.core.logging import setup_logging
 from app.models.garment import Garment
 from app.schemas.garment import ColorSchema
@@ -46,11 +45,11 @@ def _public_image_url_for_garment(g: Garment) -> str:
     idx = low.find("/uploads/")
     if idx >= 0:
         tail = p_norm[idx + len("/uploads/") :]
-        return f"http://127.0.0.1:{settings.PORT}/uploads/{tail}"
+        return f"/uploads/{tail}"
     uid = str(getattr(g, "user_id", "") or "")
     name = Path(p_norm).name
     if uid and name:
-        return f"http://127.0.0.1:{settings.PORT}/uploads/{uid}/{name}"
+        return f"/uploads/{uid}/{name}"
     return ""
 
 

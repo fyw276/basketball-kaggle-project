@@ -41,6 +41,30 @@ _SIDEBAR_TO_BACKEND_CATEGORY = {
     # "连衣裙" 已添加到 VALID_CATEGORIES，直接接受
 }
 
+# 自动识别细分类 → 侧栏大类，避免大量结果只落在“全部”。
+_AUTO_FINE_TO_BASE_CATEGORY = {
+    "鞋子": "鞋",
+    "包包": "包",
+    "上衣(汉)": "上衣",
+    "下装(汉)": "裤子",
+    "马面裙": "裙子",
+    "连衣裙": "裙子",
+    "汉服": "裙子",
+    "国风": "裙子",
+}
+
+
+def _normalize_auto_category(raw: str) -> str:
+    s = (raw or "").strip()
+    if not s:
+        return "上衣"
+    s = _AUTO_FINE_TO_BASE_CATEGORY.get(s, s)
+    if s in _SIDEBAR_TO_BACKEND_CATEGORY:
+        s = _SIDEBAR_TO_BACKEND_CATEGORY[s]
+    if s not in VALID_CATEGORIES:
+        return "上衣"
+    return s
+
 
 def _normalize_category_for_update(raw: str) -> str:
     s = (raw or "").strip()
@@ -100,6 +124,20 @@ async def upload_garment_simple(
                 detail=f"Image recognition failed: {str(e)}",
             )
 
+        recognized_category = str(recognition_result.get("category") or "").strip()
+        category_confidence = float(recognition_result.get("category_confidence") or 0.0)
+        category_for_save = _normalize_auto_category(recognized_category)
+
+        # CLIP 不可用或置信度过低时，用 MobileNet 六大类兜底，保证侧栏分类可用。
+        if category_confidence < 0.15:
+            try:
+                from app.ml.category_classifier import CategoryClassifier
+
+                fallback_category, _ = CategoryClassifier().classify_category(image_bytes)
+                category_for_save = _normalize_auto_category(fallback_category)
+            except Exception:
+                pass
+
         # Step 2: Save image
         try:
             storage = get_storage_service()
@@ -144,7 +182,7 @@ async def upload_garment_simple(
             secondary_colors = colors[1:] if len(colors) > 1 else []
 
             garment_in = GarmentCreate(
-                category=recognition_result["category"],
+                category=category_for_save,
                 main_color=main_color,
                 secondary_colors=secondary_colors,
                 style_tags=recognition_result["style_tags"],
