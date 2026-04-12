@@ -19,10 +19,8 @@ String resolveApiBaseUrl() {
       h == '::1' ||
       h.startsWith('127.');
   if (!isLoopback) {
-    final scheme =
-        (b.scheme == 'http' || b.scheme == 'https') ? b.scheme : 'http';
-    return Uri(scheme: scheme, host: h, port: apiPort, path: '/api/v1')
-        .toString();
+    // 线上优先走同源反向代理（/api/v1），避免浏览器直连 :8010 被防火墙拦截。
+    return '${b.origin}/api/v1';
   }
   return 'http://127.0.0.1:$apiPort/api/v1';
 }
@@ -40,9 +38,8 @@ String resolvePredictApiBaseUrl() {
       h == '::1' ||
       h.startsWith('127.');
   if (!isLoopback) {
-    final scheme =
-        (b.scheme == 'http' || b.scheme == 'https') ? b.scheme : 'http';
-    return Uri(scheme: scheme, host: h, port: predictPort).toString();
+    // 与主 API 一致，线上走同源 /predict（由 Nginx 转发到后端）。
+    return b.origin;
   }
   return 'http://127.0.0.1:$predictPort';
 }
