@@ -112,6 +112,15 @@ class TestBodyTypeFiltering:
 class TestSceneAwareRecommendations:
     """Test scene-aware outfit recommendation (Step 7)"""
 
+    def test_derive_user_scenes_maps_styles_to_scenes(self):
+        """Style preferences should map to the intended scene instead of defaulting."""
+        recommender = OutfitRecommender3D()
+
+        primary_scene, secondary_scenes = recommender._derive_user_scenes(["运动"])
+
+        assert primary_scene == "运动健身"
+        assert isinstance(secondary_scenes, list)
+
     def test_recommend_with_explicit_scene(self):
         """User-specified scene should override style inference"""
         recommender = OutfitRecommender3D()

@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from PIL import Image
 
+from tests.api_json import unwrap_json
+
 
 def make_test_image():
     """Create a test image in memory"""
@@ -37,7 +39,7 @@ class TestOutfitCollection:
             headers=headers,
         )
         assert r.status_code == 201, f"Garment creation failed: {r.text}"
-        return r.json()["garment_id"]
+        return unwrap_json(r)["garment_id"]
 
     def test_save_outfit_collection(self, client, auth_headers):
         """Test saving a new outfit collection"""
@@ -56,7 +58,7 @@ class TestOutfitCollection:
             headers=auth_headers,
         )
         assert response.status_code == 201, f"Save collection failed: {response.text}"
-        data = response.json()
+        data = unwrap_json(response)
         assert data["name"] == "通勤商务装"
         assert data["scene"] == "通勤上班"
         assert len(data["items"]) == 2
@@ -65,7 +67,7 @@ class TestOutfitCollection:
         """Test listing outfit collections"""
         response = client.get("/api/v1/outfits/collections", headers=auth_headers)
         assert response.status_code == 200
-        data = response.json()
+        data = unwrap_json(response)
         assert "total" in data
         assert "items" in data
         assert isinstance(data["items"], list)
@@ -86,14 +88,14 @@ class TestOutfitCollection:
             headers=auth_headers,
         )
         assert save_resp.status_code == 201
-        collection_id = save_resp.json()["collection_id"]
+        collection_id = unwrap_json(save_resp)["collection_id"]
 
         get_resp = client.get(
             f"/api/v1/outfits/collections/{collection_id}",
             headers=auth_headers,
         )
         assert get_resp.status_code == 200, f"Get collection failed: {get_resp.text}"
-        data = get_resp.json()
+        data = unwrap_json(get_resp)
         assert data["name"] == "我的收藏"
         assert data["scene"] == "约会"
 
@@ -112,7 +114,7 @@ class TestOutfitCollection:
             headers=auth_headers,
         )
         assert save_resp.status_code == 201
-        collection_id = save_resp.json()["collection_id"]
+        collection_id = unwrap_json(save_resp)["collection_id"]
 
         del_resp = client.delete(
             f"/api/v1/outfits/collections/{collection_id}",
@@ -141,14 +143,14 @@ class TestOutfitCollection:
             headers=auth_headers,
         )
         assert save_resp.status_code == 201
-        collection_id = save_resp.json()["collection_id"]
+        collection_id = unwrap_json(save_resp)["collection_id"]
 
         wear_resp = client.post(
             f"/api/v1/outfits/collections/{collection_id}/wear",
             headers=auth_headers,
         )
         assert wear_resp.status_code == 200, f"Wear failed: {wear_resp.text}"
-        data = wear_resp.json()
+        data = unwrap_json(wear_resp)
         assert data["worn_times"] >= 1
 
     def test_invalid_garment_id(self, client, auth_headers):

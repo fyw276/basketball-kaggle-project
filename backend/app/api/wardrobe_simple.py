@@ -26,6 +26,7 @@ from app.services.garment import (
     delete_garment,
     get_garment_by_id,
     get_garments_by_user,
+    repair_garment_image_urls_for_user,
     update_garment,
 )
 from app.services.storage import get_storage_service
@@ -233,6 +234,9 @@ def list_garments_simple(
     db: Session = Depends(get_db),
 ):
     """Get user's garments with pagination and filtering (simplified API)"""
+    # Auto-repair legacy image_url values to reduce front-end broken image placeholders.
+    repair_garment_image_urls_for_user(db, current_user.user_id)
+
     print(
         f"[Wardrobe] GET /garments: user={current_user.user_id}, category={category}, "
         f"page={page}, page_size={page_size}"
@@ -251,6 +255,19 @@ def list_garments_simple(
             print(f"  - {g.garment_id}: category={g.category}")
 
     return GarmentListResponse(total=total, page=page, page_size=page_size, items=garments)
+
+
+@router.post("/garments/repair-image-urls")
+def repair_garment_image_urls(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Manual trigger: repair current user's broken/legacy garment image URLs."""
+    stats = repair_garment_image_urls_for_user(db, current_user.user_id)
+    return {
+        "message": "ok",
+        **stats,
+    }
 
 
 @router.patch("/garments/{garment_id}", response_model=GarmentResponse)

@@ -2,8 +2,8 @@
 
 ## 当前状态
 
-- CLI 工具：已提供 MVP
-- MCP 服务：已提供 MVP
+- CLI：已覆盖认证、衣橱、分析、智能穿搭、情绪、虚拟试衣、套装收藏；输出 JSON，并与后端 **Envelope** 对齐（成功结果为内层 `data`）
+- MCP：FastMCP 桥接同一套后端 API，工具列表见下文
 
 ## 文件位置
 
@@ -55,6 +55,40 @@ python cli/outfit_cli.py outfits --images uploads/a.jpg uploads/b.jpg --num-outf
 python cli/outfit_cli.py suitability --image uploads/demo.jpg
 ```
 
+### 8. 按城市查天气（需已登录）
+
+```bash
+python cli/outfit_cli.py weather --city 上海
+```
+
+### 9. 智能穿搭：上传参考图 → 拿到 `image_url` → 生成
+
+```bash
+python cli/outfit_cli.py smart-upload --image uploads/ref.jpg
+python cli/outfit_cli.py smart-generate --image-url "/uploads/..." --city 上海 --weather 晴 --temperature 22 --mood "想暖一点" --count 3
+```
+
+（`--image-url` 为上一步返回的相对或绝对路径，与后端约定一致。）
+
+### 10. 情绪：列表（无需登录）与推荐（需登录）
+
+```bash
+python cli/outfit_cli.py mood-list
+python cli/outfit_cli.py mood-recommend --mood sad --include-wardrobe
+```
+
+### 11. 虚拟试衣（需登录，耗时较长）
+
+```bash
+python cli/outfit_cli.py tryon --garment uploads/garment.jpg --person uploads/person.jpg --model-gender neutral
+```
+
+### 12. 套装收藏列表
+
+```bash
+python cli/outfit_cli.py collections-list --page 1
+```
+
 ## MCP 使用
 
 ### 0. 一键启动 backend + mcp（推荐）
@@ -88,21 +122,34 @@ python mcp/server.py
 
 ## MCP 提供的工具
 
-- `health`
-- `login`
-- `list_wardrobe`
-- `analyze_similarity`
-- `recommend_outfits`
-- `analyze_suitability`
+与后端能力一致（成功返回均为解包后的业务体，便于 Agent 使用）：
+
+- `health` — 后端健康检查
+- `login` — 用户名/邮箱/手机号 + 密码登录
+- `list_wardrobe` — 分页衣橱列表
+- `analyze_similarity` — 相似度 / 重复购买预警
+- `recommend_outfits` — 场景搭配（多图）
+- `analyze_suitability` — 适合度与三维度原因
+- `get_weather_by_city` — 按城市名查天气上下文
+- `upload_smart_outfit_reference` — 智能穿搭参考图上传
+- `generate_smart_outfit` — 智能穿搭生成（需先上传得 `image_url`）
+- `list_mood_types` — 情绪类型列表（公开接口）
+- `recommend_by_mood` — 情绪推荐（可选衣橱匹配）
+- `virtual_try_on` — 虚拟试衣（衣物图 + 人物图）
+- `list_outfit_collections` — 用户套装收藏列表
+- `submit_feedback` — 点赞/踩/采纳/曝光
+- `get_analytics_summary` — 飞轮指标（`scope=user|global`）
+- `route_agent_intent` — 自然语言 → 建议工具名（无需 token）
+- `add_memory_snippet` / `search_memory_snippets` — 轻量记忆 RAG
+
+**CLI** 对应：`feedback-create`、`analytics-summary`、`agent-intent`、`memory-add`、`memory-search`（见上文命令示例可扩写）。
 
 ## 说明
 
-- CLI 默认输出 JSON，适合脚本自动化。
-- MCP 工具通过后端 API 转发能力，认证基于 `OUTFIT_API_TOKEN`。
-- 若你希望我继续，我可以下一步补：
-  - MCP 工具 schema 更严格的参数校验
-  - CLI 更友好的表格输出模式
-  - CI 中加入 CLI/MCP 专项测试
+- CLI 默认输出 JSON，适合脚本与 **Cursor 等 Agent** 子进程调用。
+- MCP 工具通过后端 API 转发；需登录的接口使用 `OUTFIT_API_TOKEN`（Bearer）。
+- **动态工具编排**由 MCP Host 在运行时完成，本仓库提供稳定 **工具面** 与 HTTP 契约。
+- 可选增强见 [COMPETITION_EXTENSIONS.md](COMPETITION_EXTENSIONS.md)。
 
 ## 测试
 

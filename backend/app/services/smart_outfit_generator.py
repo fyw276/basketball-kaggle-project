@@ -400,7 +400,23 @@ def _card_to_response_dict(
         )
     preview = ""
     if items_out:
-        preview = items_out[0].get("image_url") or ""
+        # Prefer upper-body/major pieces for cover preview;
+        # shoes/accessories often miss legacy image links.
+        preferred = []
+        fallback = []
+        low_priority = {"鞋", "鞋子", "配饰", "包", "包包"}
+        for it in items_out:
+            url = str(it.get("image_url") or "").strip()
+            if not url:
+                continue
+            fallback.append(url)
+            cat = str(it.get("category") or "").strip()
+            if cat not in low_priority:
+                preferred.append(url)
+        if preferred:
+            preview = preferred[0]
+        elif fallback:
+            preview = fallback[0]
     d["preview_image_url"] = preview
     d["effect_image_url"] = preview
     d["items"] = items_out
@@ -565,6 +581,20 @@ async def generate_smart_outfits(
             wardrobe_info=wardrobe_info,
         )
         outfits_resp.append(card_dict)
+
+    if not outfits_resp:
+        logger.warning(
+            "No outfit cards generated from wardrobe (uid=%s, target_category=%s, wardrobe=%s)",
+            user_id,
+            clip_result.get("category"),
+            len(wardrobe_ordered),
+        )
+        outfits_resp = _fallback_virtual_outfits(
+            clip_result=clip_result,
+            weather_note=weather_note,
+            count=count,
+            seed=seed,
+        )
 
     return {
         "outfits": outfits_resp,

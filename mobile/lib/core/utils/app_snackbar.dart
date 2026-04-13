@@ -6,6 +6,12 @@ const Duration kAppSnackBarDuration = Duration(seconds: 5);
 /// 将接口/异常转为简短可读文案，避免长串 Timeout 撑满屏幕。
 String userFacingApiError(Object? error) {
   final s = error?.toString() ?? '未知错误';
+  final low = s.toLowerCase();
+  if (low.contains('could not validate credentials') ||
+      low.contains('not authenticated') ||
+      s.contains('401')) {
+    return '登录已失效，请重新登录后再试';
+  }
   if (s.contains('TimeoutException') || s.toLowerCase().contains('timeout')) {
     return '请求超时，请确认后端已启动或稍后重试';
   }

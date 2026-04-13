@@ -1,8 +1,10 @@
 """智能穿搭：天气 + 情绪 + 参考图，优先衣橱搭配。"""
 
+import io
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from PIL import Image
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -122,11 +124,16 @@ async def post_upload_reference(
     current_user: User = Depends(get_current_user),
 ):
     """上传参考衣物图，返回 image_url 供 /generate 使用。"""
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="请上传图片文件")
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="空文件")
+    ct = (file.content_type or "").lower()
+    if not ct.startswith("image/"):
+        # Web multipart 可能传 application/octet-stream，按真实字节兜底验证。
+        try:
+            Image.open(io.BytesIO(raw)).verify()
+        except Exception:
+            raise HTTPException(status_code=400, detail="请上传图片文件")
     name = (file.filename or "ref.jpg").strip() or "ref.jpg"
     url = await upload_reference_image(str(current_user.user_id), raw, name)
     return {"image_url": url}

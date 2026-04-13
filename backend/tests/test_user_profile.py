@@ -6,6 +6,8 @@ Tests profile creation, update, validation, and permission control
 from fastapi import status
 from fastapi.testclient import TestClient
 
+from tests.api_json import unwrap_json
+
 
 class TestUserProfileCreation:
     """Test user profile creation"""
@@ -24,7 +26,7 @@ class TestUserProfileCreation:
         response = client.post("/api/v1/profile", json=profile_data, headers=auth_headers)
 
         assert response.status_code == status.HTTP_201_CREATED
-        data = response.json()
+        data = unwrap_json(response)
         assert data["height"] == 170
         assert data["body_type"] == "偏瘦"
         assert data["skin_tone"] == "冷白"
@@ -49,7 +51,7 @@ class TestUserProfileCreation:
         response = client.post("/api/v1/profile", json=profile_data, headers=auth_headers)
 
         assert response.status_code == status.HTTP_201_CREATED
-        data = response.json()
+        data = unwrap_json(response)
         assert data["height"] == 165
         assert data["avoid_body_parts"] == []
 
@@ -219,7 +221,7 @@ class TestUserProfileRetrieval:
         response = client.get("/api/v1/profile", headers=auth_headers)
 
         assert response.status_code == status.HTTP_200_OK
-        data = response.json()
+        data = unwrap_json(response)
         assert data["height"] == 170
         assert data["body_type"] == "偏瘦"
 
@@ -259,7 +261,7 @@ class TestUserProfileUpdate:
         response = client.put("/api/v1/profile", json=update_data, headers=auth_headers)
 
         assert response.status_code == status.HTTP_200_OK
-        data = response.json()
+        data = unwrap_json(response)
         assert data["height"] == 175
         assert set(data["style_preference"]) == {"通勤", "简约", "休闲"}
         # Other fields should remain unchanged
@@ -290,7 +292,7 @@ class TestUserProfileUpdate:
         response = client.put("/api/v1/profile", json=update_data, headers=auth_headers)
 
         assert response.status_code == status.HTTP_200_OK
-        data = response.json()
+        data = unwrap_json(response)
         assert data["height"] == 180
         assert data["body_type"] == "沙漏"
         assert data["skin_tone"] == "小麦"
@@ -348,7 +350,7 @@ class TestUserProfilePermissions:
         }
         response1 = client.post("/api/v1/profile", json=profile_data_1, headers=auth_headers)
         assert response1.status_code == status.HTTP_201_CREATED
-        user1_profile = response1.json()
+        user1_profile = unwrap_json(response1)
 
         # User 2 creates profile
         profile_data_2 = {
@@ -360,19 +362,19 @@ class TestUserProfilePermissions:
         }
         response2 = client.post("/api/v1/profile", json=profile_data_2, headers=second_user_headers)
         assert response2.status_code == status.HTTP_201_CREATED
-        user2_profile = response2.json()
+        user2_profile = unwrap_json(response2)
 
         # User 1 gets their own profile
         response = client.get("/api/v1/profile", headers=auth_headers)
         assert response.status_code == status.HTTP_200_OK
-        data = response.json()
+        data = unwrap_json(response)
         assert data["profile_id"] == user1_profile["profile_id"]
         assert data["height"] == 170
 
         # User 2 gets their own profile
         response = client.get("/api/v1/profile", headers=second_user_headers)
         assert response.status_code == status.HTTP_200_OK
-        data = response.json()
+        data = unwrap_json(response)
         assert data["profile_id"] == user2_profile["profile_id"]
         assert data["height"] == 165
 
@@ -401,7 +403,7 @@ class TestUserProfileEdgeCases:
                 "/api/v1/auth/login",
                 json={"username": user_data["username"], "password": user_data["password"]},
             )
-            token = login_response.json()["access_token"]
+            token = unwrap_json(login_response)["access_token"]
             headers = {"Authorization": f"Bearer {token}"}
 
             # Create profile with this body type
@@ -414,7 +416,7 @@ class TestUserProfileEdgeCases:
             }
             response = client.post("/api/v1/profile", json=profile_data, headers=headers)
             assert response.status_code == status.HTTP_201_CREATED
-            assert response.json()["body_type"] == body_type
+            assert unwrap_json(response)["body_type"] == body_type
 
     def test_all_valid_skin_tones(self, client: TestClient):
         """Test all valid skin tones are accepted"""
@@ -434,7 +436,7 @@ class TestUserProfileEdgeCases:
                 "/api/v1/auth/login",
                 json={"username": user_data["username"], "password": user_data["password"]},
             )
-            token = login_response.json()["access_token"]
+            token = unwrap_json(login_response)["access_token"]
             headers = {"Authorization": f"Bearer {token}"}
 
             # Create profile with this skin tone
@@ -447,7 +449,7 @@ class TestUserProfileEdgeCases:
             }
             response = client.post("/api/v1/profile", json=profile_data, headers=headers)
             assert response.status_code == status.HTTP_201_CREATED
-            assert response.json()["skin_tone"] == skin_tone
+            assert unwrap_json(response)["skin_tone"] == skin_tone
 
     def test_multiple_style_preferences(self, client: TestClient, auth_headers: dict):
         """Test profile with multiple style preferences"""
@@ -461,7 +463,7 @@ class TestUserProfileEdgeCases:
 
         response = client.post("/api/v1/profile", json=profile_data, headers=auth_headers)
         assert response.status_code == status.HTTP_201_CREATED
-        data = response.json()
+        data = unwrap_json(response)
         assert len(data["style_preference"]) == 5
 
     def test_multiple_avoid_body_parts(self, client: TestClient, auth_headers: dict):
@@ -477,5 +479,5 @@ class TestUserProfileEdgeCases:
 
         response = client.post("/api/v1/profile", json=profile_data, headers=auth_headers)
         assert response.status_code == status.HTTP_201_CREATED
-        data = response.json()
+        data = unwrap_json(response)
         assert len(data["avoid_body_parts"]) == 4

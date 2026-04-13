@@ -1,12 +1,23 @@
 # 智能穿搭助手 - 项目状态文档
 
-**最后更新**: 2026-04-10
+**最后更新**: 2026-04-13
 **项目版本**: v1.3.0
 **状态**: ✅ 核心功能完成；智能穿搭 API 契约、AI 解释层与首页推荐闭环已落地，可用于演示和回归测试
 
 ---
 
-## 🆕 本次更新（2026-04-10）
+## 🆕 本次更新（2026-04-13）
+
+- ✅ **CLI**（`cli/outfit_cli.py`）：与后端统一 Envelope 解包；新增天气、智能穿搭上传/生成、情绪列表/推荐、虚拟试衣、套装收藏列表等命令。
+- ✅ **MCP**（`mcp/server.py`）：同上解包；新增智能穿搭、天气、情绪、试衣、收藏等工具，便于 Agent 动态选工具。
+- ✅ **反馈与飞轮**：`FeedbackEvent` 表、`POST /api/v1/feedback/events`；`GET /api/v1/analytics/summary`；场景搭配推荐对历史 `like/adopt` 做 **简单重排**；`scripts/export_feedback_jsonl.py`。
+- ✅ **意图路由**：`POST /api/v1/agent/intent`（薄规则 → 建议 MCP 工具名）。
+- ✅ **轻量记忆 RAG**：`MemorySnippet` + `POST/GET/DELETE /api/v1/memory/snippets*`，关键词检索。
+- ✅ **回归测试与 Envelope 对齐**：`ApiEnvelopeMiddleware` 对 2xx JSON 统一包装；`backend/tests` 通过 `tests.api_json.unwrap_json` 解包后断言（全量 `pytest` 与生产行为一致）。Pre-push 仍跑 `tests_lite` 作快速门禁。
+- ✅ **Flutter**：场景推荐 / 智能穿搭卡片 **喜欢·采纳** 反馈；**保存到收藏** 走真实 API，可选多套时点选卡片再保存；收藏成功但反馈失败时提示「收藏已保存，反馈同步失败：…」。
+- 📄 文档：`README.md`、`backend/API_EXAMPLES.md`；[docs/CLI_MCP_QUICKSTART.md](docs/CLI_MCP_QUICKSTART.md)、[docs/COMPETITION_EXTENSIONS.md](docs/COMPETITION_EXTENSIONS.md)。
+
+## 🆕 上次更新（2026-04-10）
 
 - ✅ 后端新增统一响应 Envelope（`success/data/error/message`）与错误封装辅助。
 - ✅ 智能穿搭生成接口支持结构化地址 `address`，并返回 `address` 对象。
@@ -98,7 +109,8 @@
 - ✅ OpenAPI 文档（Swagger UI + ReDoc）
 
 #### 9. 测试覆盖 (100%)
-- ✅ 后端 `pytest` 套件通过（`backend/tests`，数量随版本变化）
+- ✅ 后端 `pytest` 套件通过（`backend/tests`；全量约350+ 例，含 2 skip；成功响应需按 Envelope 解包，见 `tests/api_json.py`）
+- ✅ 轻量套件 `tests_lite` 供 pre-push / 快速验证（32 例量级）
 - ✅ pytest 可用 tempfile 解决 Windows 文件锁问题
 
 ### 前端应用 (Flutter Web)
@@ -544,9 +556,9 @@ clothing-assistant/
 
 ### 长期目标
 - [ ] 开发 iOS/Android 原生应用
-- [ ] 实现 CLI 工具
-- [ ] 开发 MCP 服务（AI 智能体集成）
-- [ ] 部署到生产环境
+- [x] 实现 CLI 工具（`cli/outfit_cli.py`）
+- [x] 开发 MCP 服务（AI 智能体集成，`mcp/server.py`）
+- [ ] 部署到生产环境（参见 `scripts/deploy_full_to_ecs.ps1` 与运维文档）
 
 ---
 

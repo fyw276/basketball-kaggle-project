@@ -36,6 +36,8 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
   List<Map<String, dynamic>> _items = [];
   bool _loading = true;
   bool _editMode = false;
+  bool _repairingImages = false;
+  String _lastRepairSummary = '';
 
   Map<String, dynamic>? _lastDeletedItem;
 
@@ -60,6 +62,43 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
       _items = [];
     }
     if (mounted) setState(() => _loading = false);
+  }
+
+  Future<void> _repairBrokenImages() async {
+    if (_repairingImages) return;
+    setState(() => _repairingImages = true);
+    final auth = context.read<AuthProvider>();
+    final palette = context.read<ThemeProvider>().palette;
+    try {
+      final res = await auth.apiClient.repairGarmentImageUrls();
+      if (res['error'] != null) {
+        if (mounted) {
+          showAppSnackBar(context, '修复失败：${userFacingApiError(res['error'])}');
+        }
+        return;
+      }
+      final scanned = (res['scanned'] as num?)?.toInt() ?? 0;
+      final changed = (res['changed'] as num?)?.toInt() ?? 0;
+      final skipped = (res['skipped'] as num?)?.toInt() ?? 0;
+      final summary = '图片链接修复：扫描 $scanned，修复 $changed，跳过 $skipped';
+      if (mounted) {
+        setState(() => _lastRepairSummary = summary);
+        showAppSnackBar(
+          context,
+          summary,
+          backgroundColor: palette.successColor,
+        );
+      }
+      await _refresh();
+    } catch (e) {
+      if (mounted) {
+        showAppSnackBar(context, '修复失败：${userFacingApiError(e)}');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _repairingImages = false);
+      }
+    }
   }
 
   String _gid(Map<String, dynamic> g) =>
@@ -696,6 +735,21 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                       color: palette.primary, fontWeight: FontWeight.w700)),
             ),
           IconButton(
+            icon: _repairingImages
+                ? SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: palette.primary,
+                    ),
+                  )
+                : const Icon(Icons.healing_outlined, size: 22),
+            tooltip: '修复坏图链接',
+            onPressed:
+                (_loading || _repairingImages) ? null : _repairBrokenImages,
+          ),
+          IconButton(
             icon: const Icon(Icons.refresh, size: 22),
             onPressed: _loading ? null : _refresh,
           ),
@@ -786,8 +840,25 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                         color: Colors.orange,
                         onTap: () => setState(() => _editMode = !_editMode),
                       ),
+                      _WardrobeActionChip(
+                        label: _repairingImages ? '修复中…' : '修复坏图',
+                        icon: Icons.healing_outlined,
+                        color: Colors.teal,
+                        onTap: _repairingImages ? () {} : _repairBrokenImages,
+                      ),
                     ],
                   ),
+                  if (_lastRepairSummary.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      _lastRepairSummary,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: palette.textBody,
+                        height: 1.35,
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),

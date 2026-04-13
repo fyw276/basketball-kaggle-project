@@ -459,6 +459,10 @@ class ApiClient {
         '/wardrobe/simple/garments/$garmentId', {'category': category});
   }
 
+  Future<Map<String, dynamic>> repairGarmentImageUrls() async {
+    return post('/wardrobe/simple/garments/repair-image-urls', {});
+  }
+
   // ─── 衣橱：整套拆分上传 ─────────────────────────────────────────
   // 后端路由: POST /wardrobe/split-outfit
   // 后端字段: file=UploadFile, save=bool, selected_indexes=逗号分隔字符串
@@ -635,6 +639,43 @@ class ApiClient {
         scene: scene,
       );
 
+  /// 用户反馈：`POST /feedback/events`（喜欢/采纳等，用于后端重排与数据飞轮）
+  Future<Map<String, dynamic>> submitFeedbackEvent({
+    required String eventType,
+    String source = 'analysis_outfit',
+    String? garmentId,
+    String? collectionId,
+    String? scene,
+    Map<String, dynamic>? payload,
+  }) async {
+    final body = <String, dynamic>{
+      'event_type': eventType,
+      'source': source,
+      if (garmentId != null && garmentId.isNotEmpty) 'garment_id': garmentId,
+      if (collectionId != null && collectionId.isNotEmpty)
+        'collection_id': collectionId,
+      if (scene != null && scene.isNotEmpty) 'scene': scene,
+      if (payload != null) 'payload': payload,
+    };
+    return post('/feedback/events', body);
+  }
+
+  /// 套装收藏：`POST /outfits/collections`
+  Future<Map<String, dynamic>> saveOutfitCollection({
+    required String name,
+    required String scene,
+    String? description,
+    required List<String> garmentIds,
+  }) async {
+    return post('/outfits/collections', {
+      'name': name,
+      'scene': scene,
+      if (description != null && description.trim().isNotEmpty)
+        'description': description.trim(),
+      'garment_ids': garmentIds,
+    });
+  }
+
   // ─── 分析：适合度 ────────────────────────────────────────────────
   // 后端路由: POST /analysis/suitability
   // 后端字段: file=UploadFile, scene=Optional[str]
@@ -770,6 +811,9 @@ class ApiClient {
         if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
         return {'data': unwrapped};
       }
+      if (response.statusCode == 401) {
+        return {'error': 'Could not validate credentials'};
+      }
       return {'error': 'Weather failed: ${response.statusCode}'};
     } catch (e) {
       return {'error': e.toString()};
@@ -788,6 +832,9 @@ class ApiClient {
         final unwrapped = unwrapApiResponseEnvelope(decoded);
         if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
         return {'data': unwrapped};
+      }
+      if (response.statusCode == 401) {
+        return {'error': 'Could not validate credentials'};
       }
       return {'error': 'City weather failed: ${response.statusCode}'};
     } catch (e) {
@@ -815,6 +862,9 @@ class ApiClient {
         final unwrapped = unwrapApiResponseEnvelope(decoded);
         if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
         return {'data': unwrapped};
+      }
+      if (response.statusCode == 401) {
+        return {'error': 'Could not validate credentials'};
       }
       final err = _parseFastApiErrorBody(response.body);
       if (err != null) return {'error': err};
@@ -875,6 +925,9 @@ class ApiClient {
         }
         if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
         return {'data': unwrapped};
+      }
+      if (response.statusCode == 401) {
+        return {'error': 'Could not validate credentials'};
       }
       final err = _parseFastApiErrorBody(response.body);
       if (err != null) return {'error': err};

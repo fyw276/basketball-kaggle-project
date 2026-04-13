@@ -11,6 +11,7 @@ Tests verify:
 import pytest
 
 from app.services.auth import hash_password, verify_password
+from tests.api_json import unwrap_json
 
 
 def test_password_encryption():
@@ -79,7 +80,7 @@ def test_account_deletion(client):
         json={"username": user_data["username"], "password": user_data["password"]},
     )
     assert login_response.status_code == status.HTTP_200_OK
-    token = login_response.json()["access_token"]
+    token = unwrap_json(login_response)["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
     # Delete account (if endpoint exists)
@@ -104,7 +105,7 @@ def test_account_deletion_cascade(client):
         "/api/v1/auth/login",
         json={"username": user_data["username"], "password": user_data["password"]},
     )
-    token = login_response.json()["access_token"]
+    token = unwrap_json(login_response)["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
     # Create user profile
@@ -225,7 +226,7 @@ def test_user_cannot_delete_other_users(client, auth_headers, second_user_header
     assert get2.status_code == 200
 
     # Profiles should be different
-    assert get1.json()["profile_id"] != get2.json()["profile_id"]
+    assert unwrap_json(get1)["profile_id"] != unwrap_json(get2)["profile_id"]
 
 
 def test_sensitive_data_not_logged():

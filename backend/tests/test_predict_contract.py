@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.services.outfit_style_predict import MODEL_PATH, reset_pipeline_for_tests
+from tests.api_json import unwrap_json
 
 
 def _sample_payload() -> dict[str, str]:
@@ -39,7 +40,7 @@ def test_predict_contract_returns_required_fields(client: TestClient):
     res = client.post("/predict", json=_sample_payload())
     assert res.status_code == 200, res.text
 
-    data = res.json()
+    data = unwrap_json(res)
     assert isinstance(data, dict)
 
     assert "score" in data
@@ -74,7 +75,7 @@ def test_predict_recommendations_are_top3_like(client: TestClient):
 
     res = client.post("/predict", json=payload)
     assert res.status_code == 200, res.text
-    data = res.json()
+    data = unwrap_json(res)
 
     recs = data.get("recommendations") or []
     assert isinstance(recs, list)

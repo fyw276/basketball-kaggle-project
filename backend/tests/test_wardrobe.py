@@ -7,6 +7,8 @@ import io
 import pytest
 from PIL import Image
 
+from tests.api_json import unwrap_json
+
 
 def create_test_image():
     """Create a test image file"""
@@ -30,7 +32,7 @@ def authenticated_user(test_client):
         "/api/v1/auth/login",
         json={"username": user_data["username"], "password": user_data["password"]},
     )
-    token = response.json()["access_token"]
+    token = unwrap_json(response)["access_token"]
     return {"token": token, "user_data": user_data}
 
 
@@ -63,7 +65,7 @@ class TestAddGarment:
         # Accept either 201 (success) or 422 (validation - file upload issue in test)
         assert response.status_code in [201, 422]
         if response.status_code == 201:
-            data = response.json()
+            data = unwrap_json(response)
             assert data["category"] == "上衣"
             assert data["main_color"]["name"] == "蓝"
             assert "garment_id" in data
@@ -124,7 +126,7 @@ class TestListGarments:
         )
 
         assert response.status_code == 200
-        data = response.json()
+        data = unwrap_json(response)
         assert data["total"] == 0
         assert data["items"] == []
 

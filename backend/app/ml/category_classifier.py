@@ -165,13 +165,15 @@ class CategoryClassifier:
         best_category = max(category_scores, key=category_scores.get)
         confidence = category_scores[best_category]
 
-        # If confidence is too low, return "上衣" as default with low confidence
+        # If confidence is too low, keep the best-scoring category instead of
+        # forcing every uncertain item into "上衣". The previous fallback
+        # introduced a strong top-wear bias and hurt downstream outfit quality.
         if confidence < self.confidence_threshold:
             logger.warning(
                 f"Low confidence {confidence:.3f} < {self.confidence_threshold}, "
-                f"using default category"
+                f"keeping best category '{best_category}'"
             )
-            return "上衣", confidence
+            return best_category, confidence
 
         return best_category, float(confidence)
 

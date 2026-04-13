@@ -11,4 +11,11 @@ Base = declarative_base()
 # These imports are needed for Base.metadata.create_all() to work
 def import_models():
     """Import all models to register them with Base.metadata"""
-    from app.models import garment, outfit_collection, user, user_profile  # noqa: F401
+    from app.models import (  # noqa: F401
+        feedback_event,
+        garment,
+        memory_snippet,
+        outfit_collection,
+        user,
+        user_profile,
+    )

@@ -90,6 +90,54 @@ def test_mcp_token_required(monkeypatch: pytest.MonkeyPatch):
         mcp_mod._token()
 
 
+def test_cli_handle_response_unwraps_envelope():
+    repo_root = Path(__file__).resolve().parents[2]
+    cli_mod = _load_module("outfit_cli_test_mod_env", repo_root / "cli" / "outfit_cli.py")
+
+    req = httpx.Request("GET", "http://127.0.0.1:8010/api/v1/x")
+    resp = httpx.Response(
+        200,
+        request=req,
+        json={"success": True, "data": {"hello": 1}, "error": None, "message": "ok"},
+    )
+    out = cli_mod.handle_response(resp)
+    assert out == {"hello": 1}
+
+
+def test_mcp_handle_unwraps_success_envelope(monkeypatch: pytest.MonkeyPatch):
+    repo_root = Path(__file__).resolve().parents[2]
+
+    fake_fastmcp_mod = ModuleType("mcp.server.fastmcp")
+
+    class _FakeFastMCP:
+        def __init__(self, _: str):
+            pass
+
+        def tool(self):
+            def deco(fn):
+                return fn
+
+            return deco
+
+        def run(self):
+            return None
+
+    fake_fastmcp_mod.FastMCP = _FakeFastMCP
+    sys.modules["mcp"] = ModuleType("mcp")
+    sys.modules["mcp.server"] = ModuleType("mcp.server")
+    sys.modules["mcp.server.fastmcp"] = fake_fastmcp_mod
+
+    mcp_mod = _load_module("mcp_server_test_mod_env", repo_root / "mcp" / "server.py")
+
+    req = httpx.Request("GET", "http://127.0.0.1:8010/api/v1/x")
+    resp = httpx.Response(
+        200,
+        request=req,
+        json={"success": True, "data": {"a": 2}, "error": None, "message": "ok"},
+    )
+    assert mcp_mod._handle(resp) == {"a": 2}
+
+
 def test_mcp_handle_http_error_payload(monkeypatch: pytest.MonkeyPatch):
     repo_root = Path(__file__).resolve().parents[2]
 

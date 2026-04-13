@@ -57,9 +57,33 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
     super.dispose();
   }
 
+  Future<ImageSource?> _pickSource() {
+    return showModalBottomSheet<ImageSource>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library),
+              title: const Text('相册'),
+              onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+            ),
+            ListTile(
+              leading: const Icon(Icons.camera_alt),
+              title: const Text('相机'),
+              onTap: () => Navigator.pop(ctx, ImageSource.camera),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _pickGarment() async {
+    final source = await _pickSource();
+    if (source == null) return;
     final picker = ImagePicker();
-    final img = await picker.pickImage(source: ImageSource.gallery);
+    final img = await picker.pickImage(source: source);
     if (img != null) {
       setState(() {
         _garmentImage = img;
@@ -74,20 +98,26 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
   }
 
   Future<void> _pickPerson() async {
+    final source = await _pickSource();
+    if (source == null) return;
     final picker = ImagePicker();
-    final img = await picker.pickImage(source: ImageSource.gallery);
+    final img = await picker.pickImage(source: source);
     if (img != null) setState(() => _personFront = img);
   }
 
   Future<void> _pickPersonSide() async {
+    final source = await _pickSource();
+    if (source == null) return;
     final picker = ImagePicker();
-    final img = await picker.pickImage(source: ImageSource.gallery);
+    final img = await picker.pickImage(source: source);
     if (img != null) setState(() => _personSide = img);
   }
 
   Future<void> _pickPersonBack() async {
+    final source = await _pickSource();
+    if (source == null) return;
     final picker = ImagePicker();
-    final img = await picker.pickImage(source: ImageSource.gallery);
+    final img = await picker.pickImage(source: source);
     if (img != null) setState(() => _personBack = img);
   }
 

@@ -16,6 +16,8 @@ import '../../../core/utils/app_snackbar.dart'
     show showAppSnackBar, userFacingApiError;
 import '../../../core/utils/media_url.dart';
 import '../../../core/widgets/analysis_feature_layout.dart';
+import '../../../core/widgets/analysis_result_display.dart'
+    show extractOutfitGarmentIds;
 import '../../../core/widgets/image_picker_section.dart';
 import '../../../core/widgets/platform_image.dart';
 
@@ -67,6 +69,9 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
   int _weatherSeq = 0;
   bool _weatherRequestInFlight = false;
 
+  /// 上报「喜欢/采纳」到 `POST /feedback/events`（与场景穿搭页一致）
+  bool _outfitFeedbackBusy = false;
+
   /// 等待 [AuthProvider] 从 SharedPreferences 恢复 token。
   /// 若抢先调用天气/生成接口，请求无 Authorization → 401 → 误报「无法获取天气」或生成失败。
   Future<void> _waitForAuthReady() async {
@@ -79,6 +84,58 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
       if (!mounted) return;
       auth = context.read<AuthProvider>();
       if (auth.isInitialized) return;
+    }
+  }
+
+  bool _isCredentialInvalidError(Object? error) {
+    final s = (error?.toString() ?? '').toLowerCase();
+    return s.contains('could not validate credentials') ||
+        s.contains('not authenticated') ||
+        s.contains('401');
+  }
+
+  void _handleCredentialInvalid() {
+    final auth = context.read<AuthProvider>();
+    auth.logout();
+    showAppSnackBar(context, '登录已失效，请重新登录后再试');
+  }
+
+  Future<void> _sendSmartOutfitFeedback(
+    String eventType,
+    Map<String, dynamic> outfit,
+    int outfitIndex,
+  ) async {
+    if (_outfitFeedbackBusy) return;
+    setState(() => _outfitFeedbackBusy = true);
+    try {
+      final auth = context.read<AuthProvider>();
+      final ids = extractOutfitGarmentIds(outfit);
+      final city = _cityShort.trim();
+      final res = await auth.apiClient.submitFeedbackEvent(
+        eventType: eventType,
+        source: 'smart_outfit',
+        garmentId: ids.isNotEmpty ? ids.first : null,
+        scene: city.isNotEmpty ? city : null,
+        payload: {
+          'outfit_index': outfitIndex,
+          'garment_ids': ids,
+          'mood': _moodCtrl.text.trim(),
+        },
+      );
+      if (!mounted) return;
+      if (res.containsKey('error')) {
+        showAppSnackBar(
+          context,
+          '反馈未提交：${userFacingApiError(res['error'])}',
+        );
+      } else {
+        showAppSnackBar(
+          context,
+          eventType == 'adopt' ? '已记录「采纳」' : '已记录「喜欢」',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _outfitFeedbackBusy = false);
     }
   }
 
@@ -349,6 +406,10 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
       }
       final r = await api.getSmartOutfitWeather(pos.latitude, pos.longitude);
       if (r['error'] != null) {
+        if (_isCredentialInvalidError(r['error'])) {
+          _handleCredentialInvalid();
+          throw Exception('Could not validate credentials');
+        }
         throw Exception('${r['error']}');
       }
       if (!mounted || seq != _weatherSeq) return;
@@ -564,8 +625,7 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
     setState(() => _oneTapBusy = true);
     try {
       if (_images.isEmpty) {
-        final picker = ImagePicker();
-        final picked = await picker.pickImage(source: ImageSource.gallery);
+        final picked = await _pickSingleImageWithSource();
         if (picked == null) {
           if (mounted) showAppSnackBar(context, '已取消选择图片');
           return;
@@ -588,6 +648,31 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
     } finally {
       if (mounted) setState(() => _oneTapBusy = false);
     }
+  }
+
+  Future<XFile?> _pickSingleImageWithSource() async {
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library),
+              title: const Text('相册'),
+              onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+            ),
+            ListTile(
+              leading: const Icon(Icons.camera_alt),
+              title: const Text('相机'),
+              onTap: () => Navigator.pop(ctx, ImageSource.camera),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (source == null) return null;
+    final picker = ImagePicker();
+    return picker.pickImage(source: source);
   }
 
   void _maybeJumpToInitialIndex() {
@@ -645,6 +730,13 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
         genderExpression: ge,
       );
       if (r['error'] != null) {
+        if (_isCredentialInvalidError(r['error'])) {
+          if (mounted) {
+            _handleCredentialInvalid();
+          }
+          setState(() => _generating = false);
+          return;
+        }
         if (mounted) {
           final msg = userFacingApiError(r['error']);
           final isConn = msg.contains('无法连接') || msg.contains('网络');
@@ -686,6 +778,13 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
         await _cacheTodayRecommendationAt(_currentOutfitIndex);
       }
     } catch (e) {
+      if (_isCredentialInvalidError(e)) {
+        if (mounted) {
+          _handleCredentialInvalid();
+        }
+        setState(() => _generating = false);
+        return;
+      }
       if (mounted) {
         final msg = userFacingApiError(e);
         final isConn = msg.contains('无法连接') || msg.contains('网络');
@@ -1236,16 +1335,55 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                                                         color: palette.primary,
                                                         size: 48),
                                                   ),
+                                                  errorWidget: Container(
+                                                    color: palette.surface,
+                                                    alignment: Alignment.center,
+                                                    child: Column(
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        Icon(
+                                                          Icons
+                                                              .broken_image_outlined,
+                                                          color:
+                                                              palette.textBody,
+                                                          size: 44,
+                                                        ),
+                                                        const SizedBox(
+                                                            height: 6),
+                                                        Text(
+                                                          '预览图加载失败',
+                                                          style: TextStyle(
+                                                            fontSize: 12,
+                                                            color: palette
+                                                                .textBody,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
                                                 ),
                                               ),
                                             )
                                           else
                                             Container(
-                                              height: 200,
+                                              height: 120,
+                                              decoration: BoxDecoration(
+                                                color: palette.surface,
+                                                borderRadius:
+                                                    BorderRadius.circular(14),
+                                                border: Border.all(
+                                                  color: palette.divider,
+                                                ),
+                                              ),
                                               alignment: Alignment.center,
-                                              child: Icon(Icons.layers_outlined,
-                                                  size: 56,
-                                                  color: palette.textBody),
+                                              child: Text(
+                                                '该方案暂无预览图',
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  color: palette.textBody,
+                                                ),
+                                              ),
                                             ),
                                           const SizedBox(height: 10),
                                           Text(
@@ -1455,6 +1593,66 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                                               );
                                             }),
                                           ],
+                                          const SizedBox(height: 12),
+                                          Row(
+                                            children: [
+                                              Expanded(
+                                                child: OutlinedButton.icon(
+                                                  onPressed: _outfitFeedbackBusy
+                                                      ? null
+                                                      : () =>
+                                                          _sendSmartOutfitFeedback(
+                                                            'like',
+                                                            Map<String,
+                                                                dynamic>.from(o),
+                                                            i,
+                                                          ),
+                                                  icon: _outfitFeedbackBusy
+                                                      ? const SizedBox(
+                                                          width: 16,
+                                                          height: 16,
+                                                          child:
+                                                              CircularProgressIndicator(
+                                                            strokeWidth: 2,
+                                                          ),
+                                                        )
+                                                      : const Icon(
+                                                          Icons.favorite_border,
+                                                          size: 18,
+                                                        ),
+                                                  label: const Text('喜欢'),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 10),
+                                              Expanded(
+                                                child: FilledButton.tonalIcon(
+                                                  onPressed: _outfitFeedbackBusy
+                                                      ? null
+                                                      : () =>
+                                                          _sendSmartOutfitFeedback(
+                                                            'adopt',
+                                                            Map<String,
+                                                                dynamic>.from(o),
+                                                            i,
+                                                          ),
+                                                  icon: const Icon(
+                                                    Icons.check_circle_outline,
+                                                    size: 18,
+                                                  ),
+                                                  label: const Text('采纳'),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            '记录后将用于推荐优化与数据统计',
+                                            style: TextStyle(
+                                              fontSize: 11,
+                                              color: palette.textBody
+                                                  .withValues(alpha: 0.85),
+                                            ),
+                                          ),
                                         ],
                                       ),
                                     ),

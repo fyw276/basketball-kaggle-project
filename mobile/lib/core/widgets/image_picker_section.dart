@@ -29,7 +29,8 @@ class _ImagePickerSectionState extends State<ImagePickerSection> {
 
   Future<void> _pickImage(ImageSource source) async {
     try {
-      if (widget.allowMultiple) {
+      // Multi-select is only supported for gallery; camera must use single capture.
+      if (widget.allowMultiple && source == ImageSource.gallery) {
         final pickedFiles = await _picker.pickMultiImage(
           imageQuality: 85,
           maxWidth: 1200,

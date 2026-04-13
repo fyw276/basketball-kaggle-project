@@ -99,6 +99,19 @@ class TestCategoryClassifier:
         assert isinstance(category, str)
         assert 0 <= confidence <= 1
 
+    def test_low_confidence_keeps_best_category(self):
+        """Low confidence predictions should not collapse to 上衣."""
+        classifier = CategoryClassifier.__new__(CategoryClassifier)
+        classifier.confidence_threshold = 0.5
+
+        predictions = np.zeros(1000, dtype=float)
+        predictions[788] = 0.05  # shoes mapping, intentionally below threshold
+
+        category, confidence = classifier._map_to_garment_category(predictions)
+
+        assert category == "鞋"
+        assert confidence == 0.05
+
 
 class TestStyleClassifier:
     """Test style classification"""

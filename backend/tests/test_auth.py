@@ -6,6 +6,7 @@ import pytest
 
 from app.core.config import settings
 from app.services.auth import create_access_token, verify_password
+from tests.api_json import unwrap_json
 
 
 @pytest.fixture
@@ -26,7 +27,7 @@ class TestUserRegistration:
         response = test_client.post("/api/v1/auth/register", json=test_user_data)
 
         assert response.status_code == 201
-        data = response.json()
+        data = unwrap_json(response)
         assert data["username"] == test_user_data["username"]
         assert data["email"] == test_user_data["email"]
         assert "user_id" in data
@@ -130,7 +131,7 @@ class TestUserRegistration:
         assert response.status_code == 201
 
         # Password should not be in response
-        data = response.json()
+        data = unwrap_json(response)
         assert "password" not in data
         assert "password_hash" not in data
 
@@ -156,7 +157,7 @@ class TestUserLogin:
         )
 
         assert response.status_code == 200
-        data = response.json()
+        data = unwrap_json(response)
         assert "access_token" in data
         assert data["token_type"] == "bearer"
         assert len(data["access_token"]) > 0
@@ -273,7 +274,7 @@ class TestAuthenticationMiddleware:
             "/api/v1/auth/login",
             json={"username": user_data["username"], "password": user_data["password"]},
         )
-        self.token = response.json()["access_token"]
+        self.token = unwrap_json(response)["access_token"]
 
     def test_access_protected_endpoint_with_valid_token(self, test_client):
         """Test accessing protected endpoint with valid token"""

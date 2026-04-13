@@ -2,6 +2,8 @@ import io
 
 from PIL import Image
 
+from tests.api_json import unwrap_json
+
 
 def _png_bytes(color=(50, 120, 180)):
     img = Image.new("RGB", (224, 224), color)
@@ -48,7 +50,7 @@ def test_suitability_api_returns_dimension_reasons(client, auth_headers, monkeyp
     files = {"file": ("t.png", _png_bytes(), "image/png")}
     res = client.post("/api/v1/analysis/suitability", headers=auth_headers, files=files)
     assert res.status_code == 200
-    body = res.json()
+    body = unwrap_json(res)
 
     assert "scene_match_reason" in body
     assert "body_fit_reason" in body

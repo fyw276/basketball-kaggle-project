@@ -1105,6 +1105,52 @@ with open("/path/to/test_image.jpg", "rb") as f:
 
 ---
 
+## 反馈、分析、Agent 意图、记忆（数据飞轮 / MCP 叙事）
+
+### 提交反馈 `POST /api/v1/feedback/events`（需登录）
+
+`event_type`: `like` | `dislike` | `adopt` | `view`；可选 `garment_id`、`collection_id`、`scene`、`payload`。
+
+```bash
+curl -X POST "http://127.0.0.1:8010/api/v1/feedback/events" \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"event_type\":\"like\",\"source\":\"analysis_outfit\",\"garment_id\":\"<uuid>\"}"
+```
+
+### 分析摘要 `GET /api/v1/analytics/summary`（需登录）
+
+查询参数：`scope=user`（本人）或 `scope=global`（全库汇总，演示用）。
+
+```bash
+curl -G "http://127.0.0.1:8010/api/v1/analytics/summary" \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  --data-urlencode "scope=user"
+```
+
+### 意图路由 `POST /api/v1/agent/intent`（无需登录）
+
+```bash
+curl -X POST "http://127.0.0.1:8010/api/v1/agent/intent" \
+  -H "Content-Type: application/json" \
+  -d "{\"query\":\"今天上海天气怎么样\"}"
+```
+
+### 记忆片段 `POST/GET /api/v1/memory/...`（需登录）
+
+- `POST /api/v1/memory/snippets` — JSON：`title`, `content`
+- `GET /api/v1/memory/snippets/search?q=关键词&top_k=5`
+
+### 导出反馈 JSONL（离线）
+
+```bash
+python scripts/export_feedback_jsonl.py > feedback_events.jsonl
+```
+
+（需在 `backend` 可导入 `app`，并已配置 `DATABASE_URL` / `.env`。）
+
+---
+
 ## 注意事项
 
 1. **Token 管理**: Access Token 有效期为 24 小时，过期后需要重新登录

@@ -24,6 +24,10 @@ from app.api import (
     users_router,
     wardrobe_router,
 )
+from app.api.agent_intent import router as agent_intent_router
+from app.api.analytics import router as analytics_router
+from app.api.feedback import router as feedback_router
+from app.api.memory_rag import router as memory_rag_router
 from app.api.mood import router as mood_router
 from app.api.outfit_collections import router as outfit_collections_router
 from app.api.predict_style import router as predict_style_router
@@ -99,6 +103,14 @@ async def _app_lifespan(app: FastAPI):
     from app.db.sqlite_schema import apply_sqlite_schema_patches
 
     apply_sqlite_schema_patches(engine)
+
+    try:
+        import app.models  # noqa: F401  # register new tables (feedback, memory)
+        from app.db.base import Base
+
+        Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        logger.warning("create_all skipped or failed: %s", e)
 
     try:
         from app.services.outfit_style_predict import ensure_pipeline
@@ -428,6 +440,10 @@ async def test_html():
 
 # Include routers
 app.include_router(auth_router, prefix="/api/v1")
+app.include_router(feedback_router, prefix="/api/v1")
+app.include_router(analytics_router, prefix="/api/v1")
+app.include_router(agent_intent_router, prefix="/api/v1")
+app.include_router(memory_rag_router, prefix="/api/v1")
 app.include_router(users_router, prefix="/api/v1")
 app.include_router(profile_router, prefix="/api/v1")
 app.include_router(wardrobe_router, prefix="/api/v1")

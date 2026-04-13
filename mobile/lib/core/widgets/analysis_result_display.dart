@@ -1,8 +1,25 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../providers/auth_provider.dart';
 import '../services/api_client.dart';
+import '../utils/app_snackbar.dart';
 import '../utils/media_url.dart';
 import 'platform_image.dart';
+
+/// 从推荐结果 map 中收集 `garment_id`（用于反馈上报）。
+List<String> extractOutfitGarmentIds(dynamic outfit) {
+  if (outfit is! Map) return [];
+  final raw = outfit['items'] ?? outfit['garments'];
+  if (raw is! List) return [];
+  final ids = <String>[];
+  for (final g in raw) {
+    if (g is Map && g['garment_id'] != null) {
+      ids.add(g['garment_id'].toString());
+    }
+  }
+  return ids;
+}
 
 /// Generic analysis result display widget.
 /// Renders different card types: outfit, similarity, suitability.
@@ -11,8 +28,19 @@ class AnalysisResultDisplay extends StatelessWidget {
   final String type; // 'outfit', 'similarity', 'suitability'
   /// 与 [AuthProvider.apiClient] 一致，用于拼接 `/uploads/` 图片地址。
   final String? apiBaseUrl;
-  final VoidCallback? onSaveOutfit;
+
+  /// 保存到收藏（可异步）；用于调用 `POST /outfits/collections` 等。
+  final Future<void> Function()? onSaveOutfit;
   final VoidCallback? onRetry;
+  final bool saveOutfitLoading;
+
+  /// 是否在每套搭配下显示「喜欢 / 采纳」并上报 `POST /feedback/events`
+  final bool enableOutfitFeedback;
+  final String outfitFeedbackSource;
+
+  /// 0-based；与 [onSelectedOutfitIndexForSaveChanged] 同时使用时，表示「保存到收藏」针对第几套。
+  final int? selectedOutfitIndexForSave;
+  final ValueChanged<int>? onSelectedOutfitIndexForSaveChanged;
 
   const AnalysisResultDisplay({
     super.key,
@@ -21,10 +49,17 @@ class AnalysisResultDisplay extends StatelessWidget {
     this.apiBaseUrl,
     this.onSaveOutfit,
     this.onRetry,
+    this.enableOutfitFeedback = true,
+    this.outfitFeedbackSource = 'analysis_outfit',
+    this.saveOutfitLoading = false,
+    this.selectedOutfitIndexForSave,
+    this.onSelectedOutfitIndexForSaveChanged,
   });
 
   @override
   Widget build(BuildContext context) {
+    final int saveIndexForHint = selectedOutfitIndexForSave ?? 0;
+
     if (result == null) {
       return _buildEmpty(context);
     }
@@ -43,6 +78,17 @@ class AnalysisResultDisplay extends StatelessWidget {
           ..._buildCards(context),
           if (onSaveOutfit != null) ...[
             const SizedBox(height: 24),
+            if (onSelectedOutfitIndexForSaveChanged != null &&
+                selectedOutfitIndexForSave != null) ...[
+              Text(
+                '点击某一「推荐」卡片以选中；保存到收藏将保存「推荐 #${saveIndexForHint + 1}」。',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      height: 1.35,
+                    ),
+              ),
+              const SizedBox(height: 10),
+            ],
             _buildSaveButton(context),
           ],
         ],
@@ -163,11 +209,20 @@ class AnalysisResultDisplay extends StatelessWidget {
           final raw = (result['outfit_cards'] ?? result['outfits']);
           final outfits = raw is List ? raw : <dynamic>[];
           final base = apiBaseUrl ?? ApiClient().baseUrl;
+          final pickerOn = onSelectedOutfitIndexForSaveChanged != null;
+          final sel = selectedOutfitIndexForSave ?? 0;
           for (var i = 0; i < outfits.length; i++) {
             cards.add(OutfitResultCard(
               outfit: outfits[i],
               index: i + 1,
               apiBaseUrl: base,
+              enableFeedback: enableOutfitFeedback,
+              feedbackSource: outfitFeedbackSource,
+              saveTargetPickerEnabled: pickerOn,
+              isSaveTarget: pickerOn && sel == i,
+              onSelectAsSaveTarget: pickerOn
+                  ? () => onSelectedOutfitIndexForSaveChanged!(i)
+                  : null,
             ));
           }
           if (outfits.isEmpty &&
@@ -217,29 +272,98 @@ class AnalysisResultDisplay extends StatelessWidget {
     return SizedBox(
       width: double.infinity,
       child: FilledButton.icon(
-        onPressed: onSaveOutfit,
-        icon: const Icon(Icons.bookmark_add),
-        label: const Text('保存到收藏'),
+        onPressed: saveOutfitLoading || onSaveOutfit == null
+            ? null
+            : () async {
+                await onSaveOutfit!();
+              },
+        icon: saveOutfitLoading
+            ? const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              )
+            : const Icon(Icons.bookmark_add),
+        label: Text(saveOutfitLoading ? '保存中…' : '保存到收藏'),
       ),
     );
   }
 }
 
 /// Card displaying a recommended outfit.
-class OutfitResultCard extends StatelessWidget {
+class OutfitResultCard extends StatefulWidget {
   final dynamic outfit;
   final int index;
   final String apiBaseUrl;
+  final bool enableFeedback;
+  final String feedbackSource;
+  final bool saveTargetPickerEnabled;
+  final bool isSaveTarget;
+  final VoidCallback? onSelectAsSaveTarget;
 
   const OutfitResultCard({
     super.key,
     required this.outfit,
     required this.index,
     required this.apiBaseUrl,
+    this.enableFeedback = false,
+    this.feedbackSource = 'analysis_outfit',
+    this.saveTargetPickerEnabled = false,
+    this.isSaveTarget = false,
+    this.onSelectAsSaveTarget,
   });
 
   @override
+  State<OutfitResultCard> createState() => _OutfitResultCardState();
+}
+
+class _OutfitResultCardState extends State<OutfitResultCard> {
+  bool _feedbackBusy = false;
+
+  Future<void> _sendFeedback(BuildContext context, String eventType) async {
+    if (_feedbackBusy) return;
+    setState(() => _feedbackBusy = true);
+    try {
+      final auth = context.read<AuthProvider>();
+      final ids = extractOutfitGarmentIds(widget.outfit);
+      final scene = widget.outfit is Map
+          ? (widget.outfit['scene'] ?? widget.outfit['recommended_scene'] ?? '')
+              .toString()
+              .trim()
+          : '';
+      final res = await auth.apiClient.submitFeedbackEvent(
+        eventType: eventType,
+        source: widget.feedbackSource,
+        garmentId: ids.isNotEmpty ? ids.first : null,
+        scene: scene.isNotEmpty ? scene : null,
+        payload: {
+          'outfit_index': widget.index,
+          'garment_ids': ids,
+        },
+      );
+      if (!context.mounted) return;
+      if (res.containsKey('error')) {
+        showAppSnackBar(
+          context,
+          '反馈未提交：${userFacingApiError(res['error'])}',
+        );
+      } else {
+        showAppSnackBar(
+          context,
+          eventType == 'adopt' ? '已记录「采纳」' : '已记录「喜欢」',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _feedbackBusy = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final outfit = widget.outfit;
     final dynamic rawScore = outfit is Map
         ? (outfit['overall_score'] ?? outfit['score'] ?? 0.0)
         : 0.0;
@@ -254,8 +378,18 @@ class OutfitResultCard extends StatelessWidget {
         ? (outfit['scene'] ?? outfit['recommended_scene'] ?? '')
         : '';
 
-    return Card(
-      margin: const EdgeInsets.only(bottom: 16),
+    final cardBody = Card(
+      margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: widget.saveTargetPickerEnabled && widget.isSaveTarget
+            ? BorderSide(
+                color: Theme.of(context).colorScheme.primary,
+                width: 2,
+              )
+            : BorderSide.none,
+      ),
+      elevation: widget.saveTargetPickerEnabled && widget.isSaveTarget ? 3 : 1,
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -271,7 +405,7 @@ class OutfitResultCard extends StatelessWidget {
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
-                    '推荐 #$index',
+                    '推荐 #${widget.index}',
                     style: Theme.of(context).textTheme.labelMedium?.copyWith(
                           color:
                               Theme.of(context).colorScheme.onPrimaryContainer,
@@ -279,6 +413,22 @@ class OutfitResultCard extends StatelessWidget {
                         ),
                   ),
                 ),
+                if (widget.saveTargetPickerEnabled && widget.isSaveTarget) ...[
+                  const SizedBox(width: 8),
+                  Icon(
+                    Icons.bookmark_added_outlined,
+                    size: 18,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    '将保存此套',
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Theme.of(context).colorScheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                  ),
+                ],
                 const Spacer(),
                 _buildScoreChip(context, score),
               ],
@@ -320,7 +470,7 @@ class OutfitResultCard extends StatelessWidget {
                         : '';
                     final url = resolveGarmentImageUrl(
                       rawUrl.isNotEmpty ? rawUrl : rawPath,
-                      apiBaseUrl,
+                      widget.apiBaseUrl,
                     );
                     final label = (g is Map)
                         ? (g['category']?.toString() ??
@@ -367,9 +517,67 @@ class OutfitResultCard extends StatelessWidget {
                 );
               }),
             ],
+            if (widget.enableFeedback) ...[
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _feedbackBusy
+                          ? null
+                          : () => _sendFeedback(context, 'like'),
+                      icon: _feedbackBusy
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.favorite_border, size: 18),
+                      label: const Text('喜欢'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton.tonalIcon(
+                      onPressed: _feedbackBusy
+                          ? null
+                          : () => _sendFeedback(context, 'adopt'),
+                      icon: const Icon(Icons.check_circle_outline, size: 18),
+                      label: const Text('采纳'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '记录后将用于推荐优化与数据统计',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
+              ),
+            ],
           ],
         ),
       ),
+    );
+
+    if (widget.saveTargetPickerEnabled && widget.onSelectAsSaveTarget != null) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 16),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: widget.onSelectAsSaveTarget,
+            borderRadius: BorderRadius.circular(12),
+            child: cardBody,
+          ),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: cardBody,
     );
   }
 

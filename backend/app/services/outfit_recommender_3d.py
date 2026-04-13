@@ -16,7 +16,7 @@ This module provides gender-inclusive outfit recommendations:
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -26,6 +26,9 @@ from app.models.garment import Garment
 from app.schemas.garment import ColorSchema
 from app.services.outfit_rules import CategoryRules, ColorRules, StyleRules
 
+if TYPE_CHECKING:
+    from app.services.feedback_prefs import FeedbackRerankContext
+
 logger = setup_logging()
 
 
@@ -34,23 +37,39 @@ def _public_image_url_for_garment(g: Garment) -> str:
     Prefer persisted image_url; if missing, derive /uploads/... URL from image_path.
     (Older rows may have empty image_url.)
     """
+    uid = str(getattr(g, "user_id", "") or "")
     u = (getattr(g, "image_url", None) or "").strip()
-    if u:
-        return u
+    u_norm = u.replace("\\", "/") if u else ""
+    u_low = u_norm.lower()
+    if u_norm:
+        # Canonicalize any persisted path/URL that points under uploads.
+        idx_u = u_low.find("/uploads/")
+        if idx_u >= 0:
+            tail_u = u_norm[idx_u + len("/uploads/") :].lstrip("/")
+            if tail_u:
+                return f"/uploads/{tail_u}"
+        if u_low.startswith("uploads/"):
+            return f"/{u_norm.lstrip('/')}"
+        # Non-upload absolute URLs may become stale after migration; try image_path fallback below.
+        if u_low.startswith("http://") or u_low.startswith("https://"):
+            pass
+        else:
+            return u_norm
     p = (getattr(g, "image_path", None) or "").strip()
     if not p:
-        return ""
+        return u_norm if u_norm else ""
     p_norm = p.replace("\\", "/")
     low = p_norm.lower()
     idx = low.find("/uploads/")
     if idx >= 0:
         tail = p_norm[idx + len("/uploads/") :]
         return f"/uploads/{tail}"
-    uid = str(getattr(g, "user_id", "") or "")
+    if low.startswith("uploads/"):
+        return f"/{p_norm.lstrip('/')}"
     name = Path(p_norm).name
     if uid and name:
         return f"/uploads/{uid}/{name}"
-    return ""
+    return u_norm if u_norm else ""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -285,9 +304,13 @@ class OutfitRecommender3D:
         """
         scene_scores: Dict[str, int] = {}
         for style in style_preferences:
-            if style in self.scene_styles:
-                for scene in self.scene_styles[style]:
-                    scene_scores[scene] = scene_scores.get(scene, 0) + 1
+            for scene, scene_style_list in self.scene_styles.items():
+                if style in scene_style_list:
+                    # Prefer more specific scenes over broad umbrella scenes.
+                    # For example, "运动" should map to "运动健身" instead of
+                    # defaulting to a generic "休闲日常" tie.
+                    specificity_weight = 1.0 / max(len(scene_style_list), 1)
+                    scene_scores[scene] = scene_scores.get(scene, 0.0) + specificity_weight
 
         if not scene_scores:
             return "休闲日常", []
@@ -312,6 +335,7 @@ class OutfitRecommender3D:
         user_gender: Optional[str] = None,  # "男" / "女" / None
         user_gender_expression: Optional[float] = None,  # 仅对女性生效
         explore_cross_gender: bool = False,  # 仅对男性生效
+        feedback_rerank: Optional["FeedbackRerankContext"] = None,
     ) -> List[OutfitCard]:
         """
         Generate outfit recommendations for a target garment (体型+场景感知 + 无性别推荐)
@@ -416,6 +440,13 @@ class OutfitRecommender3D:
             )
             scored.append((combo, meta, card))
 
+        if feedback_rerank is not None:
+            from app.services.feedback_prefs import FeedbackRerankContext
+
+            if not isinstance(feedback_rerank, FeedbackRerankContext):
+                raise TypeError("feedback_rerank must be FeedbackRerankContext")
+            scored = self._apply_feedback_rerank(scored, feedback_rerank)
+
         # Step 7: Sort by adjusted score
         scored.sort(
             key=lambda x: (
@@ -436,6 +467,36 @@ class OutfitRecommender3D:
             f"(gender={user_gender}, female_compatible={is_female})"
         )
         return outfit_cards
+
+    def _apply_feedback_rerank(
+        self,
+        scored: List[Tuple[List[Garment], Dict, OutfitCard]],
+        ctx: "FeedbackRerankContext",
+    ) -> List[Tuple[List[Garment], Dict, OutfitCard]]:
+        """根据历史点赞/采纳单品与风格，微调 overall_score 后重排。"""
+        if not ctx.liked_garment_ids and not ctx.style_tag_boost:
+            return scored
+        out: List[Tuple[List[Garment], Dict, OutfitCard]] = []
+        for combo, meta, card in scored:
+            delta = self._feedback_boost_for_combo(combo, ctx)
+            new_card = card.model_copy(
+                update={"overall_score": min(1.0, card.overall_score + delta)}
+            )
+            out.append((combo, meta, new_card))
+        return out
+
+    @staticmethod
+    def _feedback_boost_for_combo(
+        combo: List[Garment],
+        ctx: "FeedbackRerankContext",
+    ) -> float:
+        boost = 0.0
+        for g in combo:
+            if str(g.garment_id) in ctx.liked_garment_ids:
+                boost += 0.015
+            for t in g.style_tags or []:
+                boost += ctx.style_tag_boost.get(str(t), 0.0)
+        return min(0.08, boost)
 
     def _filter_by_gender(
         self,

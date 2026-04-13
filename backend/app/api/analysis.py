@@ -523,9 +523,11 @@ async def recommend_outfits(
         )
 
         # Initialize 3D outfit recommender (场景-品类-风格 + 无性别推荐)
+        from app.services.feedback_prefs import get_rerank_context
         from app.services.outfit_recommender_3d import OutfitRecommender3D
 
         recommender = OutfitRecommender3D()
+        rerank_ctx = get_rerank_context(db, current_user.user_id)
 
         # Generate outfit recommendations (无性别推荐系统修正版)
         outfit_cards = recommender.recommend_outfits(
@@ -540,6 +542,7 @@ async def recommend_outfits(
             user_gender=user_gender,
             user_gender_expression=final_gender_expression,
             explore_cross_gender=explore_cross_gender,
+            feedback_rerank=rerank_ctx,
         )
 
         # Convert to dict for response

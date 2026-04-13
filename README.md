@@ -1,6 +1,6 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-04-10（智能穿搭 API 契约统一 + AI 解释层 + 首页天气/今日推荐 UX 闭环）
+**最后更新**: 2026-04-13（CLI/MCP 与后端 Envelope 对齐；扩展智能穿搭/情绪/试衣/收藏工具）
 **状态**: ✅ 可用于演示与迭代（后端 FastAPI + Flutter Web/移动端）
 
 ## 项目简介
@@ -68,13 +68,19 @@
 - **性别表达指数** 动态配色（0.0 柔粉 ↔ 1.0 深蓝）
 - **大圆角** 统一样式（BorderRadius 统一为 22px）
 
-### CLI 工具
-- **框架**: Python Click
-- **终端美化**: Rich
+### CLI 工具（已实现）
+- **实现**: Python **argparse** + **httpx**，默认 **JSON** 输出，便于脚本与 Agent 调用
+- **入口**: `cli/outfit_cli.py`（`python cli/outfit_cli.py --help`）
+- **能力**: 注册/登录、衣橱、相似度/场景搭配/适合度、**按城市天气**、**智能穿搭上传+生成**、**情绪列表/推荐**、**虚拟试衣**、**套装收藏列表**；成功响应自动解包统一 `{success,data}` Envelope
 
-### MCP 服务
-- **协议**: Model Context Protocol
-- **集成**: 支持 ChatGPT、Claude 等 AI 智能体调用
+### MCP 服务（已实现）
+- **实现**: **FastMCP**（`mcp` PyPI），工具通过 HTTP 转发后端 ` /api/v1 `
+- **入口**: `mcp/server.py`；依赖：`pip install mcp httpx`
+- **环境变量**: `OUTFIT_API_BASE_URL`（默认 `http://127.0.0.1:8010/api/v1`）、`OUTFIT_API_TOKEN`（调用需登录接口时必填；也可用 MCP `login` 取得 token 后写入环境再启动）
+- **说明**: **动态工具选择**由 MCP Host（如 Cursor / Claude）在运行时完成，本仓库提供 **可组合工具面**；详见 [docs/CLI_MCP_QUICKSTART.md](docs/CLI_MCP_QUICKSTART.md)
+
+### 竞赛/课题扩展方向（可选迭代）
+- 多智能体 / 记忆 / 数据飞轮的**缺口与落地清单**见 [docs/COMPETITION_EXTENSIONS.md](docs/COMPETITION_EXTENSIONS.md)
 
 ## 项目结构
 
@@ -87,7 +93,7 @@ clothing-assistant/
 │   └── .config.kiro               # 配置文件
 ├── backend/                        # ✅ FastAPI 后端服务（已完成）
 │   ├── app/                       # 应用代码
-│   │   ├── api/                   # API 路由（约 23 个端点，见 PROJECT_STATUS）
+│   │   ├── api/                   # API 路由（多模块，完整列表见 `/docs` OpenAPI）
 │   │   ├── core/                  # 核心配置（含性别表达系统）
 │   │   ├── db/                    # 数据库
 │   │   ├── ml/                    # 机器学习模型
@@ -106,8 +112,8 @@ clothing-assistant/
 │           ├── profile/           # 用户画像
 │           ├── wardrobe/          # 衣橱管理（左右分栏 + 批量上传）
 │           └── analysis/          # 分析功能（结果同屏展示）
-├── cli/                           # ⏳ CLI 工具（待实现）
-├── mcp/                           # ⏳ MCP 服务（待实现）
+├── cli/                           # ✅ CLI（outfit_cli.py，JSON 输出）
+├── mcp/                           # ✅ MCP（server.py，FastMCP 工具桥接后端）
 └── docs/                          # 📚 项目文档（多图推荐、衣橱拆分等）
 ```
 
@@ -137,6 +143,7 @@ clothing-assistant/
 - [提交前自检清单](docs/PRE_SUBMIT_SELF_CHECK.md)
 - [交付状态（本轮治理改造）](docs/DELIVERY_STATUS.md)
 - [双通道推理速交付方案（本地主推理 + 外部增强）](docs/HYBRID_INFERENCE_FAST_TRACK.md)
+- [竞赛/课题扩展清单（多智能体 · 记忆 · 数据飞轮）](docs/COMPETITION_EXTENSIONS.md)
 
 ### 环境要求
 
@@ -176,6 +183,11 @@ flutter run -d chrome
 | `GET` | `/api/v1/smart-outfit/weather-by-city` | 按城市名查询天气（需登录） |
 | `POST` | `/api/v1/smart-outfit/upload-reference` | 上传参考衣物图，`multipart/form-data` 字段 `file` |
 | `POST` | `/api/v1/smart-outfit/generate` | 生成搭配，JSON：`image_url`、`city`、`weather`、`temperature`、`mood`、`count`、`regeneration_index` 等 |
+| `POST` | `/api/v1/feedback/events` | 用户反馈：`like` / `dislike` / `adopt` / `view`（用于重排与飞轮指标） |
+| `GET` | `/api/v1/analytics/summary` | 数据飞轮摘要：`positive_feedback_rate`、`collection_rate_proxy` 等（`scope=user|global`） |
+| `POST` | `/api/v1/agent/intent` | 薄意图路由：自然语言 → 建议 MCP 工具名（无需登录） |
+| `POST` | `/api/v1/memory/snippets` | 写入记忆片段（轻量 RAG） |
+| `GET` | `/api/v1/memory/snippets/search` | 关键词检索记忆片段 |
 
 > 若文档或旧需求里写成 `/api/smart-outfit/...`（缺少 **`/v1`**），请改为上表路径，否则客户端会 404。
 
@@ -223,8 +235,8 @@ python scripts/prefetch_models.py --tryon
 | | 大文件检查 | 全局 | 禁止提交 >1MB 文件 |
 | | 密钥检测 | 全局 | detect-secrets 防止凭证泄露 |
 | **Commit-msg** | 提交规范 | 全局 | Conventional Commits 强制执行 |
-| **Pre-push** | 测试 | Python | pytest 完整测试 |
-| | 测试 | Flutter | flutter test 单元测试 |
+| **Pre-push** | 测试 | Python | `pytest tests_lite`（轻量门禁，见 `.pre-commit-config.yaml`） |
+| | 测试 | Flutter | `flutter test` |
 
 #### ⚡ 快速安装
 
@@ -321,7 +333,7 @@ flutter test
 
 ✅ **后端服务**: 100% 完成
 - 全部核心 API 端点已实现（数量见 [PROJECT_STATUS.md](PROJECT_STATUS.md)）
-- 后端 `pytest`：348 收集，**346 通过、2 跳过**（详见 `backend/tests`；以本机最近一次全量运行为准）
+- 后端 `pytest`：`backend/tests` 全量约 **357 收集，355 通过、2 跳过**（以本机最近一次 `python -m pytest` 为准）。成功响应经 `ApiEnvelopeMiddleware` 统一为 `{success,data,error,message}`；测试侧用 `tests.api_json.unwrap_json` 读取内层 `data`。Pre-push 钩子跑 `tests_lite`（更快）。
 - 性别表达指数系统、图像识别、相似度分析、搭配推荐、适合度评分全部可用
 
 ✅ **前端应用**: 100% 完成
@@ -332,8 +344,8 @@ flutter test
 - 性别表达指数滑块（全局大圆角样式）
 - Flutter Web 完全兼容
 
-⏳ **CLI 工具**: 待实现
-⏳ **MCP 服务**: 待实现
+✅ **CLI 工具**: 已实现（见 `cli/outfit_cli.py`、`docs/CLI_MCP_QUICKSTART.md`）
+✅ **MCP 服务**: 已实现（见 `mcp/server.py`；工具覆盖衣橱/分析/智能穿搭/情绪/试衣/收藏等）
 
 ## 贡献指南
 

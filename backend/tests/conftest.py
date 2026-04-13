@@ -22,6 +22,7 @@ from app.main import app  # noqa: E402
 
 # Import all models to register them with Base.metadata
 from app.models import garment, outfit_collection, user, user_profile  # noqa: F401,E402
+from tests.api_json import unwrap_json  # noqa: E402
 
 # Use a temp file for test DB so Windows doesn't lock it between runs
 _test_db_fd, TEST_DB_PATH = tempfile.mkstemp(suffix=".db")
@@ -105,7 +106,7 @@ def auth_headers(client):
         "/api/v1/auth/login",
         json={"username": user_data["username"], "password": user_data["password"]},
     )
-    token = login_response.json()["access_token"]
+    token = unwrap_json(login_response)["access_token"]
 
     return {"Authorization": f"Bearer {token}"}
 
@@ -126,6 +127,6 @@ def second_user_headers(client):
         "/api/v1/auth/login",
         json={"username": user_data["username"], "password": user_data["password"]},
     )
-    token = login_response.json()["access_token"]
+    token = unwrap_json(login_response)["access_token"]
 
     return {"Authorization": f"Bearer {token}"}

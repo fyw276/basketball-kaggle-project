@@ -21,6 +21,10 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
   final List<XFile> _images = [];
   Map<String, dynamic>? _result;
   bool _isLoading = false;
+  bool _saveBusy = false;
+
+  /// 保存到收藏时选中的搭配（0-based，对应 `outfit_cards` 下标）
+  int _selectedOutfitIndexForSave = 0;
   String? _selectedScene;
 
   static const _cacheKey = 'outfit_recommend_v2';
@@ -80,6 +84,7 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
       setState(() {
         _result = result;
         _isLoading = false;
+        _selectedOutfitIndexForSave = 0;
       });
       FeatureLocalStore.saveJson(_cacheKey, result);
     } catch (e) {
@@ -90,6 +95,78 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
         _isLoading = false;
         _result = null;
       });
+    }
+  }
+
+  /// 将**当前选中**的那一套推荐保存到套装收藏，并自动上报 `adopt` 反馈（与后端飞轮/重排对齐）。
+  Future<void> _saveSelectedOutfitToCollection() async {
+    final result = _result;
+    if (result == null || !mounted) return;
+    final raw = result['outfit_cards'] ?? result['outfits'];
+    if (raw is! List || raw.isEmpty) {
+      showAppSnackBar(context, '没有可保存的搭配');
+      return;
+    }
+    final idx = _selectedOutfitIndexForSave.clamp(0, raw.length - 1);
+    final selected = raw[idx];
+    final ids = extractOutfitGarmentIds(selected);
+    if (ids.isEmpty) {
+      showAppSnackBar(context, '缺少单品ID，请确认衣橱有单品且已生成推荐');
+      return;
+    }
+    var sceneStr = '休闲日常';
+    if (selected is Map) {
+      final s = selected['scene'] ?? selected['recommended_scene'];
+      if (s != null && s.toString().trim().isNotEmpty) {
+        sceneStr = s.toString().trim();
+      } else if (_selectedScene != null && _selectedScene!.trim().isNotEmpty) {
+        sceneStr = _selectedScene!.trim();
+      }
+    }
+    var name = '场景推荐 · $sceneStr';
+    if (name.length > 50) name = name.substring(0, 50);
+    if (sceneStr.length > 50) sceneStr = sceneStr.substring(0, 50);
+
+    setState(() => _saveBusy = true);
+    try {
+      final auth = context.read<AuthProvider>();
+      final saveRes = await auth.apiClient.saveOutfitCollection(
+        name: name,
+        scene: sceneStr,
+        garmentIds: ids,
+      );
+      if (!mounted) return;
+      if (saveRes.containsKey('error')) {
+        showAppSnackBar(
+          context,
+          '保存失败：${userFacingApiError(saveRes['error'])}',
+        );
+        return;
+      }
+      final cid = saveRes['collection_id']?.toString();
+      final fbRes = await auth.apiClient.submitFeedbackEvent(
+        eventType: 'adopt',
+        source: 'analysis_outfit',
+        collectionId: cid,
+        garmentId: ids.first,
+        scene: sceneStr,
+        payload: {
+          'garment_ids': ids,
+          'from_save_to_collection': true,
+          'outfit_index': idx + 1,
+        },
+      );
+      if (!mounted) return;
+      if (fbRes.containsKey('error')) {
+        showAppSnackBar(
+          context,
+          '收藏已保存，反馈同步失败：${userFacingApiError(fbRes['error'])}',
+        );
+      } else {
+        showAppSnackBar(context, '已保存到收藏');
+      }
+    } finally {
+      if (mounted) setState(() => _saveBusy = false);
     }
   }
 
@@ -220,6 +297,7 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
                   _images.clear();
                   _images.addAll(images);
                   _result = null;
+                  _selectedOutfitIndexForSave = 0;
                 });
                 FeatureLocalStore.clear(_cacheKey);
               },
@@ -277,8 +355,11 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
                 result: _result,
                 type: 'outfit',
                 apiBaseUrl: context.read<AuthProvider>().apiClient.baseUrl,
-                onSaveOutfit: () {
-                  showAppSnackBar(context, '已保存到收藏');
+                onSaveOutfit: _saveSelectedOutfitToCollection,
+                saveOutfitLoading: _saveBusy,
+                selectedOutfitIndexForSave: _selectedOutfitIndexForSave,
+                onSelectedOutfitIndexForSaveChanged: (i) {
+                  setState(() => _selectedOutfitIndexForSave = i);
                 },
               ),
             if (_result == null && !_isLoading && _images.isNotEmpty) ...[

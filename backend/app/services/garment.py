@@ -3,6 +3,7 @@ Garment service
 Handles garment CRUD operations
 """
 
+from pathlib import Path
 from typing import List, Optional
 from uuid import UUID
 
@@ -11,6 +12,77 @@ from sqlalchemy.orm import Session
 
 from app.models.garment import Garment
 from app.schemas.garment import GarmentCreate, GarmentSearchQuery, GarmentUpdate
+
+
+def _normalize_upload_url(raw: str) -> str:
+    s = (raw or "").strip().replace("\\", "/")
+    if not s:
+        return ""
+    low = s.lower()
+    idx = low.find("/uploads/")
+    if idx >= 0:
+        tail = s[idx + len("/uploads/") :].lstrip("/")
+        return f"/uploads/{tail}" if tail else ""
+    if low.startswith("uploads/"):
+        return f"/{s.lstrip('/')}"
+    return s
+
+
+def _derive_upload_url_from_path(image_path: str, user_id: UUID) -> str:
+    p = (image_path or "").strip().replace("\\", "/")
+    if not p:
+        return ""
+    low = p.lower()
+    idx = low.find("/uploads/")
+    if idx >= 0:
+        tail = p[idx + len("/uploads/") :].lstrip("/")
+        return f"/uploads/{tail}" if tail else ""
+    if low.startswith("uploads/"):
+        return f"/{p.lstrip('/')}"
+    name = Path(p).name
+    return f"/uploads/{user_id}/{name}" if name else ""
+
+
+def repair_garment_image_urls_for_user(db: Session, user_id: UUID) -> dict:
+    """Repair legacy/broken garment image URLs for one user.
+
+    Strategy:
+    1) Normalize existing image_url if it already points to uploads.
+    2) If image_url is empty or external/stale, derive URL from image_path.
+    """
+    garments = db.query(Garment).filter(Garment.user_id == user_id).all()
+    scanned = len(garments)
+    changed = 0
+    skipped = 0
+
+    for g in garments:
+        original = (g.image_url or "").strip()
+        normalized = _normalize_upload_url(original)
+
+        if normalized and normalized != original:
+            g.image_url = normalized
+            changed += 1
+            continue
+
+        if normalized:
+            skipped += 1
+            continue
+
+        derived = _derive_upload_url_from_path(g.image_path, g.user_id)
+        if derived and derived != original:
+            g.image_url = derived
+            changed += 1
+        else:
+            skipped += 1
+
+    if changed:
+        db.commit()
+
+    return {
+        "scanned": scanned,
+        "changed": changed,
+        "skipped": skipped,
+    }
 
 
 def get_garment_by_id(db: Session, garment_id: UUID) -> Optional[Garment]:
