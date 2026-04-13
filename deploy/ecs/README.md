@@ -16,7 +16,13 @@
 
 ## SSH 免密（BatchMode）
 
-脚本使用 `ssh -o BatchMode=yes`，**必须**配置密钥：
+脚本使用 `ssh -o BatchMode=yes`，**必须**配置密钥（**不会提示输入密码**）。若出现 `Permission denied (publickey,...)`，说明服务器未接受你本机提供的任何私钥：
+
+- 先在本机验证：`ssh -i %USERPROFILE%\.ssh\id_ed25519 root@<ECS_IP> "echo ok"`（Linux/Mac 把路径换成 `~/.ssh/...`）
+- 若失败：把本机 `*.pub` 追加到服务器 `~/.ssh/authorized_keys`，并确保 `~/.ssh` 权限为 `700`、`authorized_keys` 为 `600`
+- 部署时务必传入：`-IdentityFile "$env:USERPROFILE\.ssh\id_ed25519"`（路径以你本机实际密钥名为准）
+
+生成密钥并安装到服务器（在 **本机** 或 WSL 执行 `ssh-copy-id` 均可）：
 
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/clothing_ecs -N ""

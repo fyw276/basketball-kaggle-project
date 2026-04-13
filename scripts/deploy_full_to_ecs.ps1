@@ -39,8 +39,37 @@ if (-not $ServerHost) {
 }
 
 . (Join-Path $PSScriptRoot "DeployCommon.ps1")
+
+if ($IdentityFile -and -not (Test-Path -LiteralPath $IdentityFile)) {
+    throw "IdentityFile not found: $IdentityFile"
+}
+if (-not $IdentityFile) {
+    Write-Host "[deploy] WARNING: -IdentityFile not set. scp/ssh use default keys only; BatchMode=yes will NOT prompt for password." -ForegroundColor Yellow
+}
+
 $SshOpts = Get-DeploySshOpts -IdentityFile $IdentityFile
 $remote = "$User@$ServerHost"
+
+function Write-SshAuthDeniedHint {
+    param(
+        [string]$Step,
+        [string]$RemoteTarget,
+        [string]$KeyPath
+    )
+    Write-Host ""
+    Write-Host "=== SSH authentication failed: $Step ===" -ForegroundColor Red
+    Write-Host "Server returned: Permission denied (publickey,...). scp/ssh use BatchMode=yes (no password prompt)."
+    Write-Host ""
+    Write-Host "What to do:"
+    Write-Host "  1) Verify key login (must print 'ok'):"
+    $ik = if ($KeyPath) { "`"$KeyPath`"" } else { "`"$env:USERPROFILE\.ssh\id_ed25519`"" }
+    Write-Host "       ssh -i $ik ${RemoteTarget} `"echo ok`""
+    Write-Host "  2) If step 1 fails: install your PUBLIC key on the server:"
+    Write-Host "       type `$env:USERPROFILE\.ssh\id_ed25519.pub | ssh root@<IP> `"mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`""
+    Write-Host "  3) Re-run deploy with: -IdentityFile `"$env:USERPROFILE\.ssh\id_ed25519`""
+    Write-Host "  See also: deploy/ecs/README.md (SSH section)"
+    Write-Host ""
+}
 
 function Test-CommandAvailable {
     param([string]$Name)
@@ -65,6 +94,7 @@ function Invoke-RemoteBash {
         [System.IO.File]::WriteAllText($tmp, $normalized, [System.Text.UTF8Encoding]::new($false))
         $scpCode = Invoke-DeployScp -SshOpts $SshOpts -Source $tmp -Destination "${Remote}:$remoteTmp"
         if ($scpCode -ne 0) {
+            Write-SshAuthDeniedHint -Step "remote script upload (scp)" -RemoteTarget $Remote -KeyPath $IdentityFile
             throw "remote script upload failed (exit=$scpCode)"
         }
 
@@ -201,11 +231,17 @@ try {
     Write-Host "[5/10] Uploading packages to $remote..." -ForegroundColor Cyan
     if (-not $SkipWebDeploy) {
         $c = Invoke-DeployScp -SshOpts $SshOpts -Source $localWebTar -Destination "${remote}:$remoteWebTar"
-        if ($c -ne 0) { throw "scp web upload failed" }
+        if ($c -ne 0) {
+            Write-SshAuthDeniedHint -Step "scp web tar" -RemoteTarget $remote -KeyPath $IdentityFile
+            throw "scp web upload failed"
+        }
     }
     if ($DeployMode -eq "Tar" -and -not $SkipBackendDeploy) {
         $c = Invoke-DeployScp -SshOpts $SshOpts -Source $localBackendTar -Destination "${remote}:$remoteBackendTar"
-        if ($c -ne 0) { throw "scp backend upload failed" }
+        if ($c -ne 0) {
+            Write-SshAuthDeniedHint -Step "scp backend tar" -RemoteTarget $remote -KeyPath $IdentityFile
+            throw "scp backend upload failed"
+        }
     }
 
     Write-Host "[6/10] Publishing on server..." -ForegroundColor Cyan
@@ -411,9 +447,15 @@ if (-not $SkipPostDeployVerify) {
     if (-not (Test-Path $auditSh)) { throw "Missing $auditSh" }
 
     $c1 = Invoke-DeployScp -SshOpts $SshOpts -Source $verifySh -Destination "${remote}:/tmp/post_deploy_verify.sh"
-    if ($c1 -ne 0) { throw "scp post_deploy_verify.sh failed" }
+    if ($c1 -ne 0) {
+        Write-SshAuthDeniedHint -Step "scp post_deploy_verify.sh" -RemoteTarget $remote -KeyPath $IdentityFile
+        throw "scp post_deploy_verify.sh failed"
+    }
     $c2 = Invoke-DeployScp -SshOpts $SshOpts -Source $auditSh -Destination "${remote}:/tmp/full_chain_consistency_audit.sh"
-    if ($c2 -ne 0) { throw "scp full_chain_consistency_audit.sh failed" }
+    if ($c2 -ne 0) {
+        Write-SshAuthDeniedHint -Step "scp full_chain_consistency_audit.sh" -RemoteTarget $remote -KeyPath $IdentityFile
+        throw "scp full_chain_consistency_audit.sh failed"
+    }
 
     $envAppRoot = $RemoteAppRoot.Replace("'", "'\''")
     $envWebRoot = $RemoteWebRoot.Replace("'", "'\''")
