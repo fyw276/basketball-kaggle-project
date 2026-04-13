@@ -132,6 +132,7 @@ clothing-assistant/
 
 详细的启动指南请查看 [QUICK_START.md](QUICK_START.md)。**AI `/predict`、Vite 演示前端、虚拟试衣与 Web 根路径**见 [docs/AI_OUTFIT_PREDICT_AND_TRYON.md](docs/AI_OUTFIT_PREDICT_AND_TRYON.md)。搭配推荐多图上传见 [docs/OUTFIT_MULTI_IMAGE_UPLOAD.md](docs/OUTFIT_MULTI_IMAGE_UPLOAD.md)；衣橱整套拆分与删除提示见 [docs/WARDROBE_FEATURES.md](docs/WARDROBE_FEATURES.md)。**智能穿搭（Flutter Web 行为、CORS、认证顺序、响应式等）**见 [docs/SMART_OUTFIT_FLUTTER_WEB.md](docs/SMART_OUTFIT_FLUTTER_WEB.md)。**天气展示（道路名过滤）与 Hugging Face / 虚拟试衣下载配置**见 [docs/WEATHER_DISPLAY_AND_HF_ENV.md](docs/WEATHER_DISPLAY_AND_HF_ENV.md)。
 本次交付说明见 [docs/RELEASE_2026-04-10_SMART_OUTFIT_UX_AND_API.md](docs/RELEASE_2026-04-10_SMART_OUTFIT_UX_AND_API.md)。
+2026-04-13 公网一致性审计与部署修复说明见 [docs/RELEASE_2026-04-13_DEPLOY_AUDIT_AND_PARITY.md](docs/RELEASE_2026-04-13_DEPLOY_AUDIT_AND_PARITY.md)。
 工程协作与最小质量门禁基线见 [docs/ENGINEERING_BASELINE.md](docs/ENGINEERING_BASELINE.md)。
 分支保护与合并门禁基线见 [docs/BRANCH_PROTECTION_BASELINE.md](docs/BRANCH_PROTECTION_BASELINE.md)。
 
@@ -167,6 +168,20 @@ flutter run -d chrome
 # 前端: 浏览器自动打开
 # API 文档: http://127.0.0.1:8010/docs
 ```
+
+### 公网部署与一致性审计（Windows 本地执行）
+
+```powershell
+# 一体化发布（前端+后端）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy_full_to_ecs.ps1
+
+# 一键远端审计（上传并在 ECS 执行 Linux 审计脚本）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\push_and_run_remote_audit.ps1 -ServerHost 101.200.127.179 -User root
+```
+
+说明：
+- `.ps1` 仅在 Windows 下执行；Linux ECS 请执行 `scripts/full_chain_consistency_audit.sh`。
+- 审计脚本返回 `warn=1` 且 `fail=0` 时表示“仅告警不阻断”，不是硬失败。
 
 ### 开发环境配置（必做）
 

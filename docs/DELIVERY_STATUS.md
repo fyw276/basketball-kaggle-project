@@ -2,6 +2,57 @@
 
 ## Date
 
+2026-04-13
+
+## Scope
+
+This release focused on public-deployment parity with local IDE behavior, with emphasis on smart-outfit rendering, image-link recovery, camera/gallery behavior, and deployment/audit automation.
+
+## Completed
+
+1. Smart-outfit rendering parity fixes
+   - Avoided large blank preview block when top image is missing/broken
+   - Added explicit fallback messages in UI for preview load failures
+
+2. Legacy wardrobe image URL repair delivered
+   - Added backend repair helper and manual endpoint
+   - Added wardrobe UI action to trigger repair and show `scanned/changed/skipped`
+
+3. Camera and gallery paths separated across upload flows
+   - Ensured camera action invokes camera capture path
+   - Ensured gallery action stays in gallery picker path
+
+4. Deployment and audit scripts synchronized
+   - Added full publish script for web+backend (`deploy_full_to_ecs.ps1`)
+   - Added Windows local full-chain audit script (`full_chain_consistency_audit.ps1`)
+   - Added Linux ECS audit script (`full_chain_consistency_audit.sh`)
+   - Added push-and-run helper (`push_and_run_remote_audit.ps1`)
+
+5. Operational edge cases fixed
+   - Fixed CRLF-sensitive remote command behavior
+   - Treated warning-only audit exit code as non-fatal in push runner
+
+## Verification
+
+1. `cd backend; python -m pytest tests_lite -v --tb=short -x` passed
+2. `cd mobile; flutter test --no-pub` passed
+3. `cd mobile; flutter build web --release` passed after null-safety compile fix
+4. Remote audit summary observed: `fail=0 warn=1`
+   - Warning reason: deployment directory on ECS is not a git checkout (`no .git`)
+
+## Current Risks
+
+1. ECS deployment directory not being a git checkout reduces direct commit parity observability.
+2. Remote audit still relies on interactive SSH password unless key-based auth is configured.
+
+## Recommended Next Phase
+
+1. Convert ECS auth to key-based SSH to remove repeated password prompts in automation.
+2. Keep `full_chain_consistency_audit.sh` on server image baseline for direct host-side checks.
+3. Add a lightweight post-deploy smoke task that validates smart-outfit weather/generate endpoints with token.
+
+## Date
+
 2026-04-11
 
 ## Scope
