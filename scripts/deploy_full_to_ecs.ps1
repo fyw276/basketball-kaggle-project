@@ -1,5 +1,4 @@
-# 全量部署：Flutter Web（Tar）+ 后端 Tar **或** 远端 Git pull。
-# SSH：默认 BatchMode=yes（需密钥免密）。见 deploy/ecs/README.md# 成功后默认运行 post_deploy_verify（smoke + full_chain_consistency_audit）。
+#requires -Version 5.1
 param(
     [string]$ServerHost = "101.200.127.179",
     [string]$User = "root",
@@ -12,7 +11,7 @@ param(
     [string]$RemoteAppRoot = "/opt/clothing-assistant/clothing-assistant-main",
     [string]$BackendService = "clothing-backend",
     [string]$BackendHealthUrl = "http://127.0.0.1:8010/health",
-    [string]$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
+    [string]$ProjectRoot = "",
     [switch]$SkipWebBuild,
     [switch]$SkipWebDeploy,
     [switch]$SkipBackendDeploy,
@@ -21,7 +20,23 @@ param(
     [switch]$VerifyLegacyHotfixMarkers
 )
 
+# Deploy: Flutter Web (tar) + backend tar OR remote git pull. SSH BatchMode=yes -> use key (-IdentityFile).
+# ServerHost: IP or hostname only (no http:// or trailing /). See deploy/ecs/README.md
+
 $ErrorActionPreference = "Stop"
+
+if (-not $ProjectRoot) {
+    $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+}
+else {
+    $ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
+}
+
+$ServerHost = $ServerHost.Trim()
+$ServerHost = $ServerHost -replace "^https?://", "" -replace "/.*$", ""
+if (-not $ServerHost) {
+    throw "ServerHost is empty after normalization; pass only IP or hostname (e.g. 101.200.127.179)."
+}
 
 . (Join-Path $PSScriptRoot "DeployCommon.ps1")
 $SshOpts = Get-DeploySshOpts -IdentityFile $IdentityFile
