@@ -100,6 +100,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy_full_to_ecs
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy_full_to_ecs.ps1 -SkipWebBuild
 ```
 
+If your current terminal is not at repo root (for example `C:\Windows\System32`), use an absolute script path:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "D:\Users\omen\OneDrive\桌面\clothing-assistant\scripts\push_and_run_remote_audit.ps1" -ServerHost 101.200.127.179 -User root
+```
+
 ### B. Linux ECS host (direct run)
 
 ```bash
@@ -110,6 +116,24 @@ bash scripts/full_chain_consistency_audit.sh
 Note:
 - Do not run `.ps1` on Linux shell.
 - If remote folder is not a git repo, `code.remote.commit` can be warning-only.
+
+## Troubleshooting
+
+1. `powershell: command not found` on ECS
+   - Cause: running Windows `.ps1` in Linux shell.
+   - Fix: run `.ps1` on Windows; run `.sh` on ECS.
+
+2. `.\scripts\push_and_run_remote_audit.ps1 not found` on Windows
+   - Cause: current directory is not project root.
+   - Fix: `cd` to repo root or use absolute `-File` path.
+
+3. Remote audit returns `fail=0 warn=1`
+   - Meaning: warning-only status; currently non-fatal in push runner.
+   - Typical warning: ECS deploy directory is not a git checkout (`no .git`).
+
+4. Deploy task appears to "hang"
+   - Most common reason: waiting for interactive SSH password prompt during `scp` / `ssh`.
+   - Fix: input password in the running terminal, or configure SSH key login.
 
 ## Acceptance Criteria Mapping
 

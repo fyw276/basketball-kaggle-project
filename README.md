@@ -185,6 +185,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\push_and_run_remot
 说明：
 - `.ps1` 仅在 Windows 下执行；Linux ECS 请执行 `scripts/full_chain_consistency_audit.sh`。
 - 审计脚本返回 `warn=1` 且 `fail=0` 时表示“仅告警不阻断”，不是硬失败。
+- 若在 `C:\Windows\System32` 等非仓库目录执行，请改用 `-File` 绝对路径。
 
 ### 开发环境配置（必做）
 
