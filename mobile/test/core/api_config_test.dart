@@ -67,4 +67,19 @@ void main() {
     final msg = parseFastApiErrorBody('{"detail":"missing image_url"}');
     expect(msg, 'missing image_url');
   });
+
+  test('unwrapApiResponseEnvelope unwraps POST /predict success payload', () {
+    final inner = unwrapApiResponseEnvelope({
+      'success': true,
+      'data': {
+        'score': 8.0,
+        'recommendations': <dynamic>[],
+        'explanation': 'ok',
+      },
+      'error': null,
+    });
+    expect(inner, isA<Map>());
+    expect((inner as Map)['score'], 8.0);
+    expect((inner as Map)['explanation'], 'ok');
+  });
 }

@@ -146,8 +146,15 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_FILE: str = "./logs/app.log"
 
-    # Rate Limiting
-    RATE_LIMIT_PER_MINUTE: int = 60
+    # Rate Limiting（需 ENABLE_RATE_LIMIT=true 才生效；pytest 默认关闭）
+    ENABLE_RATE_LIMIT: bool = Field(
+        default=False,
+        description="启用后按 IP 滑动窗口限制请求（RATE_LIMIT_PER_MINUTE 次/分钟）",
+    )
+    RATE_LIMIT_PER_MINUTE: int = Field(
+        default=60,
+        description="每分钟上限；仅当 ENABLE_RATE_LIMIT=true 时启用",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",

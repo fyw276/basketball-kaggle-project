@@ -1,3 +1,5 @@
+# 全量部署：Flutter Web 静态 + 后端 tar（不含 backend/.env，须在服务器单独配置）。
+# 公网验收清单见 docs/PRODUCTION_DEPLOY.md（Nginx /api/v1、/predict、/uploads、持久化、JWT、CORS）。
 param(
     [string]$ServerHost = "101.200.127.179",
     [string]$User = "root",

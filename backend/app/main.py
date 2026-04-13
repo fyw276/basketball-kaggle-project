@@ -155,6 +155,21 @@ async def _app_lifespan(app: FastAPI):
         ),
     )
 
+    _default_jwt = "your-secret-key-change-this-in-production"
+    _env_name = (settings.ENVIRONMENT or "").lower()
+    if _env_name in ("production", "prod") and not settings.DEBUG:
+        secret = (settings.JWT_SECRET_KEY or "").strip()
+        if secret == _default_jwt or len(secret) < 24:
+            logger.critical(
+                "JWT_SECRET_KEY is default or too short while ENVIRONMENT is production — "
+                "rotate to a long random secret before accepting traffic."
+            )
+    elif len((settings.JWT_SECRET_KEY or "").strip()) < 16:
+        logger.warning(
+            "JWT_SECRET_KEY is short (%d chars); use >=32 random bytes for production.",
+            len((settings.JWT_SECRET_KEY or "").strip()),
+        )
+
     yield
 
     logger.info(f"Shutting down {settings.APP_NAME}")
@@ -266,6 +281,15 @@ else:
         allow_headers=_CORS_ALLOW_HEADERS,
     )
 
+if settings.ENABLE_RATE_LIMIT and settings.RATE_LIMIT_PER_MINUTE > 0:
+    from app.middleware.rate_limit import SlidingWindowRateLimitMiddleware
+
+    app.add_middleware(
+        SlidingWindowRateLimitMiddleware,
+        limit=settings.RATE_LIMIT_PER_MINUTE,
+        window_seconds=60,
+    )
+
 
 # Register exception handlers
 app.add_exception_handler(AppException, app_exception_handler)
@@ -295,6 +319,43 @@ async def health_check():
             "status": "healthy",
             "version": settings.APP_VERSION,
         },
+    )
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """Readiness: verifies DB connectivity (orchestrators should use this for traffic)."""
+    from sqlalchemy import text
+
+    from app.db.session import SessionLocal
+
+    issues = []
+    try:
+        db = SessionLocal()
+        try:
+            db.execute(text("SELECT 1"))
+        finally:
+            db.close()
+    except Exception as e:
+        issues.append(f"database: {e}")
+
+    if issues:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "data": None,
+                "error": {
+                    "type": "ServiceUnavailable",
+                    "message": "; ".join(issues),
+                    "status_code": 503,
+                },
+                "message": "not ready",
+            },
+        )
+    return JSONResponse(
+        status_code=200,
+        content={"status": "ready", "checks": {"database": "ok"}},
     )
 
 

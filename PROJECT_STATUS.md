@@ -13,8 +13,9 @@
 - ✅ **反馈与飞轮**：`FeedbackEvent` 表、`POST /api/v1/feedback/events`；`GET /api/v1/analytics/summary`；场景搭配推荐对历史 `like/adopt` 做 **简单重排**；`scripts/export_feedback_jsonl.py`。
 - ✅ **意图路由**：`POST /api/v1/agent/intent`（薄规则 → 建议 MCP 工具名）。
 - ✅ **轻量记忆 RAG**：`MemorySnippet` + `POST/GET/DELETE /api/v1/memory/snippets*`，关键词检索。
-- ✅ **回归测试与 Envelope 对齐**：`ApiEnvelopeMiddleware` 对 2xx JSON 统一包装；`backend/tests` 通过 `tests.api_json.unwrap_json` 解包后断言（全量 `pytest` 与生产行为一致）。Pre-push 仍跑 `tests_lite` 作快速门禁。
-- ✅ **Flutter**：场景推荐 / 智能穿搭卡片 **喜欢·采纳** 反馈；**保存到收藏** 走真实 API，可选多套时点选卡片再保存；收藏成功但反馈失败时提示「收藏已保存，反馈同步失败：…」。
+- ✅ **生产就绪能力**：`GET /health/ready`（数据库探活）；可选 `ENABLE_RATE_LIMIT` + `RATE_LIMIT_PER_MINUTE` 进程内滑动窗口限流；生产弱 JWT 配置 `CRITICAL` 日志提示。文档见 [docs/PRODUCTION_DEPLOY.md](docs/PRODUCTION_DEPLOY.md)。
+- ✅ **Flutter**：`predictOutfitStyle` 与主服务 Envelope 对齐；`getList` 失败时写入 `lastGetListError`（仍返回 `[]`）；场景推荐 / 智能穿搭 **喜欢·采纳**、**保存到收藏** 与反馈提示等。
+- ✅ **回归测试与 Envelope 对齐**：`ApiEnvelopeMiddleware` 对 2xx JSON 统一包装；`backend/tests` 通过 `tests.api_json.unwrap_json` 解包后断言（全量 `pytest` 与生产行为一致）。Pre-push 仍跑 `tests_lite`（现 34 例，含限流）。
 - 📄 文档：`README.md`、`backend/API_EXAMPLES.md`；[docs/CLI_MCP_QUICKSTART.md](docs/CLI_MCP_QUICKSTART.md)、[docs/COMPETITION_EXTENSIONS.md](docs/COMPETITION_EXTENSIONS.md)。
 
 ## 🆕 上次更新（2026-04-10）
@@ -110,7 +111,7 @@
 
 #### 9. 测试覆盖 (100%)
 - ✅ 后端 `pytest` 套件通过（`backend/tests`；全量约350+ 例，含 2 skip；成功响应需按 Envelope 解包，见 `tests/api_json.py`）
-- ✅ 轻量套件 `tests_lite` 供 pre-push / 快速验证（32 例量级）
+- ✅ 轻量套件 `tests_lite` 供 pre-push / 快速验证（34 例量级）
 - ✅ pytest 可用 tempfile 解决 Windows 文件锁问题
 
 ### 前端应用 (Flutter Web)

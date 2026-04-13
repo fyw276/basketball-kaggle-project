@@ -75,6 +75,10 @@ class ApiClient {
   final String baseUrl;
   String? _token;
 
+  /// Set when the last [getList] call failed (non-200 or exception). Cleared on each new [getList].
+  /// Use for diagnostics / snackbars; list endpoints still return `[]` for backward compatibility.
+  String? lastGetListError;
+
   ApiClient({String? baseUrl})
       : baseUrl =
             (baseUrl ?? kDefaultApiBaseUrl).replaceAll(RegExp(r'/+$'), '');
@@ -144,6 +148,7 @@ class ApiClient {
   }
 
   Future<dynamic> getList(String path) async {
+    lastGetListError = null;
     try {
       final response = await http.get(
         Uri.parse('$baseUrl$path'),
@@ -157,8 +162,11 @@ class ApiClient {
           return unwrapped['data'];
         return unwrapped;
       }
+      lastGetListError = parseFastApiErrorBody(response.body) ??
+          'Request failed with status: ${response.statusCode}';
       return [];
     } catch (e) {
+      lastGetListError = e.toString();
       return [];
     }
   }
@@ -227,16 +235,33 @@ class ApiClient {
         body: json.encode(body),
       );
       if (response.statusCode == 200) {
-        return json.decode(response.body) as Map<String, dynamic>;
+        final decoded = json.decode(response.body) as dynamic;
+        final unwrapped = unwrapApiResponseEnvelope(decoded);
+        if (unwrapped is Map) {
+          return Map<String, dynamic>.from(unwrapped);
+        }
+        return {'error': 'Unexpected /predict response shape'};
       }
-      final errBody = response.body.isNotEmpty
-          ? json.decode(response.body)
-          : <String, dynamic>{};
-      final detail = errBody['detail'];
-      final msg = detail is String
-          ? detail
-          : 'Request failed with status: ${response.statusCode} ($uri)';
-      return {'error': msg};
+      if (response.body.isNotEmpty) {
+        try {
+          final decoded = json.decode(response.body) as dynamic;
+          final unwrapped = unwrapApiResponseEnvelope(decoded);
+          if (unwrapped is Map && unwrapped['error'] != null) {
+            return {'error': unwrapped['error'].toString()};
+          }
+          if (decoded is Map && decoded['detail'] != null) {
+            final detail = decoded['detail'];
+            if (detail is String) {
+              return {'error': detail};
+            }
+          }
+        } catch (_) {
+          // fall through
+        }
+      }
+      return {
+        'error': 'Request failed with status: ${response.statusCode} ($uri)',
+      };
     } catch (e) {
       return {'error': e.toString()};
     }
