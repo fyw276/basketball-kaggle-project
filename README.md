@@ -148,6 +148,7 @@ clothing-assistant/
 - [生产部署清单（Nginx / 持久化 / JWT / 就绪探针）](docs/PRODUCTION_DEPLOY.md)
 - [发布台账与依赖观测（/release、analytics、ops 看板）](docs/OPS_RELEASE_AND_OBSERVABILITY.md)
 - [ECS 部署目录与 Tar/Git 模式、RELEASE_MANIFEST](deploy/ecs/README.md)
+- [线上值班速查（1页）](docs/ONCALL_QUICK_REFERENCE.md)
 
 ### 环境要求
 
