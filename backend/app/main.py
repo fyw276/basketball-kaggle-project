@@ -6,7 +6,7 @@ import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -44,6 +44,7 @@ from app.core.error_handlers import (
 from app.core.exceptions import AppException
 from app.core.hf_hub_env import apply_hf_hub_env_defaults, sync_hf_env_from_settings
 from app.core.logging import setup_logging
+from app.core.release_info import build_env_snapshot, build_release_ledger
 
 # 须在首次下载 HF 模型前生效（CLIP / 虚拟试衣 diffusers）
 sync_hf_env_from_settings(settings)
@@ -99,8 +100,26 @@ class ApiEnvelopeMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def _app_lifespan(app: FastAPI):
     """应用启动/关闭：数据库补丁、日志（替代已弃用的 on_event）。"""
+    from pathlib import Path
+
     from app.db.session import engine
     from app.db.sqlite_schema import apply_sqlite_schema_patches
+
+    _env = (settings.ENVIRONMENT or "").strip().lower()
+    if _env in ("production", "prod") and not Path(settings.UPLOAD_DIR).is_absolute():
+        logger.warning(
+            "生产环境 UPLOAD_DIR=%r 为相对路径，发布/改工作目录后易导致图片「消失」。"
+            "请改为绝对路径（如 /var/lib/clothing-assistant/uploads），见 docs/PRODUCTION_DEPLOY.md",
+            settings.UPLOAD_DIR,
+        )
+    if _env in ("production", "prod") and (settings.DATABASE_URL or "").lower().startswith(
+        "sqlite"
+    ):
+        logger.warning(
+            "生产环境正在使用 SQLite。请将 DATABASE_URL 指向部署目录之外的绝对路径"
+            "（例如 sqlite:////var/lib/clothing-assistant/data/outfit.db），或改用 PostgreSQL；"
+            "详见 docs/PRODUCTION_DEPLOY.md",
+        )
 
     apply_sqlite_schema_patches(engine)
 
@@ -320,6 +339,40 @@ async def health_check():
             "version": settings.APP_VERSION,
         },
     )
+
+
+@app.get("/release")
+async def release_ledger():
+    """
+    发布工件版本台账：前端 index指纹、后端 commit、环境快照（无密钥）。
+    CD 可向 RELEASE_* 环境变量或 RELEASE_MANIFEST_PATH 指向的 JSON 注入字段。
+    """
+    return JSONResponse(
+        status_code=200,
+        content={
+            "ledger": build_release_ledger(settings),
+            "env_snapshot": build_env_snapshot(settings),
+        },
+    )
+
+
+@app.get("/ops/dependency-board", include_in_schema=False)
+async def ops_dependency_board():
+    """HTML 看板：天气 / 试衣 / AI / 外部增强 依赖的成功率、失败率、超时率、降级率（进程内累计）。"""
+    if not settings.OPS_DASHBOARD_ENABLED:
+        raise HTTPException(status_code=404, detail="not found")
+    from fastapi.responses import HTMLResponse
+
+    from app.observability.dependency_metrics import render_dependency_board_html
+
+    rel = json.dumps(
+        {
+            "ledger": build_release_ledger(settings),
+            "env_snapshot": build_env_snapshot(settings),
+        },
+        ensure_ascii=False,
+    )
+    return HTMLResponse(render_dependency_board_html(rel))
 
 
 @app.get("/health/ready")

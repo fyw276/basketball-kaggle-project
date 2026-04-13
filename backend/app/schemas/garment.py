@@ -16,6 +16,12 @@ class ColorSchema(BaseModel):
     rgb: tuple[int, int, int] = Field(..., description="RGB values (0-255)")
     hsv: tuple[float, float, float] = Field(..., description="HSV values")
     hex_code: str = Field(..., description="Hex color code")
+    confidence: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="Dominant-cluster pixel share (K-Means) or heuristic; None for legacy rows",
+    )
 
 
 class GarmentBase(BaseModel):

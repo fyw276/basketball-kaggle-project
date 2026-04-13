@@ -29,6 +29,7 @@ from app.services.garment import (
     repair_garment_image_urls_for_user,
     update_garment,
 )
+from app.services.garment_visual import refresh_garment_visuals
 from app.services.storage import get_storage_service
 
 router = APIRouter(prefix="/wardrobe/simple", tags=["Wardrobe (Simplified)"])
@@ -177,7 +178,11 @@ async def upload_garment_simple(
                 colors[0]
                 if colors
                 else ColorSchema(
-                    name="灰", rgb=(128, 128, 128), hsv=(0.0, 0.0, 50.0), hex_code="#808080"
+                    name="灰",
+                    rgb=(128, 128, 128),
+                    hsv=(0.0, 0.0, 50.0),
+                    hex_code="#808080",
+                    confidence=0.2,
                 )
             )
             secondary_colors = colors[1:] if len(colors) > 1 else []
@@ -317,6 +322,48 @@ def patch_garment_simple(
     result = update_garment(db, garment, update)
     print(f"[Wardrobe] PATCH 更新完成: category={result.category}")
     return result
+
+
+@router.post("/garments/{garment_id}/reanalyze-visual", response_model=GarmentResponse)
+def reanalyze_garment_visual_simple(
+    garment_id: str,
+    recategorize: bool = Query(
+        False,
+        description="If true, also re-run CLIP category + feature_vector from the stored image",
+    ),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Re-extract colors from the saved file; optionally refresh category/features
+    (same as upload pipeline).
+    """
+    from uuid import UUID
+
+    try:
+        garment_uuid = UUID(garment_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid garment ID format"
+        )
+
+    garment = get_garment_by_id(db, garment_uuid)
+    if not garment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Garment not found")
+
+    if garment.user_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to update this garment",
+        )
+
+    try:
+        return refresh_garment_visuals(db, garment, recategorize=recategorize)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Image file missing on server; re-upload the garment or repair storage paths",
+        )
 
 
 @router.delete("/garments/{garment_id}", status_code=status.HTTP_204_NO_CONTENT)

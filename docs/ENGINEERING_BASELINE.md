@@ -43,6 +43,8 @@ Before push, run:
 2. Frontend build check
 3. Flutter analyze and test
 
+The **pre-push** hook runs `pytest` on `backend/tests_lite` plus **`backend/tests/test_release_and_observability.py`** (release ledger, dependency metrics, and related API contracts). See `.pre-commit-config.yaml`.
+
 ## Backend Lite Test Boundary
 
 Included in `backend/tests_lite`:

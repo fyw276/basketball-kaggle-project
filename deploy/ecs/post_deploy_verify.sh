@@ -37,10 +37,13 @@ fi
 
 chmod +x "$AUDIT_SCRIPT" 2>/dev/null || true
 echo "[post_deploy_verify] running audit: $AUDIT_SCRIPT"
+# Audit may exit 1 for warnings only; with set -e that would abort before code=$?.
+set +e
 APP_ROOT="$APP_ROOT" WEB_ROOT="$WEB_ROOT" ENV_FILE="$ENV_FILE" \
   HEALTH_URL="$HEALTH_URL" HEALTH_READY_URL="$HEALTH_READY_URL" \
   bash "$AUDIT_SCRIPT"
 code=$?
+set -e
 if [[ "$code" -eq 2 ]]; then
   echo "[post_deploy_verify][ERROR] audit failed (failures)" >&2
   exit 2

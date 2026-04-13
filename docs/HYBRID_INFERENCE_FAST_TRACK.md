@@ -14,6 +14,7 @@
 1. 现有主推理入口：`backend/app/services/outfit_style_predict.py`
 2. 当前 `/predict` 返回：`score`、`recommendations`、`explanation`
 3. 配置入口：`backend/app/core/config.py`（可扩展新增开关和阈值）
+4. **外部增强调用**在 `app/services/external_enhance_client.py` 的 `call_external_enhance`；进程内 **成功/失败/超时/降级** 指标归入 `GET /api/v1/analytics/dependency-observability` 的 **`external_enhance`** 域，详见 [OPS_RELEASE_AND_OBSERVABILITY.md](OPS_RELEASE_AND_OBSERVABILITY.md)。
 
 ## 一、决策层伪代码（可直接落到服务层）
 

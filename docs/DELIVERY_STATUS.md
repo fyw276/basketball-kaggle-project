@@ -2,6 +2,26 @@
 
 ## Date
 
+2026-04-14
+
+## Scope
+
+Operational documentation and hooks aligned with **release ledger** (`GET /release`), **dependency observability** (weather / try-on / AI / external enhance), and **Nginx** routing for `/health`, `/health/ready`, `/release`.
+
+## Completed
+
+1. Added [OPS_RELEASE_AND_OBSERVABILITY.md](OPS_RELEASE_AND_OBSERVABILITY.md) and linked it from README / production / ECS docs.
+2. Corrected production guidance: root `try_files` must not handle `/health` or `/release`; extended `deploy/ecs/nginx-api-locations.conf` and `PRODUCTION_DEPLOY.md` example.
+3. Documented `RELEASE_*`, `OPS_DASHBOARD_ENABLED`, and `backend/.env.example` placeholders.
+4. Pre-push pytest extended to include `tests/test_release_and_observability.py` alongside `tests_lite`.
+
+## Verification
+
+1. `cd backend; python -m pytest tests_lite tests/test_release_and_observability.py -v --tb=short -x` passed
+2. `pre-commit run --all-files` passed (local)
+
+## Date
+
 2026-04-13
 
 ## Scope
@@ -42,7 +62,7 @@ This release focused on public-deployment parity with local IDE behavior, with e
 
 ## Current Risks
 
-1. ECS deployment directory not being a git checkout reduces direct commit parity observability.
+1. ECS deployment directory not being a git checkout reduces direct commit parity observability（可用 **`GET /release`** 的 `ledger.backend_git_commit` 与 CD 注入的 `RELEASE_BACKEND_GIT_COMMIT` 对齐缓解）。
 2. Remote audit still relies on interactive SSH password unless key-based auth is configured.
 
 ## Recommended Next Phase

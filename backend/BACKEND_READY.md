@@ -56,13 +56,20 @@ http://127.0.0.1:8010/docs
 curl http://127.0.0.1:8010/health
 ```
 
-**响应**：
+**响应**（若经 Envelope 中间件包装，业务字段在 `data` 内）：
 ```json
 {
   "status": "healthy",
   "version": "1.0.0"
 }
 ```
+
+#### 发布台账（CD / 验收）
+```bash
+curl http://127.0.0.1:8010/release
+```
+
+返回 `ledger`（前端 index 指纹、后端 commit、部署时间）与无密钥 `env_snapshot`。详见仓库 **`docs/OPS_RELEASE_AND_OBSERVABILITY.md`**。
 
 #### 根端点
 ```bash

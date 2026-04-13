@@ -156,6 +156,21 @@ class Settings(BaseSettings):
         description="每分钟上限；仅当 ENABLE_RATE_LIMIT=true 时启用",
     )
 
+    # Release ledger（CD/部署脚本写入 manifest 或下列环境变量；供 /release 台账）
+    RELEASE_MANIFEST_PATH: str = Field(
+        default="",
+        description="可选 JSON 路径：frontend_index_sha256、backend_git_commit、deploy_time_utc",
+    )
+    RELEASE_FRONTEND_INDEX_SHA256: str = ""
+    RELEASE_BACKEND_GIT_COMMIT: str = ""
+    RELEASE_DEPLOY_TIME_UTC: str = ""
+
+    # 内网 HTML 看板：仅展示聚合指标 + 台账摘要，不含密钥
+    OPS_DASHBOARD_ENABLED: bool = Field(
+        default=False,
+        description="为 true 时开放 /ops/dependency-board（须在网关后限制访问）",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

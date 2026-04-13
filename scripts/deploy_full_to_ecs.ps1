@@ -206,6 +206,7 @@ try {
         if (Test-Path $localBackendTar) {
             Remove-Item -Force $localBackendTar
         }
+        # Exclude **all** DB/SQLite under backend/ — a nested *.db in the tar would overwrite prod data.
         tar -C $ProjectRoot -czf $localBackendTar `
             --exclude "backend/.pytest_cache" `
             --exclude "backend/__pycache__" `
@@ -216,6 +217,9 @@ try {
             --exclude "backend/*.db" `
             --exclude "backend/*.sqlite" `
             --exclude "backend/*.sqlite3" `
+            --exclude "backend/**/*.db" `
+            --exclude "backend/**/*.sqlite" `
+            --exclude "backend/**/*.sqlite3" `
             --exclude "backend/.mypy_cache" `
             backend
         if ($LASTEXITCODE -ne 0) { throw "tar backend pack failed" }
@@ -300,9 +304,42 @@ if [ "$DO_BACKEND" = "1" ]; then
             git pull --ff-only origin "$GIT_BRANCH"
         fi
     else
+        BACKEND_DIR="$REMOTE_APP_ROOT/backend"
+        SAVE_ROOT="/var/lib/clothing-assistant"
+        STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+        PRESERVE_TAR=""
+        if [ -d "$BACKEND_DIR" ]; then
+            echo "[remote] Preserving backend state: .env, uploads/, *.db/*.sqlite* under $BACKEND_DIR"
+            mkdir -p "$SAVE_ROOT"
+            LIST="$(mktemp)"
+            PRESERVE_TAR="$SAVE_ROOT/backend-data-$STAMP.tar.gz"
+            (
+              cd "$BACKEND_DIR" || exit 0
+              : > "$LIST"
+              [ -f .env ] && printf '%s\n' .env >> "$LIST"
+              find uploads -type f 2>/dev/null >> "$LIST" || true
+              find . -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) 2>/dev/null >> "$LIST" || true
+              if [ -s "$LIST" ]; then
+                if tar -czf "$PRESERVE_TAR" -T "$LIST"; then
+                  echo "[remote] Snapshot: $PRESERVE_TAR ($(wc -l < "$LIST") paths)"
+                else
+                  rm -f "$PRESERVE_TAR"
+                fi
+              else
+                rm -f "$PRESERVE_TAR"
+              fi
+            )
+            rm -f "$LIST"
+            if [ ! -f "$PRESERVE_TAR" ]; then PRESERVE_TAR=""; fi
+        fi
         echo "[remote] Deploying backend tar to $REMOTE_APP_ROOT"
         mkdir -p "$REMOTE_APP_ROOT"
         tar -xzf "$REMOTE_BACKEND_TAR" -C "$REMOTE_APP_ROOT"
+        if [ -n "$PRESERVE_TAR" ] && [ -f "$PRESERVE_TAR" ]; then
+            echo "[remote] Restoring preserved .env / uploads / DB on top of deploy (prevents empty wardrobe)"
+            mkdir -p "$BACKEND_DIR"
+            tar -xzf "$PRESERVE_TAR" -C "$BACKEND_DIR"
+        fi
     fi
 fi
 

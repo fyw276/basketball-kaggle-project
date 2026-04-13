@@ -1,14 +1,8 @@
-import 'dart:convert';
 import 'dart:math' as math;
 
-import 'package:city_pickers/city_pickers.dart';
-import 'package:flutter/foundation.dart';
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/providers/auth_provider.dart';
 import '../../../core/providers/theme_provider.dart';
@@ -20,10 +14,14 @@ import '../../../core/widgets/analysis_result_display.dart'
     show extractOutfitGarmentIds;
 import '../../../core/widgets/image_picker_section.dart';
 import '../../../core/widgets/platform_image.dart';
+import '../smart_outfit/smart_outfit_cache.dart';
+import '../smart_outfit/smart_outfit_controller.dart';
+import '../smart_outfit/smart_outfit_geo_weather.dart';
+import '../smart_outfit/smart_outfit_widgets.dart';
 
 /// 智能穿搭：参考图 + 自动天气 + 可选情绪 → 3 套衣橱搭配，可重新生成。
 /// 定位：浏览器/系统高精度 GPS（非 IP）；地址由服务端逆地理解析；失败时四级行政区选择器降级。
-class SmartOutfitScreen extends StatefulWidget {
+class SmartOutfitScreen extends StatelessWidget {
   final bool autoPickAndGenerate;
   final int initialResultIndex;
 
@@ -34,65 +32,41 @@ class SmartOutfitScreen extends StatefulWidget {
   });
 
   @override
-  State<SmartOutfitScreen> createState() => _SmartOutfitScreenState();
+  Widget build(BuildContext context) {
+    return ChangeNotifierProvider(
+      create: (_) => SmartOutfitController(),
+      child: _SmartOutfitPage(
+        autoPickAndGenerate: autoPickAndGenerate,
+        initialResultIndex: initialResultIndex,
+      ),
+    );
+  }
 }
 
-class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
-  final List<XFile> _images = [];
-  String? _imageUrl;
+class _SmartOutfitPage extends StatefulWidget {
+  final bool autoPickAndGenerate;
+  final int initialResultIndex;
+
+  const _SmartOutfitPage({
+    required this.autoPickAndGenerate,
+    required this.initialResultIndex,
+  });
+
+  @override
+  State<_SmartOutfitPage> createState() => _SmartOutfitPageState();
+}
+
+class _SmartOutfitPageState extends State<_SmartOutfitPage> {
   final _moodCtrl = TextEditingController();
 
-  /// 短地名（接口 city 字段）
-  String _cityShort = '';
-
-  Map<String, String> _addressParts = const {};
-
-  /// 服务端逆地理完整一行（省 市 区 街道），**禁止展示经纬度**
-  String _fullAddressLine = '';
-  String _displayAddress = '';
-  String _weather = '晴';
-  double _temp = 20;
-  bool _weatherLoading = true;
-  bool _weatherFallback = false;
-
-  List<Map<String, dynamic>> _outfits = [];
   int _currentOutfitIndex = 0;
-  bool _generating = false;
-  bool _oneTapBusy = false;
   bool _didJumpToInitialIndex = false;
-  int _regenIndex = 0;
 
   /// 1.0 避免 Web 窄屏下右侧露出下一张卡片被裁切；左右留白由卡片 Padding 承担。
   final _pageCtrl = PageController(viewportFraction: 1.0);
 
-  /// 防止异步乱序与重复点击导致状态错乱
-  int _weatherSeq = 0;
-  bool _weatherRequestInFlight = false;
-
   /// 上报「喜欢/采纳」到 `POST /feedback/events`（与场景穿搭页一致）
   bool _outfitFeedbackBusy = false;
-
-  /// 等待 [AuthProvider] 从 SharedPreferences 恢复 token。
-  /// 若抢先调用天气/生成接口，请求无 Authorization → 401 → 误报「无法获取天气」或生成失败。
-  Future<void> _waitForAuthReady() async {
-    if (!mounted) return;
-    var auth = context.read<AuthProvider>();
-    if (auth.isInitialized) return;
-    const step = Duration(milliseconds: 16);
-    for (var i = 0; i < 200; i++) {
-      await Future.delayed(step);
-      if (!mounted) return;
-      auth = context.read<AuthProvider>();
-      if (auth.isInitialized) return;
-    }
-  }
-
-  bool _isCredentialInvalidError(Object? error) {
-    final s = (error?.toString() ?? '').toLowerCase();
-    return s.contains('could not validate credentials') ||
-        s.contains('not authenticated') ||
-        s.contains('401');
-  }
 
   void _handleCredentialInvalid() {
     final auth = context.read<AuthProvider>();
@@ -110,7 +84,7 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
     try {
       final auth = context.read<AuthProvider>();
       final ids = extractOutfitGarmentIds(outfit);
-      final city = _cityShort.trim();
+      final city = context.read<SmartOutfitController>().cityShort.trim();
       final res = await auth.apiClient.submitFeedbackEvent(
         eventType: eventType,
         source: 'smart_outfit',
@@ -142,18 +116,18 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
   @override
   void initState() {
     super.initState();
-    Future.microtask(_restoreCachedThenFetch);
+    Future.microtask(() async {
+      if (!mounted) return;
+      await context.read<SmartOutfitController>().restoreCacheThenFetchGps(
+            context,
+            onCredentialInvalid: _handleCredentialInvalid,
+          );
+    });
     if (widget.autoPickAndGenerate) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        _oneTapGenerate();
+        if (mounted) _oneTapGenerate();
       });
     }
-  }
-
-  Future<void> _restoreCachedThenFetch() async {
-    await _restoreWeatherCache();
-    if (!mounted) return;
-    await _loadWeatherFromGps();
   }
 
   @override
@@ -163,490 +137,41 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
     super.dispose();
   }
 
-  /// Web：高精度；超时 25s（与天气接口一致，避免用户点「允许」稍慢即失败）。
-  ///
-  /// 注意：浏览器可能返回“粗略位置”(approximate) 或复用缓存坐标。
-  /// 为提升精度，默认尽量拿“新鲜坐标”（maximumAge 很小），必要时再重试一次。
-  LocationSettings _gpsLocationSettings({bool preferFresh = true}) {
-    if (kIsWeb) {
-      return WebSettings(
-        accuracy: LocationAccuracy.best,
-        distanceFilter: 0,
-        timeLimit: const Duration(seconds: 25),
-        maximumAge: preferFresh
-            ? const Duration(seconds: 2)
-            : const Duration(seconds: 45),
-      );
-    }
-    return const LocationSettings(
-      accuracy: LocationAccuracy.best,
-      distanceFilter: 0,
-      timeLimit: Duration(seconds: 20),
-    );
-  }
-
-  bool _isPoorAccuracy(Position p) {
-    // accuracy 单位：米；> 500 通常是粗略定位（Wi‑Fi/IP 级）或权限未开“精确位置”
-    final a = p.accuracy;
-    return a.isNaN || a <= 0 || a > 500;
-  }
-
-  Future<Position> _getCurrentPositionWithRetry() async {
-    Object? last;
-    for (var attempt = 0; attempt < 2; attempt++) {
-      try {
-        // 第一次尽量拿新鲜坐标；若精度仍很差，允许再等一次（浏览器/系统可能需要更多时间收敛）
-        final p = await Geolocator.getCurrentPosition(
-          locationSettings: _gpsLocationSettings(preferFresh: true),
-        );
-        if (attempt == 0 && _isPoorAccuracy(p)) {
-          await Future.delayed(const Duration(milliseconds: 900));
-          final p2 = await Geolocator.getCurrentPosition(
-            locationSettings: _gpsLocationSettings(preferFresh: true),
-          );
-          return _isPoorAccuracy(p2) ? p : p2;
-        }
-        return p;
-      } catch (e) {
-        last = e;
-        if (attempt < 1) {
-          await Future.delayed(const Duration(milliseconds: 700));
-        }
-      }
-    }
-    throw (last ?? StateError('position'));
-  }
-
-  /// 上次展示是否可作为失败回退（非默认占位、非失败态）
-  bool _hadReliableWeatherSnapshot({
-    required bool fallback,
-    required String full,
-    required String disp,
-    required String city,
-  }) {
-    if (fallback) return false;
-    if (city.trim() == '默认') return false;
-    return full.trim().isNotEmpty ||
-        disp.trim().isNotEmpty ||
-        city.trim().isNotEmpty;
-  }
-
-  String _weatherFailureHint(Object e) {
-    final s = e.toString();
-    if (s.contains('401')) {
-      return '登录已失效或无效，请重新登录后再试定位与天气';
-    }
-    if (s.contains('403')) {
-      return '没有权限访问天气接口，请检查账号';
-    }
-    if (s.contains('503') || s.toLowerCase().contains('unavailable')) {
-      return '天气服务暂时不可用，请稍后重试';
-    }
-    return '无法更新位置或天气，仍显示上次定位；或请使用「手动选择地址」';
-  }
-
-  Future<void> _persistWeatherCache() async {
-    try {
-      final p = await SharedPreferences.getInstance();
-      await p.setString('smart_outfit_full_address', _fullAddressLine);
-      await p.setString('smart_outfit_city_short', _cityShort);
-      await p.setString('smart_outfit_weather', _weather);
-      await p.setDouble('smart_outfit_temp', _temp);
-      await p.setBool('smart_outfit_fallback', _weatherFallback);
-    } catch (_) {}
-  }
-
-  Future<void> _restoreWeatherCache() async {
-    try {
-      final p = await SharedPreferences.getInstance();
-      final fa = p.getString('smart_outfit_full_address');
-      if (fa == null || fa.isEmpty) return;
-      if (!mounted) return;
-      setState(() {
-        _fullAddressLine = fa;
-        _displayAddress = fa;
-        _cityShort = p.getString('smart_outfit_city_short') ?? '';
-        _weather = p.getString('smart_outfit_weather') ?? '晴';
-        _temp = p.getDouble('smart_outfit_temp') ?? 20;
-        _weatherFallback = p.getBool('smart_outfit_fallback') ?? false;
-        _weatherLoading = false;
-      });
-    } catch (_) {}
-  }
-
-  void _applyWeatherPayload(Map<String, dynamic> r, {required bool fallback}) {
-    final addr = Map<String, dynamic>.from(r['address'] ?? const {});
-    final p = addr['province']?.toString().trim() ?? '';
-    final c = addr['city']?.toString().trim() ?? '';
-    final d = addr['district']?.toString().trim() ?? '';
-    final s = addr['street']?.toString().trim() ?? '';
-    final full = addr['full_address']?.toString().trim() ??
-        r['full_address']?.toString().trim() ??
-        '';
-    final disp = addr['display_address']?.toString().trim() ??
-        r['display_address']?.toString().trim() ??
-        full;
-    final city = c.isNotEmpty ? c : r['city']?.toString().trim();
-    if (kDebugMode) {
-      final gs = r['geocode_source']?.toString();
-      final ge = r['geocode_error']?.toString();
-      if ((gs != null && gs.isNotEmpty) || (ge != null && ge.isNotEmpty)) {
-        debugPrint(
-          '[smart_outfit weather] geocode_source=$gs geocode_error=$ge',
-        );
-      }
-    }
-    setState(() {
-      _addressParts = {
-        if (p.isNotEmpty) 'province': p,
-        if (c.isNotEmpty) 'city': c,
-        if (d.isNotEmpty) 'district': d,
-        if (s.isNotEmpty) 'street': s,
-      };
-      _fullAddressLine = full.isNotEmpty ? full : disp;
-      _displayAddress = disp;
-      _cityShort = city != null && city.isNotEmpty ? city : '';
-      _weather = r['weather']?.toString() ?? '晴';
-      _temp = (r['temperature'] as num?)?.toDouble() ?? 20;
-      _weatherFallback = fallback;
-      _weatherLoading = false;
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) => _persistWeatherCache());
-  }
-
-  /// 人类可读地址（不含经纬度）
-  String _humanAddressLine() {
-    if (_displayAddress.trim().isNotEmpty) return _displayAddress.trim();
-    if (_fullAddressLine.trim().isNotEmpty) return _fullAddressLine.trim();
-    if (_cityShort.trim().isNotEmpty) return _cityShort.trim();
-    return _weatherLoading ? '正在解析地址…' : '定位解析失败，请手动选择';
-  }
-
-  /// 生成接口 `location` 参数：完整地址，不用经纬度
-  String get _locationForApi {
-    return _fullAddressLine.trim().isNotEmpty
-        ? _fullAddressLine.trim()
-        : _displayAddress.trim().isNotEmpty
-            ? _displayAddress.trim()
-            : _cityShort.trim();
-  }
-
-  /// 清空旧定位后重新请求 GPS → 天气
-  Future<void> _reloadGpsWeather() async {
-    if (_weatherRequestInFlight) return;
-    setState(() {
-      _fullAddressLine = '';
-      _displayAddress = '';
-      _cityShort = '';
-    });
-    await _loadWeatherFromGps();
-  }
-
-  Future<void> _loadWeatherFromGps() async {
-    if (_weatherRequestInFlight) return;
-    await _waitForAuthReady();
-    if (!mounted) return;
-    final auth0 = context.read<AuthProvider>();
-    if (!auth0.isAuthenticated) {
-      if (mounted) setState(() => _weatherLoading = false);
-      return;
-    }
-
-    // 确保 token 已写入 ApiClient（与 isInitialized 竞态时偶发无 Authorization → 401）
-    for (var i = 0; i < 80; i++) {
-      if (auth0.token != null && auth0.token!.isNotEmpty) break;
-      await Future.delayed(const Duration(milliseconds: 25));
-      if (!mounted) return;
-    }
-
-    final prevFallback = _weatherFallback;
-    final prevFull = _fullAddressLine;
-    final prevDisp = _displayAddress;
-    final prevCity = _cityShort;
-    final prevWeather = _weather;
-    final prevTemp = _temp;
-
-    _weatherRequestInFlight = true;
-    final seq = ++_weatherSeq;
-    final api = context.read<AuthProvider>().apiClient;
-    final palette = context.read<ThemeProvider>().palette;
-
-    try {
-      if (!mounted) return;
-      setState(() {
-        _weatherLoading = true;
-        _weatherFallback = false;
-      });
-
-      var serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        throw StateError('location_service_disabled');
-      }
-
-      var perm = await Geolocator.checkPermission();
-      if (perm == LocationPermission.denied) {
-        perm = await Geolocator.requestPermission();
-      }
-      if (perm == LocationPermission.denied ||
-          perm == LocationPermission.deniedForever) {
-        if (!mounted || seq != _weatherSeq) return;
-        setState(() => _weatherLoading = false);
-        await _showManualAddressPicker();
-        return;
-      }
-
-      final pos = await _getCurrentPositionWithRetry();
-      if (mounted && _isPoorAccuracy(pos)) {
-        showAppSnackBar(
-          context,
-          '当前位置精度较低（≈${pos.accuracy.toStringAsFixed(0)}m）。'
-          '请在浏览器地址栏左侧「位置」权限中选择“精确位置”，或改用「手动选择地址」。',
-          backgroundColor: palette.textBody,
-        );
-      }
-      final r = await api.getSmartOutfitWeather(pos.latitude, pos.longitude);
-      if (r['error'] != null) {
-        if (_isCredentialInvalidError(r['error'])) {
-          _handleCredentialInvalid();
-          throw Exception('Could not validate credentials');
-        }
-        throw Exception('${r['error']}');
-      }
-      if (!mounted || seq != _weatherSeq) return;
-      _applyWeatherPayload(r, fallback: false);
-    } catch (e) {
-      if (!mounted || seq != _weatherSeq) return;
-      if (e is StateError && e.message == 'location_service_disabled') {
-        setState(() => _weatherLoading = false);
-        await _showManualAddressPicker();
-        return;
-      }
-      final canKeepLast = _hadReliableWeatherSnapshot(
-        fallback: prevFallback,
-        full: prevFull,
-        disp: prevDisp,
-        city: prevCity,
-      );
-      if (canKeepLast) {
-        setState(() {
-          _weatherFallback = prevFallback;
-          _fullAddressLine = prevFull;
-          _displayAddress = prevDisp;
-          _cityShort = prevCity;
-          _weather = prevWeather;
-          _temp = prevTemp;
-          _weatherLoading = false;
-        });
-        _persistWeatherCache();
-        if (!mounted) return;
-        showAppSnackBar(
-          context,
-          _weatherFailureHint(e),
-          backgroundColor: palette.textBody,
-        );
-        return;
-      }
-      setState(() {
-        _weatherFallback = true;
-        _fullAddressLine = '';
-        _displayAddress = '';
-        _cityShort = '默认';
-        _weather = '晴';
-        _temp = 22;
-        _weatherLoading = false;
-      });
-      _persistWeatherCache();
-      showAppSnackBar(
-        context,
-        _weatherFailureHint(e),
-        backgroundColor: palette.textBody,
-      );
-    } finally {
-      if (seq == _weatherSeq) {
-        _weatherRequestInFlight = false;
-      }
-    }
-  }
-
-  /// 省 / 市 / 区 / 街道(镇) 四级；可选补充道路名；完成后按地名拉取天气
-  Future<void> _showManualAddressPicker() async {
-    final palette = context.read<ThemeProvider>().palette;
-    final seq = _weatherSeq;
-
-    final r = await CityPickers.showCityPicker(
-      context: context,
-      showType: ShowType.pcav,
-      theme: Theme.of(context).copyWith(
-        colorScheme: Theme.of(context).colorScheme.copyWith(
-              primary: palette.primary,
-            ),
-      ),
-      height: 420,
-      barrierDismissible: true,
-    );
-    if (!mounted || seq != _weatherSeq) return;
-    if (r == null) return;
-
-    final streetCtrl = TextEditingController();
-    String? extraStreet;
-    try {
-      extraStreet = await showDialog<String>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
-          title: const Text('道路 / 街道（可选）'),
-          content: TextField(
-            controller: streetCtrl,
-            decoration: const InputDecoration(
-              hintText: '例如：某某路、某某街道；可留空',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, ''),
-              child: const Text('跳过'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(ctx, streetCtrl.text.trim()),
-              child: const Text('确定'),
-            ),
-          ],
-        ),
-      );
-    } finally {
-      streetCtrl.dispose();
-    }
-    if (!mounted || seq != _weatherSeq) return;
-
-    final parts = <String>[
-      if (r.provinceName != null && r.provinceName!.trim().isNotEmpty)
-        r.provinceName!.trim(),
-      if (r.cityName != null && r.cityName!.trim().isNotEmpty)
-        r.cityName!.trim(),
-      if (r.areaName != null && r.areaName!.trim().isNotEmpty)
-        r.areaName!.trim(),
-      if (r.villageName != null && r.villageName!.trim().isNotEmpty)
-        r.villageName!.trim(),
-    ];
-    var q = parts.join('');
-    final st = extraStreet ?? '';
-    if (st.isNotEmpty) {
-      q = '$q$st';
-    }
-
-    if (q.isEmpty) {
-      showAppSnackBar(context, '未选择有效地址');
-      return;
-    }
-
-    await _waitForAuthReady();
-    if (!mounted || seq != _weatherSeq) return;
-    if (!context.read<AuthProvider>().isAuthenticated) {
-      showAppSnackBar(context, '请先登录后再获取天气');
-      return;
-    }
-    final api = context.read<AuthProvider>().apiClient;
-
-    setState(() => _weatherLoading = true);
-    try {
-      final res = await api.getSmartOutfitWeatherByCity(q);
-      if (res['error'] != null) {
-        final res2 = await api
-            .getSmartOutfitWeatherByCity(parts.length >= 2 ? parts[1] : q);
-        if (res2['error'] != null) {
-          if (mounted) {
-            showAppSnackBar(context, '未找到该地区天气，请重试或换个地名');
-            setState(() => _weatherLoading = false);
-          }
-          return;
-        }
-        if (!mounted || seq != _weatherSeq) return;
-        _applyWeatherPayload(res2, fallback: false);
-        return;
-      }
-      if (!mounted || seq != _weatherSeq) return;
-      _applyWeatherPayload(res, fallback: false);
-    } catch (e) {
-      if (mounted) {
-        showAppSnackBar(context, '天气获取失败：$e');
-        setState(() => _weatherLoading = false);
-      }
-    }
-  }
-
-  Future<void> _ensureUploaded() async {
-    if (_imageUrl != null && _imageUrl!.isNotEmpty) return;
-    if (_images.isEmpty) return;
-    final api = context.read<AuthProvider>().apiClient;
-    final r = await api.uploadSmartOutfitReference(_images.first);
-    if (r['error'] != null) {
-      throw Exception(r['error']);
-    }
-    final url = r['image_url']?.toString();
-    if (url == null || url.isEmpty) {
-      throw Exception('无 image_url');
-    }
-    _imageUrl = url;
-  }
-
   Future<void> _cacheTodayRecommendationAt(int index) async {
-    try {
-      if (_outfits.isEmpty) return;
-      final safeIndex = index.clamp(0, _outfits.length - 1);
-      final outfit = _outfits[safeIndex];
-      final prefs = await SharedPreferences.getInstance();
-      final ai = outfit['ai_recommendation'];
-      final payload = {
-        'city': _cityShort,
-        'weather': _weather,
-        'temperature': _temp,
-        'recommendation_index': safeIndex,
-        'updated_at': DateTime.now().toIso8601String(),
-        'description': outfit['description']?.toString() ?? '',
-        'preview_image_url': outfit['preview_image_url']?.toString() ?? '',
-        'ai_recommendation': ai is Map ? Map<String, dynamic>.from(ai) : {},
-      };
-      await prefs.setString(
-        'home_today_recommendation',
-        jsonEncode(payload),
-      );
-      // 保持 json 版本，供首页稳定读取
-      await prefs.setString(
-        'home_today_recommendation_json',
-        jsonEncode(payload),
-      );
-    } catch (_) {}
+    final ctrl = context.read<SmartOutfitController>();
+    await SmartOutfitHomeRecommendationCache.saveTodayAtIndex(
+      outfits: ctrl.outfits,
+      index: index,
+      cityShort: ctrl.cityShort,
+      weather: ctrl.weather,
+      temp: ctrl.temp,
+    );
   }
 
   Future<void> _oneTapGenerate() async {
-    if (_oneTapBusy || _generating) return;
-    setState(() => _oneTapBusy = true);
+    final ctrl = context.read<SmartOutfitController>();
+    if (ctrl.oneTapBusy || ctrl.generating) return;
+    ctrl.setOneTapBusy(true);
     try {
-      if (_images.isEmpty) {
+      if (ctrl.images.isEmpty) {
         final picked = await _pickSingleImageWithSource();
         if (picked == null) {
           if (mounted) showAppSnackBar(context, '已取消选择图片');
           return;
         }
         if (!mounted) return;
-        setState(() {
-          _images
-            ..clear()
-            ..add(picked);
-          _imageUrl = null;
-          _outfits = [];
-          _regenIndex = 0;
-        });
+        ctrl.replaceReferenceImages([picked]);
       }
-      if (_weatherLoading) {
-        await _loadWeatherFromGps();
+      if (ctrl.weatherLoading) {
+        await ctrl.loadWeatherFromGps(
+          context,
+          onCredentialInvalid: _handleCredentialInvalid,
+        );
       }
       if (!mounted) return;
-      await _generate(regen: false);
+      await _runGenerate(regen: false);
     } finally {
-      if (mounted) setState(() => _oneTapBusy = false);
+      if (mounted) context.read<SmartOutfitController>().setOneTapBusy(false);
     }
   }
 
@@ -676,147 +201,78 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
   }
 
   void _maybeJumpToInitialIndex() {
+    final outfits = context.read<SmartOutfitController>().outfits;
     if (_didJumpToInitialIndex) return;
     final index = widget.initialResultIndex;
-    if (index <= 0 || _outfits.isEmpty || index >= _outfits.length) {
+    if (index <= 0 || outfits.isEmpty || index >= outfits.length) {
       _didJumpToInitialIndex = true;
-      _currentOutfitIndex = 0;
+      setState(() => _currentOutfitIndex = 0);
       return;
     }
     _didJumpToInitialIndex = true;
-    _currentOutfitIndex = index;
+    setState(() => _currentOutfitIndex = index);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_pageCtrl.hasClients) return;
       _pageCtrl.jumpToPage(index);
     });
   }
 
-  Future<void> _generate({bool regen = false}) async {
-    if (_images.isEmpty) {
-      showAppSnackBar(context, '请先上传一张参考衣物图片');
-      return;
-    }
-    await _waitForAuthReady();
+  Future<void> _runGenerate({required bool regen}) async {
+    await SmartOutfitController.waitForAuthReady(context);
     if (!mounted) return;
     final auth = context.read<AuthProvider>();
-    if (!auth.isAuthenticated) {
-      showAppSnackBar(context, '请先登录后再生成穿搭');
-      return;
-    }
     final ge = context.read<ThemeProvider>().genderExpression;
-
-    setState(() {
-      _generating = true;
-      if (regen) {
-        _regenIndex++;
-      } else {
-        _regenIndex = 0;
-        _outfits = [];
-      }
-    });
-
-    try {
-      await _ensureUploaded();
-      final r = await auth.apiClient.generateSmartOutfit(
-        imageUrl: _imageUrl!,
-        location: _locationForApi,
-        city: _cityShort,
-        address: _addressParts,
-        weather: _weather,
-        temperature: _temp,
-        mood: _moodCtrl.text.trim(),
-        count: 3,
-        regenerationIndex: _regenIndex,
-        genderExpression: ge,
-      );
-      if (r['error'] != null) {
-        if (_isCredentialInvalidError(r['error'])) {
-          if (mounted) {
-            _handleCredentialInvalid();
-          }
-          setState(() => _generating = false);
-          return;
-        }
-        if (mounted) {
-          final msg = userFacingApiError(r['error']);
-          final isConn = msg.contains('无法连接') || msg.contains('网络');
-          showAppSnackBar(
-            context,
-            '生成失败：$msg',
-            action: isConn
-                ? SnackBarAction(
-                    label: '重试',
-                    textColor: Colors.white,
-                    onPressed: () => _generate(regen: regen),
-                  )
-                : null,
-          );
-        }
-        setState(() => _generating = false);
-        return;
-      }
-      final list = r['outfits'];
-      if (list is! List || list.isEmpty) {
-        if (mounted) {
-          showAppSnackBar(context, '暂无搭配结果，请重试或向衣橱添加单品');
-        }
-        setState(() {
-          _generating = false;
-          _outfits = [];
-        });
-        return;
-      }
-      if (!mounted) return;
-      setState(() {
-        _outfits =
-            list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
-        _currentOutfitIndex = 0;
-        _generating = false;
-      });
-      if (_outfits.isNotEmpty) {
+    final ctrl = context.read<SmartOutfitController>();
+    final r = await ctrl.generateSmartOutfit(
+      api: auth.apiClient,
+      isAuthenticated: auth.isAuthenticated,
+      mood: _moodCtrl.text.trim(),
+      genderExpression: ge,
+      regen: regen,
+    );
+    if (!mounted) return;
+    switch (r.kind) {
+      case SmartOutfitGenerateKind.success:
+        setState(() => _currentOutfitIndex = 0);
         _maybeJumpToInitialIndex();
         await _cacheTodayRecommendationAt(_currentOutfitIndex);
-      }
-    } catch (e) {
-      if (_isCredentialInvalidError(e)) {
-        if (mounted) {
-          _handleCredentialInvalid();
-        }
-        setState(() => _generating = false);
-        return;
-      }
-      if (mounted) {
-        final msg = userFacingApiError(e);
-        final isConn = msg.contains('无法连接') || msg.contains('网络');
+        break;
+      case SmartOutfitGenerateKind.needImage:
+        showAppSnackBar(context, '请先上传一张参考衣物图片');
+        break;
+      case SmartOutfitGenerateKind.notAuthenticated:
+        showAppSnackBar(context, '请先登录后再生成穿搭');
+        break;
+      case SmartOutfitGenerateKind.credentialInvalid:
+        _handleCredentialInvalid();
+        break;
+      case SmartOutfitGenerateKind.apiError:
+        final msg = userFacingApiError(r.error);
+        final retry = r.connectionRetrySuggested ||
+            msg.contains('无法连接') ||
+            msg.contains('网络');
         showAppSnackBar(
           context,
           '生成失败：$msg',
-          action: isConn
+          action: retry
               ? SnackBarAction(
                   label: '重试',
                   textColor: Colors.white,
-                  onPressed: () => _generate(regen: regen),
+                  onPressed: () => _runGenerate(regen: regen),
                 )
               : null,
         );
-      }
-      setState(() => _generating = false);
+        break;
+      case SmartOutfitGenerateKind.emptyOutfits:
+        showAppSnackBar(context, '暂无搭配结果，请重试或向衣橱添加单品');
+        break;
     }
-  }
-
-  IconData _weatherIcon() {
-    final w = _weather;
-    if (w.contains('雨') || w.contains('雷')) return Icons.umbrella;
-    if (w.contains('雪')) return Icons.ac_unit;
-    if (w.contains('云') || w.contains('阴')) {
-      return Icons.cloud_outlined;
-    }
-    return Icons.wb_sunny_outlined;
   }
 
   @override
   Widget build(BuildContext context) {
     final palette = context.watch<ThemeProvider>().palette;
+    final ctrl = context.watch<SmartOutfitController>();
     final apiBase = context.read<AuthProvider>().apiClient.baseUrl;
 
     return AnalysisFeatureLayout(
@@ -880,17 +336,17 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                             spacing: 8,
                             runSpacing: 8,
                             children: [
-                              _SmartHintChip(
+                              SmartOutfitHintChip(
                                 icon: Icons.add_photo_alternate_outlined,
                                 text: '先上传清晰单品图',
                                 color: Colors.blue,
                               ),
-                              _SmartHintChip(
+                              SmartOutfitHintChip(
                                 icon: Icons.my_location_outlined,
                                 text: '定位越准越贴合天气',
                                 color: Colors.green,
                               ),
-                              _SmartHintChip(
+                              SmartOutfitHintChip(
                                 icon: Icons.refresh,
                                 text: '支持重新生成对比',
                                 color: Colors.orange,
@@ -911,15 +367,12 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                     ),
                     const SizedBox(height: 8),
                     ImagePickerSection(
-                      images: _images,
+                      images: ctrl.images,
                       onImagesChanged: (list) {
-                        setState(() {
-                          _images.clear();
-                          _images.addAll(list);
-                          _imageUrl = null;
-                          _outfits = [];
-                          _regenIndex = 0;
-                        });
+                        context
+                            .read<SmartOutfitController>()
+                            .replaceReferenceImages(list);
+                        setState(() => _didJumpToInitialIndex = false);
                       },
                       maxImages: 1,
                       hintText: '上传 1 张主参考衣物图',
@@ -945,7 +398,7 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                       ),
                       child: Padding(
                         padding: const EdgeInsets.all(16),
-                        child: _weatherLoading
+                        child: ctrl.weatherLoading
                             ? Row(
                                 children: [
                                   SizedBox(
@@ -976,7 +429,7 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                                         CrossAxisAlignment.start,
                                     children: [
                                       Icon(
-                                        _weatherIcon(),
+                                        smartOutfitWeatherIcon(ctrl.weather),
                                         size: 36,
                                         color: palette.primary,
                                       ),
@@ -987,7 +440,7 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                                               CrossAxisAlignment.start,
                                           children: [
                                             Text(
-                                              _weatherFallback
+                                              ctrl.weatherFallback
                                                   ? '未精准定位（默认参数）'
                                                   : '已精准定位',
                                               style: TextStyle(
@@ -997,18 +450,16 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                                               ),
                                             ),
                                             const SizedBox(height: 8),
-                                            _StructuredAddressView(
+                                            SmartOutfitStructuredAddressView(
                                               palette: palette,
-                                              addressParts: _addressParts,
-                                              fallbackText: _weatherLoading
-                                                  ? '正在解析地址…'
-                                                  : _weatherFallback
-                                                      ? '未获取到详细地址'
-                                                      : '地址已就绪',
+                                              addressParts: ctrl.addressParts,
+                                              fallbackText: ctrl.weatherFallback
+                                                  ? '未获取到详细地址'
+                                                  : '地址已就绪',
                                             ),
                                             const SizedBox(height: 10),
                                             Text(
-                                              '当前天气：$_weather',
+                                              '当前天气：${ctrl.weather}',
                                               style: TextStyle(
                                                 fontSize: 14,
                                                 height: 1.35,
@@ -1017,14 +468,14 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                                             ),
                                             const SizedBox(height: 4),
                                             Text(
-                                              '当前温度：${_temp.toStringAsFixed(0)}℃',
+                                              '当前温度：${ctrl.temp.toStringAsFixed(0)}℃',
                                               style: TextStyle(
                                                 fontSize: 14,
                                                 height: 1.35,
                                                 color: palette.textBody,
                                               ),
                                             ),
-                                            if (_weatherFallback)
+                                            if (ctrl.weatherFallback)
                                               Padding(
                                                 padding: const EdgeInsets.only(
                                                     top: 6),
@@ -1053,9 +504,13 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                                         style: TextButton.styleFrom(
                                           foregroundColor: palette.primary,
                                         ),
-                                        onPressed: _weatherRequestInFlight
+                                        onPressed: ctrl.weatherRequestInFlight
                                             ? null
-                                            : _reloadGpsWeather,
+                                            : () => ctrl.reloadGpsWeather(
+                                                  context,
+                                                  onCredentialInvalid:
+                                                      _handleCredentialInvalid,
+                                                ),
                                         icon: Icon(Icons.my_location,
                                             size: 18, color: palette.primary),
                                         label: const Text('重新获取定位'),
@@ -1064,9 +519,11 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                                         style: TextButton.styleFrom(
                                           foregroundColor: palette.primary,
                                         ),
-                                        onPressed: _weatherLoading
+                                        onPressed: ctrl.weatherLoading
                                             ? null
-                                            : _showManualAddressPicker,
+                                            : () => ctrl.pickManualCityWeather(
+                                                  context,
+                                                ),
                                         icon: Icon(Icons.map_outlined,
                                             size: 18, color: palette.primary),
                                         label: const Text('手动选择地址'),
@@ -1105,20 +562,21 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                       ),
                     ),
                     const SizedBox(height: 14),
-                    _SmartSummaryCard(
+                    SmartOutfitSummaryCard(
                       palette: palette,
-                      hasImage: _images.isNotEmpty,
-                      weatherLoading: _weatherLoading,
-                      weatherFallback: _weatherFallback,
-                      addressParts: _addressParts,
+                      hasImage: ctrl.images.isNotEmpty,
+                      weatherLoading: ctrl.weatherLoading,
+                      weatherFallback: ctrl.weatherFallback,
+                      addressParts: ctrl.addressParts,
                       moodText: _moodCtrl.text.trim(),
-                      hasResult: _outfits.isNotEmpty,
+                      hasResult: ctrl.outfits.isNotEmpty,
                     ),
                     const SizedBox(height: 20),
                     FilledButton.icon(
-                      onPressed:
-                          (_oneTapBusy || _generating) ? null : _oneTapGenerate,
-                      icon: (_oneTapBusy || _generating)
+                      onPressed: (ctrl.oneTapBusy || ctrl.generating)
+                          ? null
+                          : _oneTapGenerate,
+                      icon: (ctrl.oneTapBusy || ctrl.generating)
                           ? const SizedBox(
                               width: 20,
                               height: 20,
@@ -1129,7 +587,9 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                             )
                           : const Icon(Icons.bolt_rounded),
                       label: Text(
-                        (_oneTapBusy || _generating) ? '正在一键生成…' : '一键生成穿搭',
+                        (ctrl.oneTapBusy || ctrl.generating)
+                            ? '正在一键生成…'
+                            : '一键生成穿搭',
                       ),
                       style: FilledButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 16),
@@ -1139,11 +599,12 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                       ),
                     ),
                     const SizedBox(height: 10),
-                    if (_outfits.isEmpty)
+                    if (ctrl.outfits.isEmpty)
                       FilledButton.icon(
-                        onPressed:
-                            _generating ? null : () => _generate(regen: false),
-                        icon: _generating
+                        onPressed: ctrl.generating
+                            ? null
+                            : () => _runGenerate(regen: false),
+                        icon: ctrl.generating
                             ? const SizedBox(
                                 width: 20,
                                 height: 20,
@@ -1153,7 +614,7 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                                 ),
                               )
                             : const Icon(Icons.auto_awesome),
-                        label: Text(_generating ? '正在为你生成专属穿搭…' : '生成穿搭'),
+                        label: Text(ctrl.generating ? '正在为你生成专属穿搭…' : '生成穿搭'),
                         style: FilledButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(
@@ -1163,9 +624,10 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                       )
                     else
                       FilledButton.icon(
-                        onPressed:
-                            _generating ? null : () => _generate(regen: true),
-                        icon: _generating
+                        onPressed: ctrl.generating
+                            ? null
+                            : () => _runGenerate(regen: true),
+                        icon: ctrl.generating
                             ? const SizedBox(
                                 width: 20,
                                 height: 20,
@@ -1175,7 +637,7 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                                 ),
                               )
                             : const Icon(Icons.refresh),
-                        label: Text(_generating ? '正在为你生成专属穿搭…' : '重新生成'),
+                        label: Text(ctrl.generating ? '正在为你生成专属穿搭…' : '重新生成'),
                         style: FilledButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(
@@ -1183,7 +645,7 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                           ),
                         ),
                       ),
-                    if (_outfits.isNotEmpty) ...[
+                    if (ctrl.outfits.isNotEmpty) ...[
                       const SizedBox(height: 24),
                       Text(
                         '搭配方案（左右滑动）',
@@ -1197,7 +659,7 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                       Wrap(
                         spacing: 6,
                         runSpacing: 6,
-                        children: List.generate(_outfits.length, (index) {
+                        children: List.generate(ctrl.outfits.length, (index) {
                           final active = index == _currentOutfitIndex;
                           return AnimatedContainer(
                             duration: const Duration(milliseconds: 180),
@@ -1214,12 +676,12 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                       ),
                       const SizedBox(height: 8),
                       ScrollConfiguration(
-                        behavior: const _MouseDragScrollBehavior(),
+                        behavior: const SmartOutfitMouseDragScrollBehavior(),
                         child: SizedBox(
                           height: pageViewH,
                           child: PageView.builder(
                             controller: _pageCtrl,
-                            itemCount: _outfits.length,
+                            itemCount: ctrl.outfits.length,
                             onPageChanged: (index) {
                               if (!mounted) return;
                               setState(() {
@@ -1228,7 +690,7 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                               _cacheTodayRecommendationAt(index);
                             },
                             itemBuilder: (_, i) {
-                              final o = _outfits[i];
+                              final o = ctrl.outfits[i];
                               final preview =
                                   o['preview_image_url']?.toString() ?? '';
                               final aiRaw = o['ai_recommendation'];
@@ -1514,6 +976,9 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                                               final m =
                                                   Map<String, dynamic>.from(
                                                       it as Map);
+                                              final colorHint =
+                                                  m['color_hint']?.toString() ??
+                                                      '';
                                               final iu =
                                                   m['image_url']?.toString() ??
                                                       '';
@@ -1573,6 +1038,10 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                                                                       .w600,
                                                               color: palette
                                                                   .textTitle,
+                                                              fontSize: colorHint
+                                                                      .isNotEmpty
+                                                                  ? 13.5
+                                                                  : null,
                                                             ),
                                                           ),
                                                           Text(
@@ -1582,9 +1051,36 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
                                                             style: TextStyle(
                                                               fontSize: 12,
                                                               color: palette
-                                                                  .textBody,
+                                                                  .textBody
+                                                                  .withValues(
+                                                                alpha: colorHint
+                                                                        .isNotEmpty
+                                                                    ? 0.55
+                                                                    : 1.0,
+                                                              ),
                                                             ),
                                                           ),
+                                                          if (colorHint
+                                                              .isNotEmpty)
+                                                            Padding(
+                                                              padding:
+                                                                  const EdgeInsets
+                                                                      .only(
+                                                                      top: 2),
+                                                              child: Text(
+                                                                colorHint,
+                                                                style:
+                                                                    TextStyle(
+                                                                  fontSize: 11,
+                                                                  height: 1.25,
+                                                                  color: palette
+                                                                      .textBody
+                                                                      .withValues(
+                                                                          alpha:
+                                                                              0.72),
+                                                                ),
+                                                              ),
+                                                            ),
                                                         ],
                                                       ),
                                                     ),
@@ -1670,235 +1166,6 @@ class _SmartOutfitScreenState extends State<SmartOutfitScreen> {
             ),
           );
         },
-      ),
-    );
-  }
-}
-
-/// Web / 桌面端：默认 [ScrollBehavior] 不把鼠标拖拽算作 PageView 滑动，需包含 [PointerDeviceKind.mouse]。
-class _MouseDragScrollBehavior extends MaterialScrollBehavior {
-  const _MouseDragScrollBehavior();
-
-  @override
-  Set<PointerDeviceKind> get dragDevices => {
-        PointerDeviceKind.touch,
-        PointerDeviceKind.mouse,
-        PointerDeviceKind.trackpad,
-        PointerDeviceKind.stylus,
-      };
-}
-
-class _SmartHintChip extends StatelessWidget {
-  final IconData icon;
-  final String text;
-  final Color color;
-
-  const _SmartHintChip({
-    required this.icon,
-    required this.text,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withValues(alpha: 0.2)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 14, color: color),
-          const SizedBox(width: 6),
-          Text(
-            text,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: color.withValues(alpha: 0.95),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _StructuredAddressView extends StatelessWidget {
-  final dynamic palette;
-  final Map<String, String> addressParts;
-  final String fallbackText;
-
-  const _StructuredAddressView({
-    required this.palette,
-    required this.addressParts,
-    required this.fallbackText,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final chips = <Widget>[];
-    void addChip(String label, String key, Color color) {
-      final value = addressParts[key]?.trim() ?? '';
-      if (value.isEmpty) return;
-      chips.add(_AddressChip(label: label, value: value, color: color));
-    }
-
-    addChip('省', 'province', Colors.blue);
-    addChip('市', 'city', Colors.green);
-    addChip('区', 'district', Colors.orange);
-    addChip('街道', 'street', Colors.purple);
-
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: palette.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: palette.divider.withValues(alpha: 0.9)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '地址信息',
-            style: TextStyle(
-              color: palette.textTitle,
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 8),
-          if (chips.isEmpty)
-            Text(
-              fallbackText,
-              style: TextStyle(
-                color: palette.textBody,
-                fontSize: 11,
-              ),
-            )
-          else
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: chips,
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _AddressChip extends StatelessWidget {
-  final String label;
-  final String value;
-  final Color color;
-
-  const _AddressChip({
-    required this.label,
-    required this.value,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withValues(alpha: 0.18)),
-      ),
-      child: Text(
-        '$label $value',
-        style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
-          color: color.withValues(alpha: 0.95),
-        ),
-      ),
-    );
-  }
-}
-
-class _SmartSummaryCard extends StatelessWidget {
-  final dynamic palette;
-  final bool hasImage;
-  final bool weatherLoading;
-  final bool weatherFallback;
-  final Map<String, String> addressParts;
-  final String moodText;
-  final bool hasResult;
-
-  const _SmartSummaryCard({
-    required this.palette,
-    required this.hasImage,
-    required this.weatherLoading,
-    required this.weatherFallback,
-    required this.addressParts,
-    required this.moodText,
-    required this.hasResult,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final weatherStatus = weatherLoading
-        ? '天气加载中'
-        : weatherFallback
-            ? '默认天气参数'
-            : '定位天气就绪';
-    final moodStatus = moodText.isEmpty ? '未填写（可选）' : '已填写';
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: palette.primary.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: palette.primary.withValues(alpha: 0.18)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '生成前状态',
-            style: TextStyle(
-              color: palette.textTitle,
-              fontWeight: FontWeight.w700,
-              fontSize: 13,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '参考图：${hasImage ? '已上传' : '未上传'}  |  天气：$weatherStatus  |  心情：$moodStatus',
-            style: TextStyle(
-              color: palette.textBody,
-              fontSize: 12,
-              height: 1.4,
-            ),
-          ),
-          const SizedBox(height: 8),
-          _StructuredAddressView(
-            palette: palette,
-            addressParts: addressParts,
-            fallbackText: weatherLoading
-                ? '正在解析地址…'
-                : weatherFallback
-                    ? '未获取到详细地址'
-                    : '地址已就绪',
-          ),
-          if (hasResult) ...[
-            const SizedBox(height: 6),
-            Text(
-              '已生成结果，可点击“重新生成”获取另一组方案。',
-              style: TextStyle(
-                color: palette.textBody,
-                fontSize: 11,
-              ),
-            ),
-          ],
-        ],
       ),
     );
   }

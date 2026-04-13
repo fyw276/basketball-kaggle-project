@@ -134,6 +134,32 @@ SCENE_OUTFIT_TEMPLATES: Dict[str, List[Dict]] = {
     ],
 }
 
+# 场景模板里只会出现这六类；CLIP 等识别器可能把「国风」「复古」等风格词当作 category，导致无法匹配任何模板。
+TEMPLATE_SLOT_CATEGORIES = frozenset({"上衣", "裤子", "裙子", "外套", "鞋", "包"})
+
+
+def normalize_category_for_outfit_templates(raw: Optional[str]) -> str:
+    """
+    将识别结果中的 category 映射到模板槽位品类，避免非标准标签（如「国风」）使模板循环全部 continue。
+    原始标签应保留在 style_tags 中供风格打分。
+    """
+    s = (raw or "").strip()
+    if not s:
+        return "上衣"
+    if s in TEMPLATE_SLOT_CATEGORIES:
+        return s
+    if "裙" in s or s in ("连衣裙", "礼服", "旗袍", "半身裙"):
+        return "裙子"
+    if "裤" in s:
+        return "裤子"
+    if "外套" in s or "夹克" in s or "大衣" in s or "风衣" in s:
+        return "外套"
+    if "鞋" in s or s in ("靴子", "凉鞋", "拖鞋", "运动鞋", "高跟鞋"):
+        return "鞋"
+    if "包" in s or "袋" in s:
+        return "包"
+    return "上衣"
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 体型感知推荐常量
@@ -357,6 +383,21 @@ class OutfitRecommender3D:
 
         if not wardrobe:
             return []
+
+        raw_target_cat = (getattr(target_garment, "category", None) or "").strip()
+        slot_cat = normalize_category_for_outfit_templates(target_garment.category)
+        if slot_cat != raw_target_cat:
+            logger.info(
+                "Normalized target category for outfit templates: %r -> %r",
+                raw_target_cat,
+                slot_cat,
+            )
+            target_garment.category = slot_cat
+            tags = getattr(target_garment, "style_tags", None) or []
+            if not isinstance(tags, list):
+                tags = []
+            if raw_target_cat and raw_target_cat not in tags:
+                target_garment.style_tags = [raw_target_cat] + list(tags)
 
         # Step 0: 无性别推荐系统 - 性别区分召回（修正版）
         filtered_wardrobe = self._filter_by_gender(

@@ -78,6 +78,8 @@ class TestColorExtractor:
         assert hasattr(colors[0], "name")
         assert hasattr(colors[0], "rgb")
         assert hasattr(colors[0], "hex_code")
+        assert colors[0].confidence is not None
+        assert 0.0 <= colors[0].confidence <= 1.0
 
 
 class TestCategoryClassifier:

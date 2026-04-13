@@ -16,6 +16,7 @@ from app.services.outfit_recommender_3d import (
     OutfitCard,
     OutfitItem,
     OutfitRecommender3D,
+    normalize_category_for_outfit_templates,
 )
 
 
@@ -332,3 +333,35 @@ class TestOutfitCardSchema:
         assert item.category == "上衣"
         assert item.role == "top"
         assert "简约" in item.style_tags
+
+
+class TestNormalizeCategoryForTemplates:
+    """CLIP 等非槽位 category 须映射到模板六类，否则智能穿搭会生成 0 套。"""
+
+    def test_clip_style_labels_map_to_slot(self):
+        assert normalize_category_for_outfit_templates("国风") == "上衣"
+        assert normalize_category_for_outfit_templates("复古") == "上衣"
+
+    def test_standard_slots_unchanged(self):
+        for c in ("上衣", "裤子", "裙子", "外套", "鞋", "包"):
+            assert normalize_category_for_outfit_templates(c) == c
+
+    def test_dress_like_map_to_skirt(self):
+        assert normalize_category_for_outfit_templates("连衣裙") == "裙子"
+        assert normalize_category_for_outfit_templates("半身长裙") == "裙子"
+
+    def test_recommend_with_non_slot_category_produces_cards(self):
+        """Regression: target category「国风」曾导致所有模板被跳过。"""
+        recommender = OutfitRecommender3D()
+        target = make_garment(category="国风", styles=["国风", "休闲"])
+        wardrobe = [
+            make_garment(category="上衣", styles=["休闲"]),
+            make_garment(category="裤子", color_name="黑", styles=["休闲"]),
+        ]
+        cards = recommender.recommend_outfits(
+            target_garment=target,
+            wardrobe=wardrobe,
+            num_outfits=3,
+            preferred_scene="休闲日常",
+        )
+        assert len(cards) >= 1

@@ -26,3 +26,13 @@ async def get_summary(
     uid = None if scope == "global" else current_user.user_id
     data = analytics_summary(db, user_id=uid)
     return success_response(data, message="ok")
+
+
+@router.get("/dependency-observability")
+async def get_dependency_observability(
+    _current_user: User = Depends(get_current_user),
+):
+    """天气 / 试衣 / AI / 混合推理外部增强：成功、失败、超时、降级计数与占比（单进程累计）。"""
+    from app.observability.dependency_metrics import snapshot_rates
+
+    return success_response(snapshot_rates(), message="ok")

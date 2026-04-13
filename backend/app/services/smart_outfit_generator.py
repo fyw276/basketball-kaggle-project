@@ -15,6 +15,10 @@ from app.core.config import settings
 from app.core.logging import setup_logging
 from app.ml.color_extractor import ColorExtractor
 from app.models.garment import Garment
+from app.observability.dependency_metrics import (
+    classify_external_exception,
+    record_dependency_outcome,
+)
 from app.schemas.garment import ColorSchema
 from app.services.garment import get_garments_by_user
 from app.services.outfit_recommender_3d import OutfitRecommender3D
@@ -216,9 +220,15 @@ async def _generate_ai_recommendation(
                 else ""
             )
             parsed = _extract_json_object(str(text or ""))
-            return _coerce_ai_recommendation(parsed, fallback)
+            out = _coerce_ai_recommendation(parsed, fallback)
+            if parsed and str(parsed.get("outfit") or "").strip():
+                record_dependency_outcome("ai", "success")
+            else:
+                record_dependency_outcome("ai", "degraded")
+            return out
     except Exception as e:
         logger.warning("ai recommendation fallback due to error: %s", e)
+        record_dependency_outcome("ai", classify_external_exception(e))
         return fallback
 
 
@@ -379,6 +389,10 @@ def _shuffle_wardrobe(wardrobe: List[Garment], seed: int) -> List[Garment]:
     return w
 
 
+# Below this share: UI omits color label and shows a photo-first hint (see smart outfit screen).
+LOW_MAIN_COLOR_CONFIDENCE = 0.35
+
+
 def _card_to_response_dict(
     card: Any,
     weather_note: str,
@@ -388,7 +402,19 @@ def _card_to_response_dict(
     items_out: List[Dict[str, Any]] = []
     for it in d.get("items") or []:
         mc = it.get("main_color") or {}
-        name = f"{it.get('category', '单品')} · {mc.get('name', '')}"
+        cat = (it.get("category") or "单品") or "单品"
+        mc_name = str(mc.get("name") or "").strip()
+        conf = mc.get("confidence")
+        try:
+            conf_f = float(conf) if conf is not None else None
+        except (TypeError, ValueError):
+            conf_f = None
+        if conf_f is not None and conf_f < LOW_MAIN_COLOR_CONFIDENCE:
+            name = cat
+            color_hint = "颜色以图片为准"
+        else:
+            name = f"{cat} · {mc_name}" if mc_name else cat
+            color_hint = None
         items_out.append(
             {
                 "name": name,
@@ -396,6 +422,8 @@ def _card_to_response_dict(
                 "image_url": it.get("image_url"),
                 "fit_note": it.get("role", ""),
                 "style_tags": it.get("style_tags") or [],
+                "main_color": mc,
+                "color_hint": color_hint,
             }
         )
     preview = ""

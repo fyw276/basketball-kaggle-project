@@ -6,7 +6,8 @@ import 'package:provider/provider.dart';
 import '../../../core/providers/auth_provider.dart';
 import '../../../core/providers/theme_provider.dart';
 import '../../../core/theme/fashion_palettes.dart';
-import '../../../core/utils/app_snackbar.dart';
+import '../../../core/utils/app_snackbar.dart'
+    show showAppSnackBar, userFacingApiError;
 import '../../../core/utils/media_url.dart';
 import '../../../core/widgets/image_picker_section.dart';
 import '../../../core/widgets/platform_image.dart';
@@ -38,6 +39,9 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
   bool _editMode = false;
   bool _repairingImages = false;
   String _lastRepairSummary = '';
+
+  /// 仅展示「疑似坏链」单品（空 URL 或非本服务 /uploads/ 路径）。
+  bool _onlySuspectBroken = false;
 
   Map<String, dynamic>? _lastDeletedItem;
 
@@ -88,6 +92,7 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
           summary,
           backgroundColor: palette.successColor,
         );
+        _showRepairBatchReport(Map<String, dynamic>.from(res));
       }
       await _refresh();
     } catch (e) {
@@ -112,6 +117,16 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     return g['notes']?.toString() ?? '';
   }
 
+  bool _suspectBrokenGarment(Map<String, dynamic> g) {
+    final u = (g['image_url']?.toString() ?? '').trim();
+    if (u.isEmpty) return true;
+    final low = u.toLowerCase();
+    if (!low.contains('/uploads/')) return true;
+    return false;
+  }
+
+  int get _suspectBrokenCount => _items.where(_suspectBrokenGarment).length;
+
   bool _matchCat(String from, String to) {
     if (to == '全部') return true;
     if (from == to) return true;
@@ -131,6 +146,7 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
   List<Map<String, dynamic>> get _filtered {
     final q = _searchCtrl.text.trim().toLowerCase();
     return _items.where((g) {
+      if (_onlySuspectBroken && !_suspectBrokenGarment(g)) return false;
       final c = _cat(g);
       if (_chip != '全部' && !_matchCat(c, _chip)) return false;
       if (q.isNotEmpty) {
@@ -141,6 +157,58 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
       }
       return true;
     }).toList();
+  }
+
+  void _showRepairBatchReport(Map<String, dynamic> res) {
+    final ts = DateTime.now().toLocal().toIso8601String();
+    final buf = StringBuffer()
+      ..writeln('批量修复报告')
+      ..writeln('时间: $ts')
+      ..writeln(
+        '扫描: ${res['scanned'] ?? 0}  修复: ${res['changed'] ?? 0}  跳过: ${res['skipped'] ?? 0}',
+      );
+    final changes = res['changes'];
+    if (changes is List && changes.isNotEmpty) {
+      buf.writeln('\n变更明细（最多 ${changes.length} 条）:');
+      for (final c in changes) {
+        if (c is Map) {
+          buf.writeln(
+            '- ${c['garment_id']}: [${c['action']}] "${c['before']}" → "${c['after']}"',
+          );
+        }
+      }
+    } else {
+      buf.writeln('\n（本次无单条变更明细，可能全部为跳过）');
+    }
+    final text = buf.toString();
+    showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        final palette = context.read<ThemeProvider>().palette;
+        return AlertDialog(
+          title: const Text('修复报告'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: SelectableText(
+                text,
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 1.35,
+                  color: palette.textBody,
+                ),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('关闭'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   int _catCount(String cat) {
@@ -864,6 +932,24 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
             ),
           ),
           Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: FilterChip(
+                label: Text('仅可疑坏链 ($_suspectBrokenCount)'),
+                selected: _onlySuspectBroken,
+                onSelected: (v) => setState(() => _onlySuspectBroken = v),
+                selectedColor: palette.primary.withValues(alpha: 0.15),
+                checkmarkColor: palette.primary,
+                labelStyle: TextStyle(
+                  fontSize: 12,
+                  color:
+                      _onlySuspectBroken ? palette.primary : palette.textBody,
+                ),
+              ),
+            ),
+          ),
+          Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
             child: TextField(
               controller: _searchCtrl,
@@ -951,7 +1037,11 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                                       Text(
                                         _items.isEmpty
                                             ? '衣橱还是空的，点击右下角添加或整套上传'
-                                            : '未找到相关衣物，换个关键词试试',
+                                            : _onlySuspectBroken
+                                                ? (_suspectBrokenCount == 0
+                                                    ? '未发现可疑坏链（空图链或非 /uploads/ 路径）'
+                                                    : '当前分类下没有可疑坏链，试试「全部」')
+                                                : '未找到相关衣物，换个关键词试试',
                                         textAlign: TextAlign.center,
                                         style: TextStyle(
                                             color: palette.textBody,

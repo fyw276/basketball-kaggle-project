@@ -1,5 +1,9 @@
 # Generated on server by deploy_full_to_ecs.ps1 (Tar mode) or updated after Git pull.
 # Not committed from production — this file is a schema reference.
+#
+# Backend reads JSON via RELEASE_MANIFEST_PATH (see GET /release 台账).
+# 推荐字段：frontend_index_sha256（Flutter Web main.dart.js / index 指纹）、
+# backend_git_commit、deploy_time_utc。
 
 DEPLOY_MODE=tar
 SOURCE_GIT_COMMIT=0000000000000000000000000000000000000000
@@ -7,3 +11,14 @@ WEB_BUILD_SHA256=
 BACKEND_PACKAGE_SHA256=
 DEPLOY_TIME_UTC=2026-01-01T00:00:00Z
 DEPLOY_FROM_HOST=build-machine
+
+# 与 JSON 等价键名（供脚本写 .env）
+RELEASE_FRONTEND_INDEX_SHA256=
+RELEASE_BACKEND_GIT_COMMIT=
+RELEASE_DEPLOY_TIME_UTC=
+
+# 可选：服务器上 manifest.json 绝对路径
+# RELEASE_MANIFEST_PATH=/var/lib/clothing-assistant/release_manifest.json
+
+# 内网 HTML 依赖看板（须在网关限制 IP；默认关闭）
+# OPS_DASHBOARD_ENABLED=false

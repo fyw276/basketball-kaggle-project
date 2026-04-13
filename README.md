@@ -1,6 +1,6 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-04-13（CLI/MCP 与后端 Envelope 对齐；扩展智能穿搭/情绪/试衣/收藏工具）
+**最后更新**: 2026-04-14（发布台账 `/release`、外部依赖观测与混合增强指标；文档与 Nginx 片段同步）
 **状态**: ✅ 可用于演示与迭代（后端 FastAPI + Flutter Web/移动端）
 
 ## 项目简介
@@ -146,6 +146,7 @@ clothing-assistant/
 - [双通道推理速交付方案（本地主推理 + 外部增强）](docs/HYBRID_INFERENCE_FAST_TRACK.md)
 - [竞赛/课题扩展清单（多智能体 · 记忆 · 数据飞轮）](docs/COMPETITION_EXTENSIONS.md)
 - [生产部署清单（Nginx / 持久化 / JWT / 就绪探针）](docs/PRODUCTION_DEPLOY.md)
+- [发布台账与依赖观测（/release、analytics、ops 看板）](docs/OPS_RELEASE_AND_OBSERVABILITY.md)
 - [ECS 部署目录与 Tar/Git 模式、RELEASE_MANIFEST](deploy/ecs/README.md)
 
 ### 环境要求
@@ -202,6 +203,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\push_and_run_remot
 | `POST` | `/api/v1/smart-outfit/generate` | 生成搭配，JSON：`image_url`、`city`、`weather`、`temperature`、`mood`、`count`、`regeneration_index` 等 |
 | `POST` | `/api/v1/feedback/events` | 用户反馈：`like` / `dislike` / `adopt` / `view`（用于重排与飞轮指标） |
 | `GET` | `/api/v1/analytics/summary` | 数据飞轮摘要：`positive_feedback_rate`、`collection_rate_proxy` 等（`scope=user|global`） |
+| `GET` | `/api/v1/analytics/dependency-observability` | 天气/试衣/AI/外部增强：成功·失败·超时·降级计数与占比（需登录；进程内累计） |
+| `GET` | `/release` | 发布台账：前端 index 指纹、后端 commit、部署时间与无密钥环境快照（无需登录） |
 | `POST` | `/api/v1/agent/intent` | 薄意图路由：自然语言 → 建议 MCP 工具名（无需登录） |
 | `POST` | `/api/v1/memory/snippets` | 写入记忆片段（轻量 RAG） |
 | `GET` | `/api/v1/memory/snippets/search` | 关键词检索记忆片段 |

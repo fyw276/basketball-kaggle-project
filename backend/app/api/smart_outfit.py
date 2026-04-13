@@ -11,6 +11,11 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_current_user
 from app.db.session import get_db
 from app.models.user import User
+from app.observability.dependency_metrics import (
+    record_dependency_outcome,
+    record_weather_exception,
+    record_weather_success_payload,
+)
 from app.services.smart_outfit_generator import generate_smart_outfits, upload_reference_image
 from app.services.weather_service import fetch_weather_by_city_name, fetch_weather_lat_lon
 
@@ -54,6 +59,7 @@ async def get_weather_context(
     """根据经纬度返回详细地址、气温、天气（逆地理与气象均基于经纬度，非 IP）。"""
     try:
         data = await fetch_weather_lat_lon(latitude, longitude)
+        record_weather_success_payload(data)
         return {
             "city": data["city"],
             "address": {
@@ -74,6 +80,7 @@ async def get_weather_context(
             "fallback": False,
         }
     except Exception as e:
+        record_weather_exception(e)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"weather unavailable: {e}",
@@ -89,7 +96,9 @@ async def get_weather_by_city(
     try:
         res = await fetch_weather_by_city_name(name)
         if not res:
+            record_dependency_outcome("weather", "failure")
             raise HTTPException(status_code=404, detail="未找到该地区天气，请重试或换个地名")
+        record_weather_success_payload(res)
         return {
             "city": res["city"],
             "address": {
@@ -112,6 +121,7 @@ async def get_weather_by_city(
     except HTTPException:
         raise
     except Exception as e:
+        record_weather_exception(e)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"weather unavailable: {e}",
@@ -184,7 +194,15 @@ async def post_generate_smart_outfit(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        # 勿用 404：易与「路由/Nginx 未反代」混淆。常见原因：更换 UPLOAD_DIR 后未迁移旧 uploads。
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "参考图在服务器上找不到（若刚迁移过上传目录，请把旧 backend/uploads 合并到新 UPLOAD_DIR，"
+                "或重新上传参考图后再试）。"
+                f" 原始错误: {e}"
+            ),
+        )
     except Exception as e:
         import traceback
 

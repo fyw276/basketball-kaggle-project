@@ -488,6 +488,15 @@ class ApiClient {
     return post('/wardrobe/simple/garments/repair-image-urls', {});
   }
 
+  /// Re-run color (and optionally category) from the stored image file.
+  Future<Map<String, dynamic>> reanalyzeGarmentVisual(
+    String garmentId, {
+    bool recategorize = false,
+  }) async {
+    final q = recategorize ? '?recategorize=true' : '';
+    return post('/wardrobe/simple/garments/$garmentId/reanalyze-visual$q', {});
+  }
+
   // ─── 衣橱：整套拆分上传 ─────────────────────────────────────────
   // 后端路由: POST /wardrobe/split-outfit
   // 后端字段: file=UploadFile, save=bool, selected_indexes=逗号分隔字符串

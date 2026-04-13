@@ -6,7 +6,7 @@ Run this checklist locally before opening a pull request.
 
 ```bash
 cd backend
-python -m pytest tests_lite -v --tb=short
+python -m pytest tests_lite tests/test_release_and_observability.py -v --tb=short
 ```
 
 ## 2) Backend lint (fast path)

@@ -16,6 +16,18 @@ logger = setup_logging()
 _FALLBACK_ADDR_LATLON = "未能解析详细地址，请点击「手动选择地址」"
 
 
+def is_weather_geocode_degraded(data: Dict[str, Any]) -> bool:
+    """True when展示地址接近兜底（用于观测「降级率」，不等同于 HTTP 失败）。"""
+    addr = (data.get("full_address") or data.get("display_address") or "").strip()
+    if not addr:
+        return True
+    if addr == _FALLBACK_ADDR_LATLON or _FALLBACK_ADDR_LATLON in addr:
+        return True
+    if (data.get("geocode_source") or "") == "none":
+        return True
+    return False
+
+
 def _truncate_err(msg: str, max_len: int = 120) -> str:
     s = (msg or "").strip().replace("\n", " ")
     if len(s) <= max_len:

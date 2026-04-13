@@ -3,7 +3,7 @@ Color extraction and recognition module using K-Means clustering
 """
 
 import colorsys
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 from PIL import Image
@@ -84,6 +84,7 @@ class ColorExtractor:
             # Convert to numpy array and reshape to pixels
             pixels = np.array(image_resized).reshape(-1, 3)
 
+            pct_by_cluster: Optional[np.ndarray]
             if self._kmeans_available:
                 # Apply K-Means clustering
                 kmeans = KMeans(n_clusters=self.n_colors, random_state=42, n_init=10)
@@ -94,17 +95,19 @@ class ColorExtractor:
 
                 # Calculate color percentages
                 labels = kmeans.labels_
-                counts = np.bincount(labels)
-                percentages = counts / len(labels)
+                counts = np.bincount(labels, minlength=self.n_colors)
+                percentages = counts.astype(np.float64) / float(len(labels))
 
                 # Sort by percentage (descending)
                 sorted_indices = np.argsort(percentages)[::-1]
+                pct_by_cluster = percentages
             else:
                 # Fallback: no sklearn available, use average color as main color.
                 logger.warning("sklearn unavailable; using average-color fallback")
                 avg = np.mean(pixels, axis=0).astype(int)
                 colors_rgb = np.array([avg], dtype=int)
                 sorted_indices = [0]
+                pct_by_cluster = None
 
             # Convert to ColorSchema objects
             color_schemas = []
@@ -113,8 +116,14 @@ class ColorExtractor:
                 hsv = self.rgb_to_hsv(rgb)
                 color_name = self.map_to_standard_color(rgb)
                 hex_code = self.rgb_to_hex(rgb)
+                if pct_by_cluster is not None:
+                    conf = float(np.clip(pct_by_cluster[int(idx)], 0.0, 1.0))
+                else:
+                    conf = 0.42
 
-                color_schema = ColorSchema(name=color_name, rgb=rgb, hsv=hsv, hex_code=hex_code)
+                color_schema = ColorSchema(
+                    name=color_name, rgb=rgb, hsv=hsv, hex_code=hex_code, confidence=conf
+                )
                 color_schemas.append(color_schema)
 
             logger.debug(

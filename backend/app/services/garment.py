@@ -54,6 +54,8 @@ def repair_garment_image_urls_for_user(db: Session, user_id: UUID) -> dict:
     scanned = len(garments)
     changed = 0
     skipped = 0
+    changes: List[dict] = []
+    _max_log = 200
 
     for g in garments:
         original = (g.image_url or "").strip()
@@ -62,6 +64,15 @@ def repair_garment_image_urls_for_user(db: Session, user_id: UUID) -> dict:
         if normalized and normalized != original:
             g.image_url = normalized
             changed += 1
+            if len(changes) < _max_log:
+                changes.append(
+                    {
+                        "garment_id": str(g.garment_id),
+                        "action": "normalized",
+                        "before": original,
+                        "after": normalized,
+                    }
+                )
             continue
 
         if normalized:
@@ -72,6 +83,15 @@ def repair_garment_image_urls_for_user(db: Session, user_id: UUID) -> dict:
         if derived and derived != original:
             g.image_url = derived
             changed += 1
+            if len(changes) < _max_log:
+                changes.append(
+                    {
+                        "garment_id": str(g.garment_id),
+                        "action": "derived_from_path",
+                        "before": original,
+                        "after": derived,
+                    }
+                )
         else:
             skipped += 1
 
@@ -82,6 +102,7 @@ def repair_garment_image_urls_for_user(db: Session, user_id: UUID) -> dict:
         "scanned": scanned,
         "changed": changed,
         "skipped": skipped,
+        "changes": changes,
     }
 
 

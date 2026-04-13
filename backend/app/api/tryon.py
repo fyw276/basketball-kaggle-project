@@ -7,6 +7,10 @@ from pydantic import BaseModel, Field
 
 from app.api.dependencies import get_current_user
 from app.models.user import User
+from app.observability.dependency_metrics import (
+    classify_external_exception,
+    record_dependency_outcome,
+)
 from app.services.storage import get_storage_service
 
 router = APIRouter(prefix="/tryon", tags=["Virtual Try-On"])
@@ -114,7 +118,9 @@ async def try_on_garment(
             model_gender=model_gender,
         )
 
-        if result.get("status") == "error":
+        st = (result or {}).get("status") or ""
+        if st == "error":
+            record_dependency_outcome("tryon", "failure")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=result.get("message") or "Virtual try-on failed",
@@ -147,6 +153,13 @@ async def try_on_garment(
         else:
             result_image_url = None
 
+        if st == "success":
+            record_dependency_outcome("tryon", "success")
+        elif st == "fallback":
+            record_dependency_outcome("tryon", "degraded")
+        else:
+            record_dependency_outcome("tryon", "degraded")
+
         return TryOnResponse(
             status=result["status"],
             message=result["message"],
@@ -159,6 +172,7 @@ async def try_on_garment(
     except Exception as e:
         import traceback
 
+        record_dependency_outcome("tryon", classify_external_exception(e))
         traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
