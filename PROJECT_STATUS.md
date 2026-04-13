@@ -14,8 +14,9 @@
 - ✅ **意图路由**：`POST /api/v1/agent/intent`（薄规则 → 建议 MCP 工具名）。
 - ✅ **轻量记忆 RAG**：`MemorySnippet` + `POST/GET/DELETE /api/v1/memory/snippets*`，关键词检索。
 - ✅ **生产就绪能力**：`GET /health/ready`（数据库探活）；可选 `ENABLE_RATE_LIMIT` + `RATE_LIMIT_PER_MINUTE` 进程内滑动窗口限流；生产弱 JWT 配置 `CRITICAL` 日志提示。文档见 [docs/PRODUCTION_DEPLOY.md](docs/PRODUCTION_DEPLOY.md)。
+- ✅ **ECS 部署纳入版本库**：`deploy/ecs/`（清单示例、发布后验收脚本、说明）；`deploy_full_to_ecs.ps1` 支持 **Tar / Git**、`-IdentityFile` 免密、`RELEASE_MANIFEST`、默认 **post_deploy_verify +远端审计**。
 - ✅ **Flutter**：`predictOutfitStyle` 与主服务 Envelope 对齐；`getList` 失败时写入 `lastGetListError`（仍返回 `[]`）；场景推荐 / 智能穿搭 **喜欢·采纳**、**保存到收藏** 与反馈提示等。
-- ✅ **回归测试与 Envelope 对齐**：`ApiEnvelopeMiddleware` 对 2xx JSON 统一包装；`backend/tests` 通过 `tests.api_json.unwrap_json` 解包后断言（全量 `pytest` 与生产行为一致）。Pre-push 仍跑 `tests_lite`（现 34 例，含限流）。
+- ✅ **回归测试与 Envelope 对齐**：`ApiEnvelopeMiddleware` 对 2xx JSON 统一包装；`backend/tests` 通过 `tests.api_json.unwrap_json` 解包后断言（全量 `pytest` 与生产行为一致）。Pre-push 仍跑 `tests_lite`（现 35 例，含限流）。
 - 📄 文档：`README.md`、`backend/API_EXAMPLES.md`；[docs/CLI_MCP_QUICKSTART.md](docs/CLI_MCP_QUICKSTART.md)、[docs/COMPETITION_EXTENSIONS.md](docs/COMPETITION_EXTENSIONS.md)。
 
 ## 🆕 上次更新（2026-04-10）
@@ -111,7 +112,7 @@
 
 #### 9. 测试覆盖 (100%)
 - ✅ 后端 `pytest` 套件通过（`backend/tests`；全量约350+ 例，含 2 skip；成功响应需按 Envelope 解包，见 `tests/api_json.py`）
-- ✅ 轻量套件 `tests_lite` 供 pre-push / 快速验证（34 例量级）
+- ✅ 轻量套件 `tests_lite` 供 pre-push / 快速验证（35 例量级）
 - ✅ pytest 可用 tempfile 解决 Windows 文件锁问题
 
 ### 前端应用 (Flutter Web)

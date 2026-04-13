@@ -14,6 +14,7 @@ APP_ROOT="${APP_ROOT:-/opt/clothing-assistant/clothing-assistant-main}"
 WEB_ROOT="${WEB_ROOT:-/usr/share/nginx/html}"
 ENV_FILE="${ENV_FILE:-$APP_ROOT/backend/.env}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8010/health}"
+HEALTH_READY_URL="${HEALTH_READY_URL:-http://127.0.0.1:8010/health/ready}"
 
 fail=0
 warn=0
@@ -28,6 +29,13 @@ say() {
 ok() { say "OK" "$1" "$2"; }
 ng() { say "FAIL" "$1" "$2"; fail=$((fail+1)); }
 wn() { say "WARN" "$1" "$2"; warn=$((warn+1)); }
+
+if [[ -f "$APP_ROOT/RELEASE_MANIFEST" ]]; then
+  mf="$(grep -E '^(DEPLOY_MODE|SOURCE_GIT_COMMIT|DEPLOY_TIME_UTC)=' "$APP_ROOT/RELEASE_MANIFEST" 2>/dev/null | tr '\n' ' ')"
+  ok "deploy.release_manifest" "$mf"
+else
+  wn "deploy.release_manifest" "missing $APP_ROOT/RELEASE_MANIFEST (optional for Git/Tar traceability)"
+fi
 
 if [[ -d "$APP_ROOT/.git" ]]; then
   if c=$(git -C "$APP_ROOT" rev-parse HEAD 2>/dev/null); then
@@ -87,6 +95,11 @@ if command -v curl >/dev/null 2>&1; then
     ok "backend.remote.health" "$out"
   else
     ng "backend.remote.health" "health check failed: $HEALTH_URL"
+  fi
+  if outr=$(curl -fsS "$HEALTH_READY_URL" 2>/dev/null); then
+    ok "backend.remote.health_ready" "$outr"
+  else
+    ng "backend.remote.health_ready" "readiness check failed: $HEALTH_READY_URL"
   fi
 else
   wn "backend.remote.health" "curl not found"

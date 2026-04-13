@@ -1,13 +1,18 @@
 param(
     [string]$ServerHost = "101.200.127.179",
     [string]$User = "root",
+    [string]$IdentityFile = "",
     [string]$RemoteAppRoot = "/opt/clothing-assistant/clothing-assistant-main",
     [string]$RemoteWebRoot = "/usr/share/nginx/html",
     [string]$RemoteEnvFile = "/opt/clothing-assistant/clothing-assistant-main/backend/.env",
-    [string]$RemoteHealthUrl = "http://127.0.0.1:8010/health"
+    [string]$RemoteHealthUrl = "http://127.0.0.1:8010/health",
+    [string]$RemoteHealthReadyUrl = "http://127.0.0.1:8010/health/ready"
 )
 
 $ErrorActionPreference = "Stop"
+
+. (Join-Path $PSScriptRoot "DeployCommon.ps1")
+$SshOpts = Get-DeploySshOpts -IdentityFile $IdentityFile
 
 function Test-CommandAvailable {
     param([string]$Name)
@@ -29,21 +34,23 @@ $remote = "$User@$ServerHost"
 $remoteAudit = "/tmp/full_chain_consistency_audit.sh"
 
 Write-Host "[1/3] Uploading audit script to $remote..." -ForegroundColor Cyan
-scp $localAudit "$remote`:$remoteAudit"
-if ($LASTEXITCODE -ne 0) {
+$c = Invoke-DeployScp -SshOpts $SshOpts -Source $localAudit -Destination "${remote}:$remoteAudit"
+if ($c -ne 0) {
     throw "Upload failed"
 }
 
 Write-Host "[2/3] Executing audit on remote host..." -ForegroundColor Cyan
-# Use one-line command and strip CR to avoid $'\r' path issues on Linux shells.
-$remoteCmd = "chmod +x '$remoteAudit'; APP_ROOT='$RemoteAppRoot' WEB_ROOT='$RemoteWebRoot' ENV_FILE='$RemoteEnvFile' HEALTH_URL='$RemoteHealthUrl' bash '$remoteAudit'"
+$remoteCmd = "chmod +x '$remoteAudit'; APP_ROOT='$RemoteAppRoot' WEB_ROOT='$RemoteWebRoot' ENV_FILE='$RemoteEnvFile' HEALTH_URL='$RemoteHealthUrl' HEALTH_READY_URL='$RemoteHealthReadyUrl' bash '$remoteAudit'"
 $remoteCmd = $remoteCmd -replace "`r", ""
 
-ssh $remote $remoteCmd
+$verifyOut = & ssh @SshOpts $remote $remoteCmd 2>&1
 $code = $LASTEXITCODE
+if ($verifyOut) {
+    ($verifyOut | ForEach-Object { $_.ToString() }) | ForEach-Object { Write-Host $_ }
+}
 
 Write-Host "[3/3] Cleaning remote temp file..." -ForegroundColor Cyan
-ssh $remote "rm -f '$remoteAudit'" | Out-Null
+& ssh @SshOpts $remote "rm -f '$remoteAudit'" | Out-Null
 
 if ($code -eq 2) {
     throw "Remote audit failed with exit code: $code"

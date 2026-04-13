@@ -146,6 +146,7 @@ clothing-assistant/
 - [双通道推理速交付方案（本地主推理 + 外部增强）](docs/HYBRID_INFERENCE_FAST_TRACK.md)
 - [竞赛/课题扩展清单（多智能体 · 记忆 · 数据飞轮）](docs/COMPETITION_EXTENSIONS.md)
 - [生产部署清单（Nginx / 持久化 / JWT / 就绪探针）](docs/PRODUCTION_DEPLOY.md)
+- [ECS 部署目录与 Tar/Git 模式、RELEASE_MANIFEST](deploy/ecs/README.md)
 
 ### 环境要求
 
@@ -349,7 +350,7 @@ flutter test
 
 ✅ **后端服务**: 100% 完成
 - 全部核心 API 端点已实现（数量见 [PROJECT_STATUS.md](PROJECT_STATUS.md)）
-- 后端 `pytest`：`backend/tests` 全量约 **358 收集，356 通过、2 跳过**（以本机 `python -m pytest` 为准）。成功响应经 `ApiEnvelopeMiddleware` 统一为 `{success,data,error,message}`；测试侧用 `tests.api_json.unwrap_json` 读取内层 `data`。Pre-push 钩子跑 `tests_lite`（34 例，更快）。
+- 后端 `pytest`：`backend/tests` 全量约 **358 收集，356 通过、2 跳过**（以本机 `python -m pytest` 为准）。成功响应经 `ApiEnvelopeMiddleware` 统一为 `{success,data,error,message}`；测试侧用 `tests.api_json.unwrap_json` 读取内层 `data`。Pre-push 钩子跑 `tests_lite`（35 例，更快）。
 - 性别表达指数系统、图像识别、相似度分析、搭配推荐、适合度评分全部可用
 
 ✅ **前端应用**: 100% 完成

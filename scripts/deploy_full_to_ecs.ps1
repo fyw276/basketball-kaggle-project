@@ -1,8 +1,13 @@
-# 全量部署：Flutter Web 静态 + 后端 tar（不含 backend/.env，须在服务器单独配置）。
-# 公网验收清单见 docs/PRODUCTION_DEPLOY.md（Nginx /api/v1、/predict、/uploads、持久化、JWT、CORS）。
+# 全量部署：Flutter Web（Tar）+ 后端 Tar **或** 远端 Git pull。
+# SSH：默认 BatchMode=yes（需密钥免密）。见 deploy/ecs/README.md# 成功后默认运行 post_deploy_verify（smoke + full_chain_consistency_audit）。
 param(
     [string]$ServerHost = "101.200.127.179",
     [string]$User = "root",
+    [string]$IdentityFile = "",
+    [ValidateSet("Tar", "Git")]
+    [string]$DeployMode = "Tar",
+    [string]$GitBranch = "main",
+    [string]$GitRef = "",
     [string]$RemoteWebRoot = "/usr/share/nginx/html",
     [string]$RemoteAppRoot = "/opt/clothing-assistant/clothing-assistant-main",
     [string]$BackendService = "clothing-backend",
@@ -11,10 +16,16 @@ param(
     [switch]$SkipWebBuild,
     [switch]$SkipWebDeploy,
     [switch]$SkipBackendDeploy,
-    [switch]$SkipBackendRestart
+    [switch]$SkipBackendRestart,
+    [switch]$SkipPostDeployVerify,
+    [switch]$VerifyLegacyHotfixMarkers
 )
 
 $ErrorActionPreference = "Stop"
+
+. (Join-Path $PSScriptRoot "DeployCommon.ps1")
+$SshOpts = Get-DeploySshOpts -IdentityFile $IdentityFile
+$remote = "$User@$ServerHost"
 
 function Test-CommandAvailable {
     param([string]$Name)
@@ -29,26 +40,20 @@ function Invoke-RemoteBash {
         [string]$ScriptText
     )
 
-    # Normalize to LF to avoid CRLF breaking remote bash parsing.
     $normalized = ($ScriptText -replace "`r", "").TrimEnd("`n") + "`n"
     $tmp = [System.IO.Path]::GetTempFileName()
     $remoteTmp = "/tmp/copilot-deploy-$([guid]::NewGuid().ToString('N')).sh"
     $oldErrorAction = $ErrorActionPreference
     try {
-        # Native commands may write warnings to stderr (e.g. nginx -t warning)
-        # while still succeeding; do not fail early on stderr text.
         $ErrorActionPreference = "Continue"
 
         [System.IO.File]::WriteAllText($tmp, $normalized, [System.Text.UTF8Encoding]::new($false))
-        $scpOut = scp $tmp "$Remote`:$remoteTmp" 2>&1
-        $scpCode = $LASTEXITCODE
+        $scpCode = Invoke-DeployScp -SshOpts $SshOpts -Source $tmp -Destination "${Remote}:$remoteTmp"
         if ($scpCode -ne 0) {
-            $msg = (($scpOut | ForEach-Object { $_.ToString() }) -join "`n").Trim()
-            if (-not $msg) { $msg = "(no scp output)" }
-            throw "remote script upload failed (exit=$scpCode)`n$msg"
+            throw "remote script upload failed (exit=$scpCode)"
         }
 
-        $sshOut = ssh $Remote "bash '$remoteTmp'" 2>&1
+        $sshOut = & ssh @SshOpts $Remote "bash '$remoteTmp'" 2>&1
         $sshCode = $LASTEXITCODE
         if ($sshOut) {
             ($sshOut | ForEach-Object { $_.ToString() }) | ForEach-Object { Write-Host $_ }
@@ -61,7 +66,7 @@ function Invoke-RemoteBash {
     }
     finally {
         $ErrorActionPreference = "Continue"
-        ssh $Remote "rm -f '$remoteTmp'" 2>$null | Out-Null
+        & ssh @SshOpts $Remote "rm -f '$remoteTmp'" 2>$null | Out-Null
         $ErrorActionPreference = $oldErrorAction
         if (Test-Path $tmp) {
             Remove-Item -Force $tmp
@@ -69,10 +74,11 @@ function Invoke-RemoteBash {
     }
 }
 
-Write-Host "[1/9] Checking required commands..." -ForegroundColor Cyan
+Write-Host "[1/10] Checking required commands..." -ForegroundColor Cyan
 Test-CommandAvailable "ssh"
 Test-CommandAvailable "scp"
 Test-CommandAvailable "tar"
+Test-CommandAvailable "git"
 
 $mobileDir = Join-Path $ProjectRoot "mobile"
 $buildWebDir = Join-Path $mobileDir "build/web"
@@ -82,8 +88,24 @@ if (-not (Test-Path $backendDir)) {
     throw "Backend directory not found: $backendDir"
 }
 
+Push-Location $ProjectRoot
+try {
+    $srcCommit = (git rev-parse HEAD).Trim()
+}
+finally {
+    Pop-Location
+}
+
+$deployHost = $env:COMPUTERNAME
+if (-not $deployHost) { $deployHost = "unknown-host" }
+$tsUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+if ($DeployMode -eq "Git" -and -not $SkipBackendDeploy) {
+    Write-Host "DeployMode=Git: backend will be updated via git in $RemoteAppRoot (requires .git on server)." -ForegroundColor Cyan
+}
+
 if (-not $SkipWebDeploy -and -not $SkipWebBuild) {
-    Write-Host "[2/9] Building Flutter web..." -ForegroundColor Cyan
+    Write-Host "[2/10] Building Flutter web..." -ForegroundColor Cyan
     if (-not (Test-Path $mobileDir)) {
         throw "Mobile directory not found: $mobileDir"
     }
@@ -101,7 +123,7 @@ if (-not $SkipWebDeploy -and -not $SkipWebBuild) {
     }
 }
 else {
-    Write-Host "[2/9] Skip web build." -ForegroundColor Yellow
+    Write-Host "[2/10] Skip web build." -ForegroundColor Yellow
 }
 
 if (-not $SkipWebDeploy -and -not (Test-Path $buildWebDir)) {
@@ -112,24 +134,30 @@ $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $localWebTar = Join-Path $mobileDir "web-$timestamp.tar.gz"
 $localBackendTar = Join-Path $ProjectRoot "backend-$timestamp.tar.gz"
 $remoteWebTar = "/tmp/web-$timestamp.tar.gz"
-$remoteBackendTar = "/tmp/backend-$timestamp.tar.gz"
-$remote = "$User@$ServerHost"
+$remoteBackendTar = ""
+if ($DeployMode -eq "Tar" -and -not $SkipBackendDeploy) {
+    $remoteBackendTar = "/tmp/backend-$timestamp.tar.gz"
+}
+
+$webTarHash = ""
+$backendTarHash = ""
 
 try {
     if (-not $SkipWebDeploy) {
-        Write-Host "[3/9] Packing web build..." -ForegroundColor Cyan
+        Write-Host "[3/10] Packing web build..." -ForegroundColor Cyan
         if (Test-Path $localWebTar) {
             Remove-Item -Force $localWebTar
         }
         tar -C $buildWebDir -czf $localWebTar .
         if ($LASTEXITCODE -ne 0) { throw "tar web pack failed" }
+        $webTarHash = (Get-FileHash $localWebTar -Algorithm SHA256).Hash.ToLower()
     }
     else {
-        Write-Host "[3/9] Skip web package/deploy." -ForegroundColor Yellow
+        Write-Host "[3/10] Skip web package/deploy." -ForegroundColor Yellow
     }
 
-    if (-not $SkipBackendDeploy) {
-        Write-Host "[4/9] Packing backend source..." -ForegroundColor Cyan
+    if ($DeployMode -eq "Tar" -and -not $SkipBackendDeploy) {
+        Write-Host "[4/10] Packing backend source..." -ForegroundColor Cyan
         if (Test-Path $localBackendTar) {
             Remove-Item -Force $localBackendTar
         }
@@ -146,40 +174,54 @@ try {
             --exclude "backend/.mypy_cache" `
             backend
         if ($LASTEXITCODE -ne 0) { throw "tar backend pack failed" }
+        $backendTarHash = (Get-FileHash $localBackendTar -Algorithm SHA256).Hash.ToLower()
+    }
+    elseif ($DeployMode -eq "Git") {
+        Write-Host "[4/10] Skip backend tar (Git mode)." -ForegroundColor Yellow
     }
     else {
-        Write-Host "[4/9] Skip backend package/deploy." -ForegroundColor Yellow
+        Write-Host "[4/10] Skip backend package/deploy." -ForegroundColor Yellow
     }
 
-    Write-Host "[5/9] Uploading packages to $remote..." -ForegroundColor Cyan
+    Write-Host "[5/10] Uploading packages to $remote..." -ForegroundColor Cyan
     if (-not $SkipWebDeploy) {
-        scp $localWebTar "$remote`:$remoteWebTar"
-        if ($LASTEXITCODE -ne 0) { throw "scp web upload failed" }
+        $c = Invoke-DeployScp -SshOpts $SshOpts -Source $localWebTar -Destination "${remote}:$remoteWebTar"
+        if ($c -ne 0) { throw "scp web upload failed" }
     }
-    if (-not $SkipBackendDeploy) {
-        scp $localBackendTar "$remote`:$remoteBackendTar"
-        if ($LASTEXITCODE -ne 0) { throw "scp backend upload failed" }
+    if ($DeployMode -eq "Tar" -and -not $SkipBackendDeploy) {
+        $c = Invoke-DeployScp -SshOpts $SshOpts -Source $localBackendTar -Destination "${remote}:$remoteBackendTar"
+        if ($c -ne 0) { throw "scp backend upload failed" }
     }
 
-    Write-Host "[6/9] Publishing on server..." -ForegroundColor Cyan
+    Write-Host "[6/10] Publishing on server..." -ForegroundColor Cyan
     $doWeb = if ($SkipWebDeploy) { "0" } else { "1" }
     $doBackend = if ($SkipBackendDeploy) { "0" } else { "1" }
     $doRestart = if ($SkipBackendRestart) { "0" } else { "1" }
+    $modeLower = $DeployMode.ToLower()
+    $gitRefEsc = $GitRef.Replace("'", "'\''")
 
-        $remoteScriptTemplate = @'
-    set -Eeuo pipefail
-    trap 'echo "[remote][ERROR] line=$LINENO cmd=$BASH_COMMAND" >&2' ERR
+    $remoteScriptTemplate = @'
+set -Eeuo pipefail
+trap 'echo "[remote][ERROR] line=$LINENO cmd=$BASH_COMMAND" >&2' ERR
 
-    DO_WEB='__DO_WEB__'
-    DO_BACKEND='__DO_BACKEND__'
-    DO_RESTART='__DO_RESTART__'
-    REMOTE_WEB_ROOT='__REMOTE_WEB_ROOT__'
-    REMOTE_APP_ROOT='__REMOTE_APP_ROOT__'
-    REMOTE_WEB_TAR='__REMOTE_WEB_TAR__'
-    REMOTE_BACKEND_TAR='__REMOTE_BACKEND_TAR__'
-    BACKEND_SERVICE='__BACKEND_SERVICE__'
-    BACKEND_HEALTH_URL='__BACKEND_HEALTH_URL__'
-    resolved_unit=""
+DO_WEB='__DO_WEB__'
+DO_BACKEND='__DO_BACKEND__'
+DO_RESTART='__DO_RESTART__'
+DEPLOY_MODE='__DEPLOY_MODE__'
+GIT_BRANCH='__GIT_BRANCH__'
+GIT_REF='__GIT_REF__'
+REMOTE_WEB_ROOT='__REMOTE_WEB_ROOT__'
+REMOTE_APP_ROOT='__REMOTE_APP_ROOT__'
+REMOTE_WEB_TAR='__REMOTE_WEB_TAR__'
+REMOTE_BACKEND_TAR='__REMOTE_BACKEND_TAR__'
+BACKEND_SERVICE='__BACKEND_SERVICE__'
+BACKEND_HEALTH_URL='__BACKEND_HEALTH_URL__'
+MANIFEST_SOURCE_COMMIT='__MANIFEST_SOURCE_COMMIT__'
+MANIFEST_WEB_SHA='__MANIFEST_WEB_SHA__'
+MANIFEST_BACKEND_SHA='__MANIFEST_BACKEND_SHA__'
+MANIFEST_TS='__MANIFEST_TS__'
+MANIFEST_HOST='__MANIFEST_HOST__'
+resolved_unit=""
 
 if [ "$DO_WEB" = "1" ]; then
     echo "[remote] Deploying web to $REMOTE_WEB_ROOT"
@@ -191,9 +233,26 @@ if [ "$DO_WEB" = "1" ]; then
 fi
 
 if [ "$DO_BACKEND" = "1" ]; then
-    echo "[remote] Deploying backend to $REMOTE_APP_ROOT"
-    mkdir -p "$REMOTE_APP_ROOT"
-    tar -xzf "$REMOTE_BACKEND_TAR" -C "$REMOTE_APP_ROOT"
+    if [ "$DEPLOY_MODE" = "git" ]; then
+        echo "[remote] Git update under $REMOTE_APP_ROOT"
+        if [ ! -d "$REMOTE_APP_ROOT/.git" ]; then
+            echo "[remote][ERROR] not a git clone: $REMOTE_APP_ROOT (init with: git clone <url> $REMOTE_APP_ROOT)" >&2
+            exit 19
+        fi
+        cd "$REMOTE_APP_ROOT"
+        git remote -v
+        git fetch origin
+        if [ -n "$GIT_REF" ]; then
+            git checkout "$GIT_REF"
+        else
+            git checkout "$GIT_BRANCH"
+            git pull --ff-only origin "$GIT_BRANCH"
+        fi
+    else
+        echo "[remote] Deploying backend tar to $REMOTE_APP_ROOT"
+        mkdir -p "$REMOTE_APP_ROOT"
+        tar -xzf "$REMOTE_BACKEND_TAR" -C "$REMOTE_APP_ROOT"
+    fi
 fi
 
 if [ "$DO_RESTART" = "1" ]; then
@@ -253,7 +312,34 @@ if [ "$health_ok" != "1" ]; then
 fi
 echo "[remote] Health check passed"
 
-rm -f "$REMOTE_WEB_TAR" "$REMOTE_BACKEND_TAR"
+echo "[remote] Writing RELEASE_MANIFEST"
+if [ "$DEPLOY_MODE" = "git" ]; then
+    mc="$(git -C "$REMOTE_APP_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+    cat > "$REMOTE_APP_ROOT/RELEASE_MANIFEST" <<EOF
+DEPLOY_MODE=git
+SOURCE_GIT_COMMIT=$mc
+WEB_BUILD_SHA256=$MANIFEST_WEB_SHA
+BACKEND_PACKAGE_SHA256=
+DEPLOY_TIME_UTC=$MANIFEST_TS
+DEPLOY_FROM_HOST=$MANIFEST_HOST
+EOF
+else
+    cat > "$REMOTE_APP_ROOT/RELEASE_MANIFEST" <<EOF
+DEPLOY_MODE=tar
+SOURCE_GIT_COMMIT=$MANIFEST_SOURCE_COMMIT
+WEB_BUILD_SHA256=$MANIFEST_WEB_SHA
+BACKEND_PACKAGE_SHA256=$MANIFEST_BACKEND_SHA
+DEPLOY_TIME_UTC=$MANIFEST_TS
+DEPLOY_FROM_HOST=$MANIFEST_HOST
+EOF
+fi
+
+if [ -n "${REMOTE_WEB_TAR:-}" ] && [ -f "$REMOTE_WEB_TAR" ]; then
+    rm -f "$REMOTE_WEB_TAR"
+fi
+if [ -n "${REMOTE_BACKEND_TAR:-}" ] && [ -f "$REMOTE_BACKEND_TAR" ]; then
+    rm -f "$REMOTE_BACKEND_TAR"
+fi
 echo "Deploy finished"
 '@
 
@@ -261,26 +347,39 @@ echo "Deploy finished"
     $remoteScript = $remoteScript.Replace('__DO_WEB__', $doWeb)
     $remoteScript = $remoteScript.Replace('__DO_BACKEND__', $doBackend)
     $remoteScript = $remoteScript.Replace('__DO_RESTART__', $doRestart)
+    $remoteScript = $remoteScript.Replace('__DEPLOY_MODE__', $modeLower)
+    $remoteScript = $remoteScript.Replace('__GIT_BRANCH__', $GitBranch)
+    $remoteScript = $remoteScript.Replace('__GIT_REF__', $gitRefEsc)
     $remoteScript = $remoteScript.Replace('__REMOTE_WEB_ROOT__', $RemoteWebRoot)
     $remoteScript = $remoteScript.Replace('__REMOTE_APP_ROOT__', $RemoteAppRoot)
     $remoteScript = $remoteScript.Replace('__REMOTE_WEB_TAR__', $remoteWebTar)
     $remoteScript = $remoteScript.Replace('__REMOTE_BACKEND_TAR__', $remoteBackendTar)
     $remoteScript = $remoteScript.Replace('__BACKEND_SERVICE__', $BackendService)
     $remoteScript = $remoteScript.Replace('__BACKEND_HEALTH_URL__', $BackendHealthUrl)
+    $remoteScript = $remoteScript.Replace('__MANIFEST_SOURCE_COMMIT__', $srcCommit)
+    $remoteScript = $remoteScript.Replace('__MANIFEST_WEB_SHA__', $webTarHash)
+    $remoteScript = $remoteScript.Replace('__MANIFEST_BACKEND_SHA__', $backendTarHash)
+    $remoteScript = $remoteScript.Replace('__MANIFEST_TS__', $tsUtc)
+    $remoteScript = $remoteScript.Replace('__MANIFEST_HOST__', $deployHost)
 
     Invoke-RemoteBash -Remote $remote -ScriptText $remoteScript
 
-    Write-Host "[7/9] Verifying smart-outfit hotfix markers on server..." -ForegroundColor Cyan
-    $verifyScript = @"
+    if ($VerifyLegacyHotfixMarkers) {
+        Write-Host "[7/10] Verifying legacy hotfix markers on server..." -ForegroundColor Cyan
+        $verifyScript = @"
 set -e
 grep -n "application/octet-stream" "$RemoteAppRoot/backend/app/api/smart_outfit.py" >/dev/null
 grep -n "No outfit cards generated from wardrobe" "$RemoteAppRoot/backend/app/services/smart_outfit_generator.py" >/dev/null
 echo "Backend hotfix markers found"
 "@
-    Invoke-RemoteBash -Remote $remote -ScriptText $verifyScript
+        Invoke-RemoteBash -Remote $remote -ScriptText $verifyScript
+    }
+    else {
+        Write-Host "[7/10] Skip legacy hotfix marker grep (use -VerifyLegacyHotfixMarkers to enable)." -ForegroundColor Yellow
+    }
 }
 finally {
-    Write-Host "[8/9] Cleaning local temporary packages..." -ForegroundColor Cyan
+    Write-Host "[8/10] Cleaning local temporary packages..." -ForegroundColor Cyan
     if (Test-Path $localWebTar) {
         Remove-Item -Force $localWebTar
     }
@@ -289,4 +388,32 @@ finally {
     }
 }
 
-Write-Host "[9/9] Done. Please hard refresh browser with Ctrl+F5." -ForegroundColor Green
+if (-not $SkipPostDeployVerify) {
+    Write-Host "[9/10] Post-deploy verify (smoke + audit)..." -ForegroundColor Cyan
+    $verifySh = Join-Path $ProjectRoot "deploy/ecs/post_deploy_verify.sh"
+    $auditSh = Join-Path $ProjectRoot "scripts/full_chain_consistency_audit.sh"
+    if (-not (Test-Path $verifySh)) { throw "Missing $verifySh" }
+    if (-not (Test-Path $auditSh)) { throw "Missing $auditSh" }
+
+    $c1 = Invoke-DeployScp -SshOpts $SshOpts -Source $verifySh -Destination "${remote}:/tmp/post_deploy_verify.sh"
+    if ($c1 -ne 0) { throw "scp post_deploy_verify.sh failed" }
+    $c2 = Invoke-DeployScp -SshOpts $SshOpts -Source $auditSh -Destination "${remote}:/tmp/full_chain_consistency_audit.sh"
+    if ($c2 -ne 0) { throw "scp full_chain_consistency_audit.sh failed" }
+
+    $envAppRoot = $RemoteAppRoot.Replace("'", "'\''")
+    $envWebRoot = $RemoteWebRoot.Replace("'", "'\''")
+    $vCmd = "chmod +x /tmp/post_deploy_verify.sh /tmp/full_chain_consistency_audit.sh && APP_ROOT='$envAppRoot' WEB_ROOT='$envWebRoot' ENV_FILE='$envAppRoot/backend/.env' AUDIT_SCRIPT=/tmp/full_chain_consistency_audit.sh bash /tmp/post_deploy_verify.sh"
+    $verifyOut = & ssh @SshOpts $remote $vCmd 2>&1
+    $vCode = $LASTEXITCODE
+    if ($verifyOut) {
+        ($verifyOut | ForEach-Object { $_.ToString() }) | ForEach-Object { Write-Host $_ }
+    }
+    if ($vCode -ne 0) {
+        throw "post_deploy_verify failed (exit=$vCode)"
+    }
+}
+else {
+    Write-Host "[9/10] Skip post-deploy verify (-SkipPostDeployVerify)." -ForegroundColor Yellow
+}
+
+Write-Host "[10/10] Done. Hard refresh browser with Ctrl+F5 if you deployed web." -ForegroundColor Green

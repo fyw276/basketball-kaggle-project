@@ -80,8 +80,10 @@ curl -fsS https://your-domain/health/ready
 
 ## 5. 与脚本 `deploy_full_to_ecs.ps1` 的配合
 
-- 脚本**不包含** `.env`：首次在服务器创建 `backend/.env` 并按上表填写
-- Flutter Web 线上默认使用 **当前页 `origin` + `/api/v1`**，依赖上述 Nginx；若需异常架构再使用 `flutter build web --dart-define=API_PORT=...`（一般不推荐与同源混用）
+- 脚本**不包含** `.env`：首次在服务器创建 `backend/.env` 并按上表填写。
+- **部署模式**（详见 [deploy/ecs/README.md](../deploy/ecs/README.md)）：**Tar**（默认，写 `RELEASE_MANIFEST`）或 **Git**（远端完整 clone + `pull`）；SSH 使用 `-IdentityFile` 实现免密（`BatchMode=yes`）。
+- **发布后验收**：默认跑 `post_deploy_verify` + `full_chain_consistency_audit`；紧急可加 `-SkipPostDeployVerify`。
+- Flutter Web 线上默认使用 **当前页 `origin` + `/api/v1`**，依赖上述 Nginx；若需异常架构再使用 `flutter build web --dart-define=API_PORT=...`（一般不推荐与同源混用）。
 
 ## 6. Hugging Face / 模型
 

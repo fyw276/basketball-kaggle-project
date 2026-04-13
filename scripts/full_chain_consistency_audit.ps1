@@ -1,6 +1,7 @@
 param(
     [string]$ServerHost = "101.200.127.179",
     [string]$User = "root",
+    [string]$IdentityFile = "",
     [string]$RemoteAppRoot = "/opt/clothing-assistant/clothing-assistant-main",
     [string]$RemoteWebRoot = "/usr/share/nginx/html",
     [string]$RemoteBackendEnv = "/opt/clothing-assistant/clothing-assistant-main/backend/.env",
@@ -9,6 +10,9 @@ param(
     [switch]$AutoFix,
     [switch]$SkipRemote
 )
+
+. (Join-Path $PSScriptRoot "DeployCommon.ps1")
+$script:SshOptsAudit = Get-DeploySshOpts -IdentityFile $IdentityFile
 
 $ErrorActionPreference = "Stop"
 
@@ -27,18 +31,11 @@ function Add-Result {
 
 function Invoke-SshSafe {
     param([string]$Command)
-    $args = @(
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=8",
-        "$User@$ServerHost",
-        $Command
-    )
+    $all = $script:SshOptsAudit + @("$User@$ServerHost", $Command)
     $oldEA = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        $out = & ssh @args 2>&1
+        $out = & ssh @all 2>&1
         $code = $LASTEXITCODE
         return @($code, ($out | Out-String).Trim())
     }

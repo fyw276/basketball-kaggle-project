@@ -1,0 +1,9 @@
+# Generated on server by deploy_full_to_ecs.ps1 (Tar mode) or updated after Git pull.
+# Not committed from production — this file is a schema reference.
+
+DEPLOY_MODE=tar
+SOURCE_GIT_COMMIT=0000000000000000000000000000000000000000
+WEB_BUILD_SHA256=
+BACKEND_PACKAGE_SHA256=
+DEPLOY_TIME_UTC=2026-01-01T00:00:00Z
+DEPLOY_FROM_HOST=build-machine
