@@ -433,13 +433,20 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
 
       final maxV = r > g ? (r > b ? r : b) : (g > b ? g : b);
       final minV = r < g ? (r < b ? r : b) : (g < b ? g : b);
+      final cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+      final cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
       final likelySkin = r > 95 &&
           g > 40 &&
           b > 20 &&
           (maxV - minV) > 15 &&
           (r - g).abs() > 15 &&
           r > g &&
-          r > b;
+          r > b &&
+          g > b &&
+          cb >= 92 &&
+          cb <= 128 &&
+          cr >= 138 &&
+          cr <= 176;
       if (likelySkin) {
         skinLike++;
       }
@@ -799,8 +806,8 @@ class _GarmentPhotoSignals {
     this.brightBgRatio = 0,
   });
 
-  bool get likelyPerson => skinRatio >= 0.24 && brightBgRatio <= 0.90;
-  bool get veryLikelyPerson => skinRatio >= 0.36 && brightBgRatio <= 0.88;
+  bool get likelyPerson => skinRatio >= 0.28 && brightBgRatio <= 0.88;
+  bool get veryLikelyPerson => skinRatio >= 0.48 && brightBgRatio <= 0.84;
 }
 
 class _StandardChip extends StatelessWidget {
