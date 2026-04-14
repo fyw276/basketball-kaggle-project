@@ -98,6 +98,16 @@ class Settings(BaseSettings):
     AI_RECOMMENDER_API_KEY: str = Field(default="", description="AI 推荐接口密钥")
     AI_RECOMMENDER_MODEL: str = Field(default="gpt-4o-mini", description="AI 推荐模型名")
     AI_RECOMMENDER_TIMEOUT_MS: int = Field(default=8000, description="AI 推荐超时时间（毫秒）")
+    AI_RECOMMENDER_STRICT_JSON: bool = Field(
+        default=True,
+        description="为 true 时请求 response_format=json_object；若上游不支持会自动回退",
+    )
+
+    # Try-on resilience
+    TRYON_MAX_RETRIES: int = Field(
+        default=1,
+        description="虚拟试衣错误重试次数（仅对可重试错误生效）",
+    )
 
     # CORS
     CORS_ORIGINS: str = Field(

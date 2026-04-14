@@ -251,16 +251,36 @@ class VirtualTryOnService:
         person_resized = person_image.resize(target_size, Image.Resampling.LANCZOS)
         mask_resized = garment_mask.resize(target_size, Image.Resampling.LANCZOS)
 
-        # Run inference
-        result = self._model(
-            prompt=prompt,
-            image=person_resized,
-            mask_image=mask_resized,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            negative_prompt=negative_prompt,
-            generator=generator,
-        ).images[0]
+        try:
+            # Run inference
+            result = self._model(
+                prompt=prompt,
+                image=person_resized,
+                mask_image=mask_resized,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                negative_prompt=negative_prompt,
+                generator=generator,
+            ).images[0]
+        except Exception as e:
+            err_text = str(e)
+            low = err_text.lower()
+            reason = "inference_failed"
+            if "out of memory" in low or "cuda" in low:
+                reason = "gpu_oom"
+            elif "timeout" in low or "timed out" in low:
+                reason = "timeout"
+            logger.warning("Diffusion try-on failed (%s): %s", reason, err_text)
+            return {
+                "result_image": None,
+                "status": "error",
+                "message": f"虚拟试穿失败: {err_text}",
+                "metadata": {
+                    "reason": reason,
+                    "model": SD_VTON_MODEL_ID,
+                    "device": self.device,
+                },
+            }
 
         output = {
             "result_image": result,
@@ -310,6 +330,7 @@ class VirtualTryOnService:
                     "model": "fallback_paste",
                     "device": "cpu",
                     "note": "mask+paste, no alpha blend",
+                    "reason": "model_unavailable",
                 },
             }
 
@@ -324,7 +345,10 @@ class VirtualTryOnService:
                 "result_image": None,
                 "status": "error",
                 "message": f"虚拟试穿失败: {str(e)}",
-                "metadata": {},
+                "metadata": {
+                    "reason": "fallback_failed",
+                    "error": str(e),
+                },
             }
 
     def _garment_has_face(self, garment_image: Image.Image) -> bool:
@@ -535,7 +559,9 @@ class VirtualTryOnService:
                 "result_image": person_image,
                 "status": "error",
                 "message": "没有提供服饰图片",
-                "metadata": {},
+                "metadata": {
+                    "reason": "empty_garments",
+                },
             }
 
         scene_prompts = {

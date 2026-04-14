@@ -22,6 +22,7 @@ from app.observability.dependency_metrics import (
 from app.schemas.garment import ColorSchema
 from app.services.garment import get_garments_by_user
 from app.services.outfit_recommender_3d import OutfitRecommender3D
+from app.services.smart_outfit_rerank import rerank_outfit_cards
 from app.services.storage import StorageService
 from app.services.user_profile import get_profile_by_user_id
 
@@ -95,6 +96,23 @@ def _extract_json_object(raw_text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _extract_content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: List[str] = []
+        for part in content:
+            if isinstance(part, str):
+                chunks.append(part)
+                continue
+            if isinstance(part, dict):
+                t = part.get("text")
+                if isinstance(t, str) and t.strip():
+                    chunks.append(t)
+        return "\n".join(chunks)
+    return ""
+
+
 def _coerce_ai_recommendation(
     parsed: Optional[Dict[str, Any]],
     fallback: Dict[str, Any],
@@ -162,6 +180,7 @@ async def _generate_ai_recommendation(
     api_key = str(getattr(settings, "AI_RECOMMENDER_API_KEY", "") or "").strip()
     model = str(getattr(settings, "AI_RECOMMENDER_MODEL", "gpt-4o-mini") or "gpt-4o-mini").strip()
     timeout_ms = int(getattr(settings, "AI_RECOMMENDER_TIMEOUT_MS", 8000) or 8000)
+    strict_json = bool(getattr(settings, "AI_RECOMMENDER_STRICT_JSON", True))
     if not api_base or not api_key:
         return fallback
 
@@ -205,6 +224,8 @@ async def _generate_ai_recommendation(
             {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
         ],
     }
+    if strict_json:
+        body["response_format"] = {"type": "json_object"}
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -212,14 +233,18 @@ async def _generate_ai_recommendation(
     try:
         async with httpx.AsyncClient(timeout=max(1.0, timeout_ms / 1000.0)) as client:
             resp = await client.post(url, headers=headers, json=body)
+            if resp.status_code == 400 and strict_json:
+                body.pop("response_format", None)
+                resp = await client.post(url, headers=headers, json=body)
             resp.raise_for_status()
-            data = resp.json()
-            text = (
-                ((data.get("choices") or [{}])[0].get("message") or {}).get("content")
+            data = resp.json() if resp.content else {}
+            message = (
+                ((data.get("choices") or [{}])[0].get("message") or {})
                 if isinstance(data, dict)
-                else ""
+                else {}
             )
-            parsed = _extract_json_object(str(text or ""))
+            text = _extract_content_text(message.get("content"))
+            parsed = _extract_json_object(text)
             out = _coerce_ai_recommendation(parsed, fallback)
             if parsed and str(parsed.get("outfit") or "").strip():
                 record_dependency_outcome("ai", "success")
@@ -398,7 +423,7 @@ def _card_to_response_dict(
     weather_note: str,
     base_url: str,
 ) -> Dict[str, Any]:
-    d = card.model_dump()
+    d = card.model_dump() if hasattr(card, "model_dump") else dict(card)
     items_out: List[Dict[str, Any]] = []
     for it in d.get("items") or []:
         mc = it.get("main_color") or {}
@@ -597,10 +622,20 @@ async def generate_smart_outfits(
         explore_cross_gender=explore_cross,
     )
 
+    cards_dicts = [c.model_dump() for c in cards]
+    cards_ranked = rerank_outfit_cards(
+        cards_dicts,
+        preferred_scene=preferred_scene,
+        style_preferences=merged_styles,
+        weather_note=weather_note,
+        mood=mood,
+        top_k=count,
+    )
+
     base = f"http://127.0.0.1:{settings.PORT}"
     outfits_resp: List[Dict[str, Any]] = []
     wardrobe_info = _wardrobe_summary(wardrobe_ordered)
-    for c in cards[:count]:
+    for c in cards_ranked[:count]:
         card_dict = _card_to_response_dict(c, weather_note, base)
         card_dict["ai_recommendation"] = await _generate_ai_recommendation(
             card_dict=card_dict,
