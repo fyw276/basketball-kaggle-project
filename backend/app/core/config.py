@@ -109,6 +109,23 @@ class Settings(BaseSettings):
         description="虚拟试衣错误重试次数（仅对可重试错误生效）",
     )
 
+    # Subscription & quota
+    USAGE_QUOTA_ENABLED: bool = Field(default=False, description="启用后执行功能额度扣减")
+    FREE_QUOTA_SMART_OUTFIT: int = Field(default=60, description="免费用户每月智能穿搭次数")
+    FREE_QUOTA_TRYON: int = Field(default=30, description="免费用户每月试衣次数")
+    FREE_QUOTA_ANALYSIS: int = Field(default=200, description="免费用户每月分析次数")
+    PRO_QUOTA_SMART_OUTFIT: int = Field(default=9999, description="Pro 用户每月智能穿搭次数")
+    PRO_QUOTA_TRYON: int = Field(default=9999, description="Pro 用户每月试衣次数")
+    PRO_QUOTA_ANALYSIS: int = Field(default=9999, description="Pro 用户每月分析次数")
+
+    SUBSCRIPTION_CURRENCY: str = Field(default="CNY", description="订阅币种")
+    SUBSCRIPTION_PRO_MONTHLY_PRICE_CENTS: int = Field(default=1900, description="Pro 月费，分")
+    SUBSCRIPTION_PRO_DURATION_DAYS: int = Field(default=30, description="Pro 有效天数")
+
+    PAYMENT_PROVIDER_NAME: str = Field(default="local_hmac", description="支付提供方标识")
+    PAYMENT_SIGNING_SECRET: str = Field(default="dev-secret", description="支付验签密钥")
+    PAYMENT_REQUIRE_SIGNATURE: bool = Field(default=True, description="是否强制签名校验")
+
     # CORS
     CORS_ORIGINS: str = Field(
         default="http://localhost:3000,http://localhost:8080",

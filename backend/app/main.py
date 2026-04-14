@@ -32,6 +32,8 @@ from app.api.mood import router as mood_router
 from app.api.outfit_collections import router as outfit_collections_router
 from app.api.predict_style import router as predict_style_router
 from app.api.smart_outfit import router as smart_outfit_router
+from app.api.subscription import router as subscription_router
+from app.api.subscription import usage_router
 from app.api.tryon import router as tryon_router
 from app.api.wardrobe_simple import router as wardrobe_simple_router
 from app.core.config import settings
@@ -568,6 +570,8 @@ app.include_router(tryon_router, prefix="/api/v1")  # Virtual Try-On
 app.include_router(outfit_collections_router, prefix="/api/v1")  # Outfit Collections
 app.include_router(mood_router, prefix="/api/v1")  # Mood Recommendation
 app.include_router(smart_outfit_router, prefix="/api/v1")  # Smart outfit (weather + mood)
+app.include_router(subscription_router, prefix="/api/v1")  # Subscription & payment
+app.include_router(usage_router, prefix="/api/v1")  # Usage quota
 
 # 与 backend.main 相同：sklearn 穿搭风格分 + 推荐列表（无 /api/v1 前缀，便于与独立 8765 服务对齐）
 app.include_router(predict_style_router)

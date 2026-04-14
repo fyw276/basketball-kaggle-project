@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.user import User
 from app.observability.dependency_metrics import (
@@ -17,6 +18,7 @@ from app.observability.dependency_metrics import (
     record_weather_success_payload,
 )
 from app.services.smart_outfit_generator import generate_smart_outfits, upload_reference_image
+from app.services.subscription_billing import consume_usage
 from app.services.weather_service import fetch_weather_by_city_name, fetch_weather_lat_lon
 
 router = APIRouter(prefix="/smart-outfit", tags=["Smart Outfit"])
@@ -162,6 +164,25 @@ async def post_generate_smart_outfit(
     与前端约定：`/api/v1/smart-outfit/generate`。
     """
     try:
+        if getattr(settings, "USAGE_QUOTA_ENABLED", False):
+            quota = consume_usage(
+                db,
+                current_user.user_id,
+                "smart_outfit_generate",
+                units=1,
+            )
+            if not quota.get("allowed"):
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail={
+                        "message": "smart outfit quota exceeded",
+                        "error_code": "QUOTA_SMART_OUTFIT_EXCEEDED",
+                        "requires_upgrade": True,
+                        "remaining": quota.get("remaining", 0),
+                        "limit": quota.get("limit", 0),
+                    },
+                )
+
         addr = body.address or {}
         place = (
             addr.get("full_address")

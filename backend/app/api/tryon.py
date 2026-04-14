@@ -6,15 +6,18 @@ from typing import Any, Dict, Tuple
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
 from app.core.config import settings
+from app.db.session import get_db
 from app.models.user import User
 from app.observability.dependency_metrics import (
     classify_external_exception,
     record_dependency_outcome,
 )
 from app.services.storage import get_storage_service
+from app.services.subscription_billing import consume_usage
 
 router = APIRouter(prefix="/tryon", tags=["Virtual Try-On"])
 
@@ -107,6 +110,7 @@ async def try_on_garment(
     # 无性别推荐系统新增参数
     model_gender: str = "neutral",
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Virtual try-on: Render a garment on a person's photo.
@@ -147,6 +151,25 @@ async def try_on_garment(
         )
 
     try:
+        if getattr(settings, "USAGE_QUOTA_ENABLED", False):
+            quota = consume_usage(
+                db,
+                current_user.user_id,
+                "tryon_generate",
+                units=1,
+            )
+            if not quota.get("allowed"):
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail={
+                        "message": "tryon quota exceeded",
+                        "error_code": "QUOTA_TRYON_EXCEEDED",
+                        "requires_upgrade": True,
+                        "remaining": quota.get("remaining", 0),
+                        "limit": quota.get("limit", 0),
+                    },
+                )
+
         import hashlib
         import os
         from io import BytesIO

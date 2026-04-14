@@ -16,6 +16,7 @@ def import_models():
         garment,
         memory_snippet,
         outfit_collection,
+        subscription,
         user,
         user_profile,
     )
