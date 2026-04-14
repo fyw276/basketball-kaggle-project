@@ -1,5 +1,7 @@
 # 智能穿搭助手 - 快速启动指南
 
+更完整的「本地跑通 + 高德/千问/豆包仅配置接入」清单见 **[docs/LOCAL_FULL_RUN_AND_MINIMAL_API.md](docs/LOCAL_FULL_RUN_AND_MINIMAL_API.md)**。
+
 ## 🚀 5 分钟快速开始
 
 ### 步骤 1: 启动后端服务
