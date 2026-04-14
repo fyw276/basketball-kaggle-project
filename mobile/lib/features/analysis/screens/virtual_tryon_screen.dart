@@ -267,8 +267,11 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
       final isLargeEnough = bytes.length > 80 * 1024;
       if (isPortrait && isLargeEnough) {
         final signals = await _estimateGarmentPhotoSignals(frame.image);
-        if (signals.likelyPerson) {
+        if (signals.veryLikelyPerson) {
           return '适配度：较低，疑似人物照，建议换无模特白底商品图';
+        }
+        if (signals.likelyPerson) {
+          return '适配度：中等，疑似含人物元素，建议优先使用无模特商品图';
         }
       }
 
@@ -796,8 +799,8 @@ class _GarmentPhotoSignals {
     this.brightBgRatio = 0,
   });
 
-  bool get likelyPerson => skinRatio >= 0.20 && brightBgRatio <= 0.92;
-  bool get veryLikelyPerson => skinRatio >= 0.30 && brightBgRatio <= 0.90;
+  bool get likelyPerson => skinRatio >= 0.24 && brightBgRatio <= 0.90;
+  bool get veryLikelyPerson => skinRatio >= 0.36 && brightBgRatio <= 0.88;
 }
 
 class _StandardChip extends StatelessWidget {
