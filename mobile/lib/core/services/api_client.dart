@@ -421,6 +421,10 @@ class ApiClient {
         if (unwrapped is List) return {'data': unwrapped};
         return {'data': unwrapped};
       }
+      final err = parseFastApiErrorBody(response.body);
+      if (err != null && err.trim().isNotEmpty) {
+        return {'error': err};
+      }
       return {'error': 'Upload failed with status: ${response.statusCode}'};
     } catch (e) {
       return {'error': e.toString()};

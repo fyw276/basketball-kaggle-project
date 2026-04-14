@@ -14,7 +14,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 # Some environments may have a broken/namespace `tensorflow` import (e.g. leftover folder),
 # which lacks `keras`/`Tensor` and will crash at runtime. Treat it as unavailable.
-if tf is not None and not hasattr(tf, "keras"):  # pragma: no cover
+if tf is not None and (not hasattr(tf, "keras") or not hasattr(tf, "Tensor")):  # pragma: no cover
     tf = None
     MobileNetV2 = None
 

@@ -15,7 +15,7 @@ except Exception:  # pragma: no cover - optional dependency
     tf = None
 
 # Broken/namespace tensorflow import guard
-if tf is not None and not hasattr(tf, "keras"):  # pragma: no cover
+if tf is not None and (not hasattr(tf, "keras") or not hasattr(tf, "Tensor")):  # pragma: no cover
     tf = None
 
 from app.core.logging import setup_logging

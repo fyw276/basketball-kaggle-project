@@ -6,7 +6,7 @@ import io
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
@@ -117,6 +117,11 @@ async def upload_garment_simple(
         try:
             recognizer = get_clip_recognizer()
             recognition_result = recognizer.recognize(image_bytes)
+        except (UnidentifiedImageError, ValueError, OSError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or unsupported image format (recommend JPEG/PNG/WebP)",
+            )
         except Exception as e:
             import traceback
 

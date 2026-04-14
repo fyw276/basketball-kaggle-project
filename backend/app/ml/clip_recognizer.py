@@ -212,6 +212,26 @@ class CLIPRecognizer:
         if self._is_clip_available is not None:
             return self._is_clip_available
 
+        # Some environments have a broken tensorflow namespace package
+        # (missing attributes like Tensor) that can break transformers import-time checks.
+        # Force transformers to use torch-only mode for CLIP.
+        os.environ.setdefault("USE_TF", "0")
+        os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+
+        # If tensorflow exists but is broken (no Tensor symbol), avoid CLIP path completely.
+        try:
+            import tensorflow as _tf  # type: ignore
+
+            if hasattr(_tf, "keras") and not hasattr(_tf, "Tensor"):
+                logger.warning(
+                    "Detected broken tensorflow package (missing Tensor); force MobileNet fallback"
+                )
+                self._is_clip_available = False
+                return False
+        except Exception:
+            # tensorflow not installed/usable is fine for torch-only CLIP path
+            pass
+
         # Allow forcing MobileNetV2 fallback in constrained environments (e.g. Windows CI),
         # and to avoid native crashes from heavyweight torch/transformers loads during tests.
         if str(os.environ.get("DISABLE_CLIP", "")).strip().lower() in ("1", "true", "yes"):
@@ -274,15 +294,26 @@ class CLIPRecognizer:
         self._ensure_model_loaded()
 
         if self._is_clip_available:
-            import torch
+            try:
+                import torch
 
-            inputs = self._processor(images=image, return_tensors="pt")
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
-            with torch.no_grad():
-                image_features = self._model.get_image_features(**inputs)
-            image_features = image_features.cpu().numpy()[0]
-            image_features = image_features / np.linalg.norm(image_features)
-            return image_features
+                inputs = self._processor(images=image, return_tensors="pt")
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                with torch.no_grad():
+                    image_features = self._model.get_image_features(**inputs)
+                image_features = image_features.cpu().numpy()[0]
+                image_features = image_features / np.linalg.norm(image_features)
+                return image_features
+            except Exception as e:
+                if "tensorflow" in str(e).lower() and "tensor" in str(e).lower():
+                    logger.warning(
+                        "CLIP runtime hit broken tensorflow path; switching to fallback: %s", e
+                    )
+                    self._is_clip_available = False
+                    self._model = None
+                    self._processor = None
+                    return self._mobilenet_fallback_features(image)
+                raise
         else:
             return self._mobilenet_fallback_features(image)
 
@@ -295,18 +326,33 @@ class CLIPRecognizer:
             return self._text_cache[cache_key]
 
         if self._is_clip_available:
-            import torch
+            try:
+                import torch
 
-            inputs = self._processor(text=texts, return_tensors="pt", padding=True)
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
-            with torch.no_grad():
-                text_features = self._model.get_text_features(**inputs)
-            text_features = text_features.cpu().numpy()
-            norms = np.linalg.norm(text_features, axis=1, keepdims=True)
-            norms = np.maximum(norms, 1e-12)
-            text_features = text_features / norms
-            self._text_cache[cache_key] = text_features
-            return text_features
+                inputs = self._processor(text=texts, return_tensors="pt", padding=True)
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                with torch.no_grad():
+                    text_features = self._model.get_text_features(**inputs)
+                text_features = text_features.cpu().numpy()
+                norms = np.linalg.norm(text_features, axis=1, keepdims=True)
+                norms = np.maximum(norms, 1e-12)
+                text_features = text_features / norms
+                self._text_cache[cache_key] = text_features
+                return text_features
+            except Exception as e:
+                if "tensorflow" in str(e).lower() and "tensor" in str(e).lower():
+                    logger.warning(
+                        "CLIP text path hit broken tensorflow; switching to fallback: %s", e
+                    )
+                    self._is_clip_available = False
+                    self._model = None
+                    self._processor = None
+                    n = len(texts)
+                    features = np.random.randn(n, self._feature_dim).astype(np.float32)
+                    features = features / np.linalg.norm(features, axis=1, keepdims=True)
+                    self._text_cache[cache_key] = features
+                    return features
+                raise
         else:
             n = len(texts)
             features = np.random.randn(n, self._feature_dim).astype(np.float32)
