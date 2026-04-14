@@ -20,7 +20,9 @@ class _PersonalSettingsScreenState extends State<PersonalSettingsScreen> {
   bool _loading = true;
   bool _saving = false;
   bool _subLoading = false;
+  bool _creatingOrder = false;
   Map<String, dynamic>? _subscription;
+  Map<String, dynamic>? _pendingOrder;
 
   double _height = 170;
   String? _bodyType;
@@ -105,6 +107,70 @@ class _PersonalSettingsScreenState extends State<PersonalSettingsScreen> {
     }
   }
 
+  Future<void> _createProOrder() async {
+    setState(() => _creatingOrder = true);
+    try {
+      final client = context.read<AuthProvider>().apiClient;
+      final order = await client.createSubscriptionOrder(tier: 'pro');
+      if (order.containsKey('error')) {
+        if (mounted) {
+          showAppSnackBar(
+              context, '创建订单失败：${userFacingApiError(order['error'])}');
+        }
+        return;
+      }
+      if (!mounted) return;
+      setState(() {
+        _pendingOrder = Map<String, dynamic>.from(order);
+      });
+      _showOrderDialog(order);
+    } finally {
+      if (mounted) setState(() => _creatingOrder = false);
+    }
+  }
+
+  void _showOrderDialog(Map<String, dynamic> order) {
+    final orderId = order['order_id']?.toString() ?? '-';
+    final amount = order['amount']?.toString() ?? '-';
+    final currency = order['currency']?.toString() ?? 'CNY';
+    final provider = order['provider']?.toString() ?? 'local_hmac';
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('会员升级订单已创建'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('订单号：$orderId'),
+            const SizedBox(height: 6),
+            Text('金额：$amount $currency'),
+            const SizedBox(height: 6),
+            Text('通道：$provider'),
+            const SizedBox(height: 10),
+            const Text(
+              '当前为最小接入占位流程：已完成下单。\n完成支付后可调用 /subscription/verify 完成升级。',
+              style: TextStyle(fontSize: 12),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('知道了'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              _refreshSubscription();
+            },
+            child: const Text('刷新会员状态'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _subscriptionCard(Palette palette) {
     final sub = _subscription ?? const <String, dynamic>{};
     final usage = Map<String, dynamic>.from(
@@ -118,6 +184,7 @@ class _PersonalSettingsScreenState extends State<PersonalSettingsScreen> {
 
     final plan = (sub['plan']?.toString() ?? 'free').toUpperCase();
     final validUntil = sub['valid_until']?.toString() ?? '';
+    final isPro = plan == 'PRO';
 
     Widget quotaRow(String title, Map<String, dynamic> m) {
       final used = m['used'] ?? '-';
@@ -189,6 +256,38 @@ class _PersonalSettingsScreenState extends State<PersonalSettingsScreen> {
             ),
           quotaRow('智能穿搭', smart),
           quotaRow('虚拟试衣', tryon),
+          const SizedBox(height: 10),
+          if (!isPro)
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _creatingOrder ? null : _createProOrder,
+                icon: _creatingOrder
+                    ? SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.workspace_premium, size: 16),
+                label: Text(_creatingOrder ? '创建中...' : '升级到 PRO'),
+              ),
+            )
+          else
+            Text(
+              '你当前已是 PRO 会员',
+              style: TextStyle(fontSize: 12, color: palette.successColor),
+            ),
+          if (_pendingOrder != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                '最近订单：${_pendingOrder!['order_id'] ?? '-'}',
+                style: TextStyle(fontSize: 11, color: palette.textBody),
+              ),
+            ),
         ],
       ),
     );
