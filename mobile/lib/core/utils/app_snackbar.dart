@@ -38,6 +38,16 @@ String userFacingApiError(Object? error) {
       s.contains('白底商品图')) {
     return '衣服图里检测到人像，请改用无模特白底商品图';
   }
+  if (s.contains('QUOTA_') ||
+      low.contains('quota exceeded') ||
+      low.contains('requires_upgrade') ||
+      low.contains('subscription')) {
+    return '当前额度已用完，请升级会员或下月再试';
+  }
+  if (low.contains('payment verification failed') ||
+      low.contains('invalid_signature')) {
+    return '支付校验失败，请稍后重试或联系客服';
+  }
   if (s.contains('Garment cutout too small') ||
       s.contains('cutout too small')) {
     return '衣服主体过小或背景干扰过大，请换清晰近景商品图';

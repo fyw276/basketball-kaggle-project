@@ -19,6 +19,8 @@ class PersonalSettingsScreen extends StatefulWidget {
 class _PersonalSettingsScreenState extends State<PersonalSettingsScreen> {
   bool _loading = true;
   bool _saving = false;
+  bool _subLoading = false;
+  Map<String, dynamic>? _subscription;
 
   double _height = 170;
   String? _bodyType;
@@ -54,6 +56,11 @@ class _PersonalSettingsScreenState extends State<PersonalSettingsScreen> {
     setState(() => _loading = true);
     final client = context.read<AuthProvider>().apiClient;
     try {
+      final sub = await client.getSubscriptionStatus();
+      if (sub is Map && !sub.containsKey('error')) {
+        _subscription = Map<String, dynamic>.from(sub);
+      }
+
       final p = await client.getProfile();
       if (p is Map && !p.containsKey('error')) {
         // 性别表达指数 → 同步全局主题
@@ -79,6 +86,112 @@ class _PersonalSettingsScreenState extends State<PersonalSettingsScreen> {
       }
     } catch (_) {}
     if (mounted) setState(() => _loading = false);
+  }
+
+  Future<void> _refreshSubscription() async {
+    setState(() => _subLoading = true);
+    try {
+      final client = context.read<AuthProvider>().apiClient;
+      final sub = await client.getSubscriptionStatus();
+      if (sub is Map && !sub.containsKey('error')) {
+        if (mounted) {
+          setState(() => _subscription = Map<String, dynamic>.from(sub));
+        }
+      } else if (mounted) {
+        showAppSnackBar(context, '会员状态刷新失败');
+      }
+    } finally {
+      if (mounted) setState(() => _subLoading = false);
+    }
+  }
+
+  Widget _subscriptionCard(Palette palette) {
+    final sub = _subscription ?? const <String, dynamic>{};
+    final usage = Map<String, dynamic>.from(
+        sub['usage'] as Map? ?? const <String, dynamic>{});
+    final smart = Map<String, dynamic>.from(
+      usage['smart_outfit_generate'] as Map? ?? const <String, dynamic>{},
+    );
+    final tryon = Map<String, dynamic>.from(
+      usage['tryon_generate'] as Map? ?? const <String, dynamic>{},
+    );
+
+    final plan = (sub['plan']?.toString() ?? 'free').toUpperCase();
+    final validUntil = sub['valid_until']?.toString() ?? '';
+
+    Widget quotaRow(String title, Map<String, dynamic> m) {
+      final used = m['used'] ?? '-';
+      final limit = m['limit'] ?? '-';
+      final remaining = m['remaining'] ?? '-';
+      return Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Text(
+          '$title: 已用 $used / $limit，剩余 $remaining',
+          style: TextStyle(fontSize: 12, color: palette.textBody),
+        ),
+      );
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: palette.cardBg,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: palette.divider),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.workspace_premium_outlined,
+                  size: 18, color: palette.primary),
+              const SizedBox(width: 8),
+              Text(
+                '会员与额度',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: palette.textTitle,
+                ),
+              ),
+              const Spacer(),
+              TextButton.icon(
+                onPressed: _subLoading ? null : _refreshSubscription,
+                icon: _subLoading
+                    ? SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: palette.primary),
+                      )
+                    : const Icon(Icons.refresh, size: 14),
+                label: const Text('刷新'),
+              ),
+            ],
+          ),
+          Text(
+            '当前计划：$plan',
+            style: TextStyle(
+              fontSize: 13,
+              color: palette.textTitle,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          if (validUntil.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                '有效期至：$validUntil',
+                style: TextStyle(fontSize: 12, color: palette.textBody),
+              ),
+            ),
+          quotaRow('智能穿搭', smart),
+          quotaRow('虚拟试衣', tryon),
+        ],
+      ),
+    );
   }
 
   Future<void> _save() async {
@@ -163,6 +276,8 @@ class _PersonalSettingsScreenState extends State<PersonalSettingsScreen> {
                       style: TextStyle(fontSize: 13, color: palette.textBody),
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  _subscriptionCard(palette),
                   const SizedBox(height: 24),
 
                   // ─── 性别表达指数 ────────────────────────────────

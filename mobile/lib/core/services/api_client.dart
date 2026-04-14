@@ -808,17 +808,22 @@ class ApiClient {
         };
       }
       var errMsg = 'Virtual try-on failed with status: ${response.statusCode}';
+      String? errCode;
+      bool? retryable;
       try {
-        final body = json.decode(response.body);
-        if (body is Map) {
-          if (body['detail'] != null) {
-            errMsg = body['detail'].toString();
-          } else if (body['error'] is Map && body['error']['message'] != null) {
-            errMsg = body['error']['message'].toString();
-          }
+        final body = _parseFastApiErrorBodyMap(response.body);
+        if (body != null) {
+          errMsg = body['message']?.toString() ?? errMsg;
+          errCode = body['error_code']?.toString();
+          final rb = body['retryable'];
+          if (rb is bool) retryable = rb;
         }
       } catch (_) {}
-      return {'error': errMsg};
+      return {
+        'error': errMsg,
+        if (errCode != null) 'error_code': errCode,
+        if (retryable != null) 'retryable': retryable,
+      };
     } catch (e) {
       return {'error': e.toString()};
     }
@@ -900,8 +905,14 @@ class ApiClient {
       if (response.statusCode == 401) {
         return {'error': 'Could not validate credentials'};
       }
-      final err = _parseFastApiErrorBody(response.body);
-      if (err != null) return {'error': err};
+      final errMap = _parseFastApiErrorBodyMap(response.body);
+      if (errMap != null) {
+        return {
+          'error': errMap['message']?.toString() ?? 'Upload failed',
+          if (errMap['error_code'] != null) 'error_code': errMap['error_code'],
+          if (errMap['retryable'] != null) 'retryable': errMap['retryable'],
+        };
+      }
       return {'error': 'Upload failed: ${response.statusCode}'};
     } catch (e) {
       return {'error': e.toString()};
@@ -963,8 +974,14 @@ class ApiClient {
       if (response.statusCode == 401) {
         return {'error': 'Could not validate credentials'};
       }
-      final err = _parseFastApiErrorBody(response.body);
-      if (err != null) return {'error': err};
+      final errMap = _parseFastApiErrorBodyMap(response.body);
+      if (errMap != null) {
+        return {
+          'error': errMap['message']?.toString() ?? 'Generate failed',
+          if (errMap['error_code'] != null) 'error_code': errMap['error_code'],
+          if (errMap['retryable'] != null) 'retryable': errMap['retryable'],
+        };
+      }
       return {'error': 'Generate failed: ${response.statusCode}'};
     } catch (e) {
       return {'error': e.toString()};
@@ -990,5 +1007,95 @@ class ApiClient {
       }
     } catch (_) {}
     return null;
+  }
+
+  Map<String, dynamic>? _parseFastApiErrorBodyMap(String body) {
+    if (body.isEmpty) return null;
+    try {
+      final decoded = json.decode(body);
+      if (decoded is! Map) return null;
+
+      dynamic detail = decoded['detail'];
+      if (detail is String) {
+        return {'message': detail};
+      }
+      if (detail is Map) {
+        final m = Map<String, dynamic>.from(detail as Map);
+        return {
+          'message': m['message']?.toString() ?? m.toString(),
+          if (m['error_code'] != null) 'error_code': m['error_code'].toString(),
+          if (m['retryable'] is bool) 'retryable': m['retryable'],
+        };
+      }
+
+      final error = decoded['error'];
+      if (error is Map && error['message'] != null) {
+        return {
+          'message': error['message'].toString(),
+          if (error['error_code'] != null)
+            'error_code': error['error_code'].toString(),
+          if (error['retryable'] is bool) 'retryable': error['retryable'],
+        };
+      }
+      if (decoded['message'] != null) {
+        return {'message': decoded['message'].toString()};
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // ─── Subscription / Usage ───────────────────────────────────
+
+  Future<Map<String, dynamic>> getSubscriptionStatus() async {
+    return get('/subscription/status');
+  }
+
+  Future<Map<String, dynamic>> createSubscriptionOrder({
+    String tier = 'pro',
+  }) async {
+    return post('/subscription/order', {'tier': tier});
+  }
+
+  Future<Map<String, dynamic>> verifySubscriptionPayment({
+    required String orderId,
+    required String paymentId,
+    required String signature,
+  }) async {
+    return post('/subscription/verify', {
+      'order_id': orderId,
+      'payment_id': paymentId,
+      'signature': signature,
+    });
+  }
+
+  Future<Map<String, dynamic>> consumeUsage({
+    required String action,
+    int units = 1,
+  }) async {
+    return post('/usage/consume', {
+      'action': action,
+      'units': units,
+    });
+  }
+
+  Future<Map<String, dynamic>> getUsageStatus({
+    required String action,
+  }) async {
+    try {
+      final uri = Uri.parse('$baseUrl/usage/status')
+          .replace(queryParameters: {'action': action});
+      final response = await http.get(uri, headers: _jsonHeaders);
+      if (response.statusCode == 200) {
+        final decoded = json.decode(response.body);
+        final unwrapped = unwrapApiResponseEnvelope(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
+      }
+      final errMap = _parseFastApiErrorBodyMap(response.body);
+      if (errMap != null) return {'error': errMap['message'].toString()};
+      return {'error': 'Request failed with status: ${response.statusCode}'};
+    } catch (e) {
+      return {'error': e.toString()};
+    }
   }
 }
