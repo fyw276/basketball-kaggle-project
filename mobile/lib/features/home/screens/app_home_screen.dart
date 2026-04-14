@@ -55,6 +55,9 @@ class _AppHomeScreenState extends State<AppHomeScreen> {
     try {
       final prefs = await SharedPreferences.getInstance();
       var city = prefs.getString('smart_outfit_city_short') ?? '';
+      final fullAddress =
+          (prefs.getString('smart_outfit_full_address') ?? '').trim();
+      var displayLocation = city.trim().isNotEmpty ? city.trim() : fullAddress;
       var weather = prefs.getString('smart_outfit_weather') ?? '晴';
       var temp = prefs.getDouble('smart_outfit_temp') ?? 20;
 
@@ -77,12 +80,19 @@ class _AppHomeScreenState extends State<AppHomeScreen> {
       }
 
       final auth = context.read<AuthProvider>();
-      if (auth.isAuthenticated && city.trim().isNotEmpty) {
-        final live = await auth.apiClient.getSmartOutfitWeatherByCity(city);
+      final weatherQuery = city.trim().isNotEmpty ? city.trim() : fullAddress;
+      if (auth.isAuthenticated && weatherQuery.isNotEmpty) {
+        final live =
+            await auth.apiClient.getSmartOutfitWeatherByCity(weatherQuery);
         if (live['error'] == null) {
           city = (live['city']?.toString().trim().isNotEmpty ?? false)
               ? live['city'].toString().trim()
               : city;
+          displayLocation = city.trim().isNotEmpty
+              ? city.trim()
+              : (live['display_address']?.toString().trim().isNotEmpty ?? false)
+                  ? live['display_address'].toString().trim()
+                  : displayLocation;
           weather = live['weather']?.toString() ?? weather;
           temp = (live['temperature'] as num?)?.toDouble() ?? temp;
         }
@@ -90,7 +100,7 @@ class _AppHomeScreenState extends State<AppHomeScreen> {
 
       if (!mounted) return;
       setState(() {
-        _city = city.isNotEmpty ? city : '未定位';
+        _city = displayLocation.isNotEmpty ? displayLocation : '未定位';
         _weather = weather;
         _temp = temp;
         _todayRec = rec;

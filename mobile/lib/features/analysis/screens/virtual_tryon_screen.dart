@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
@@ -265,7 +266,10 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
       final isPortrait = height > width * 1.15;
       final isLargeEnough = bytes.length > 80 * 1024;
       if (isPortrait && isLargeEnough) {
-        return '适配度：较低，看起来像人物照，建议换无模特白底商品图';
+        final signals = await _estimateGarmentPhotoSignals(frame.image);
+        if (signals.likelyPerson) {
+          return '适配度：较低，疑似人物照，建议换无模特白底商品图';
+        }
       }
 
       if (width >= 512 && height >= 512) {
@@ -380,12 +384,72 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
       final isPortrait = height > width * 1.15;
       final isLargeEnough = bytes.length > 80 * 1024;
       if (file == _garmentImage && isPortrait && isLargeEnough) {
-        return '衣服图看起来像人物照，请改用无模特白底商品图';
+        final signals = await _estimateGarmentPhotoSignals(frame.image);
+        // 仅在强信号下阻断，避免把平铺衣服图误判成人物图。
+        if (signals.veryLikelyPerson) {
+          return '衣服图疑似人物照，请改用无模特白底商品图';
+        }
       }
     } catch (_) {
       // 预检失败不阻断主流程，由后端继续兜底校验。
     }
     return null;
+  }
+
+  Future<_GarmentPhotoSignals> _estimateGarmentPhotoSignals(
+      ui.Image image) async {
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+    if (byteData == null) return const _GarmentPhotoSignals();
+
+    final rgba = byteData.buffer.asUint8List();
+    final pixelCount = image.width * image.height;
+    if (pixelCount <= 0) return const _GarmentPhotoSignals();
+
+    final rawStep = (pixelCount / 12000).ceil();
+    final step = rawStep < 1
+        ? 1
+        : rawStep > 32
+            ? 32
+            : rawStep;
+
+    var sampled = 0;
+    var skinLike = 0;
+    var brightBg = 0;
+
+    for (var i = 0; i < pixelCount; i += step) {
+      final idx = i * 4;
+      if (idx + 3 >= rgba.length) break;
+      final a = rgba[idx + 3];
+      if (a < 24) continue;
+
+      final r = rgba[idx];
+      final g = rgba[idx + 1];
+      final b = rgba[idx + 2];
+
+      sampled++;
+
+      final maxV = r > g ? (r > b ? r : b) : (g > b ? g : b);
+      final minV = r < g ? (r < b ? r : b) : (g < b ? g : b);
+      final likelySkin = r > 95 &&
+          g > 40 &&
+          b > 20 &&
+          (maxV - minV) > 15 &&
+          (r - g).abs() > 15 &&
+          r > g &&
+          r > b;
+      if (likelySkin) {
+        skinLike++;
+      }
+      if (r > 230 && g > 230 && b > 230) {
+        brightBg++;
+      }
+    }
+
+    if (sampled == 0) return const _GarmentPhotoSignals();
+    return _GarmentPhotoSignals(
+      skinRatio: skinLike / sampled,
+      brightBgRatio: brightBg / sampled,
+    );
   }
 
   @override
@@ -722,6 +786,19 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
 }
 
 enum _TryOnQualityLevel { good, medium, poor, unknown }
+
+class _GarmentPhotoSignals {
+  final double skinRatio;
+  final double brightBgRatio;
+
+  const _GarmentPhotoSignals({
+    this.skinRatio = 0,
+    this.brightBgRatio = 0,
+  });
+
+  bool get likelyPerson => skinRatio >= 0.20 && brightBgRatio <= 0.92;
+  bool get veryLikelyPerson => skinRatio >= 0.30 && brightBgRatio <= 0.90;
+}
 
 class _StandardChip extends StatelessWidget {
   final String label;
