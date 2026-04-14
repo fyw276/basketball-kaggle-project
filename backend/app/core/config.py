@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     AMAP_WEB_KEY: str = Field(
         default="", description="高德逆地理 key，空则仅用 Open-Meteo + Nominatim"
     )
+    # 实况天气（可选）：高德天气查询 API weatherInfo（需与 AMAP_WEB_KEY 同属 Web 服务 Key）
+    AMAP_WEATHER_ENABLED: bool = Field(
+        default=False,
+        description="为 true 且配置了 AMAP_WEB_KEY 时，实况温度/天气文案优先用高德，失败回退 Open-Meteo",
+    )
 
     # AI 推荐解释层（OpenAI 兼容接口）
     AI_RECOMMENDER_ENABLED: bool = False

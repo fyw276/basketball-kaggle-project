@@ -53,25 +53,26 @@ flutter run -d chrome
 
 ## B. API 接入清单（最小必要）
 
-### 重要说明（与「高德天气」表述对齐）
+### 重要说明（天气数据来源）
 
 | 能力 | 仓库中的实际来源 |
 |------|------------------|
-| **气温、天气现象（WMO）** | **Open-Meteo** 公开 API（无需 Key） |
-| **国内省市区街道更稳** | **高德逆地理 Web**（`AMAP_WEB_KEY`，已在 `weather_service` 中接入） |
+| **默认：气温 + WMO 天气码** | **Open-Meteo**（无需 Key） |
+| **可选：实况温度 + 中文天气文案** | **高德天气查询** `v3/weather/weatherInfo`（`extensions=base`），需 **`AMAP_WEATHER_ENABLED=true`** 且 **`AMAP_WEB_KEY`**（与逆地理同一类 Web 服务 Key） |
+| **国内省市区街道** | **高德逆地理** + Open-Meteo + Nominatim |
 | **补充地理** | Nominatim（OSM） |
 
-当前 **没有** 调用「高德气象预报」独立接口；若未来要完全改用高德天气，需要**新写适配层**，不属于本文「仅配置」范围。
+启用高德实况时：经纬度场景优先用逆地理返回的 **adcode** 查天气；无 adcode 时用解析出的 **市名**；失败则仍用 Open-Meteo。API 响应中增加 **`weather_source`**：`amap` 或 `open_meteo`。
 
-### 第一步：精准地址链路（推荐配置）
-
-在 `backend/.env` 中设置：
+### 第一步：高德 Key +（可选）高德实况天气
 
 ```env
 AMAP_WEB_KEY=你的高德_Key
+# 为 true 时，温度与「晴/多云/…」文案优先高德，失败回退 Open-Meteo
+AMAP_WEATHER_ENABLED=true
 ```
 
-确保本机可访问公网 **Open-Meteo** 与 **Nominatim**（公司网络若拦截，智能穿搭天气会降级或需手动城市）。
+确保本机可访问公网 **Open-Meteo** 与 **Nominatim**（作回退）；高德接口需能访问 `restapi.amap.com`。
 
 ### 第二步：大模型（智能穿搭卡片解释等）
 

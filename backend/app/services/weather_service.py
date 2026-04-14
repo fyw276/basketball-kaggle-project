@@ -241,6 +241,81 @@ def wmo_to_cn(weather_code: int) -> str:
     return "阴"
 
 
+def _amap_cn_weather_to_wmo_approx(weather_cn: str) -> int:
+    """高德实况「天气」中文描述 → 近似 WMO code（与 wmo_to_cn 同一套语义）。"""
+    s = (weather_cn or "").strip()
+    if not s:
+        return 0
+    if "雷" in s and "雨" in s:
+        return 95
+    if "冰雹" in s or "雪" in s:
+        return 71
+    if "雨" in s or "阵雨" in s:
+        return 61
+    if "雾" in s or "霾" in s:
+        return 45
+    if "晴" in s:
+        return 0
+    if "云" in s:
+        return 2
+    if "阴" in s:
+        return 3
+    return 3
+
+
+async def _amap_live_weather(
+    client: httpx.AsyncClient,
+    api_key: str,
+    city: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    高德实况天气：https://restapi.amap.com/v3/weather/weatherInfo
+    ``city``：区划 adcode（6 位）或城市名称（与高德文档一致）。
+    成功返回 {temperature, weather, reporttime}。
+    """
+    key = (api_key or "").strip()
+    city_q = (city or "").strip()
+    if not key or not city_q:
+        return None
+    url = "https://restapi.amap.com/v3/weather/weatherInfo"
+    try:
+        res = await client.get(
+            url,
+            params={
+                "key": key,
+                "city": city_q,
+                "extensions": "base",
+            },
+            timeout=12.0,
+        )
+        res.raise_for_status()
+        data = res.json()
+        if str(data.get("status")) != "1":
+            logger.warning(
+                "amap weather: status=%s info=%s",
+                data.get("status"),
+                data.get("info"),
+            )
+            return None
+        lives = data.get("lives") or []
+        if not lives or not isinstance(lives, list):
+            return None
+        lv = lives[0] if isinstance(lives[0], dict) else {}
+        w = str(lv.get("weather") or "").strip()
+        t_raw = lv.get("temperature")
+        try:
+            temp = float(t_raw)
+        except (TypeError, ValueError):
+            temp = 20.0
+        rt = str(lv.get("reporttime") or "").strip()
+        if not w:
+            return None
+        return {"temperature": temp, "weather": w, "reporttime": rt}
+    except Exception as e:
+        logger.warning("amap live weather failed: %s", e)
+        return None
+
+
 def _full_address_spaced(parts: List[str]) -> str:
     """省 市 区 街道：空格分隔，空段剔除。"""
     return " ".join(p.strip() for p in parts if p and str(p).strip())
@@ -282,13 +357,14 @@ async def _amap_reverse(
     latitude: float,
     longitude: float,
     api_key: str,
-) -> Tuple[Optional[Tuple[str, str, str, str, str]], Optional[str]]:
+) -> Tuple[Optional[Tuple[str, str, str, str, str]], Optional[str], str]:
     """
     高德逆地理（Web 服务），location 为「经度,纬度」。
-    成功返回 (province, city, district, street, full_line), None；失败返回 None, 简短原因。
+    成功：(province, city, district, street, full_line), None, adcode；
+    失败：None, 原因, \"\"。
     """
     if not (api_key or "").strip():
-        return None, None
+        return None, None, ""
     loc = f"{longitude},{latitude}"
     url = "https://restapi.amap.com/v3/geocode/regeo"
     try:
@@ -306,9 +382,10 @@ async def _amap_reverse(
         data = res.json()
         if str(data.get("status")) != "1":
             info = str(data.get("info") or data.get("infocode") or "err").strip()
-            return None, _truncate_err(f"status_{data.get('status')}: {info}")
+            return None, _truncate_err(f"status_{data.get('status')}: {info}"), ""
         regeo = data.get("regeocode") or {}
         comp = regeo.get("addressComponent") or {}
+        adcode = str(comp.get("adcode") or "").strip()
         province = str(comp.get("province") or "").strip()
         raw_city = comp.get("city")
         if isinstance(raw_city, list):
@@ -323,16 +400,16 @@ async def _amap_reverse(
             street = township
         fa = str(regeo.get("formatted_address") or "").strip()
         if not (province or city or district or street) and fa:
-            return ("", "", "", "", fa[:240]), None
+            return ("", "", "", "", fa[:240]), None, adcode
         line = _full_address_spaced([province, city, district, street])
         if not line.strip() and fa:
             line = fa[:240]
         if not line.strip():
-            return None, "empty_structured"
-        return (province, city, district, street, line), None
+            return None, "empty_structured", adcode
+        return (province, city, district, street, line), None, adcode
     except Exception as e:
         logger.warning(f"amap reverse failed: {e}")
-        return None, _truncate_err(str(e))
+        return None, _truncate_err(str(e)), ""
 
 
 async def _nominatim_reverse(
@@ -466,8 +543,11 @@ async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, 
             geocode_source = "open_meteo_zh"
 
         amap_key = (settings.AMAP_WEB_KEY or "").strip()
+        amap_adcode = ""
         if amap_key:
-            amap_row, amap_err = await _amap_reverse(client, latitude, longitude, amap_key)
+            amap_row, amap_err, amap_adcode = await _amap_reverse(
+                client, latitude, longitude, amap_key
+            )
             if amap_err:
                 geocode_errors.append(f"amap: {amap_err}")
             if amap_row:
@@ -540,6 +620,19 @@ async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, 
         temp = float(cur_wx.get("temperature_2m", 20.0))
         code = int(cur_wx.get("weather_code", 0))
         wcn = wmo_to_cn(code)
+        weather_source = "open_meteo"
+
+        if getattr(settings, "AMAP_WEATHER_ENABLED", False) and amap_key:
+            city_for_wx = (
+                (amap_adcode or "").strip() or (c or "").strip() or (city_short or "").strip()
+            )
+            if city_for_wx and city_for_wx != "当前位置":
+                aw = await _amap_live_weather(client, amap_key, city_for_wx)
+                if aw:
+                    temp = float(aw["temperature"])
+                    wcn = str(aw["weather"]).strip() or wcn
+                    code = _amap_cn_weather_to_wmo_approx(wcn)
+                    weather_source = "amap"
 
         city_short = c or city_short
 
@@ -564,6 +657,7 @@ async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, 
             "weather_code": code,
             "geocode_source": geocode_source,
             "geocode_error": err_join,
+            "weather_source": weather_source,
         }
 
 
@@ -661,6 +755,17 @@ async def fetch_weather_by_city_name(name: str) -> Optional[Dict[str, Any]]:
         temp = float(cur.get("temperature_2m", 20.0))
         code = int(cur.get("weather_code", 0))
         wcn = wmo_to_cn(code)
+        weather_source = "open_meteo"
+        amap_key_city = (settings.AMAP_WEB_KEY or "").strip()
+        if getattr(settings, "AMAP_WEATHER_ENABLED", False) and amap_key_city:
+            city_for_wx = (c or "").strip() or (cname or "").strip() or q.strip()
+            if city_for_wx:
+                aw = await _amap_live_weather(client, amap_key_city, city_for_wx)
+                if aw:
+                    temp = float(aw["temperature"])
+                    wcn = str(aw["weather"]).strip() or wcn
+                    code = _amap_cn_weather_to_wmo_approx(wcn)
+                    weather_source = "amap"
 
         err_c = "; ".join(geocode_errors_city)
         if len(err_c) > 360:
@@ -684,4 +789,5 @@ async def fetch_weather_by_city_name(name: str) -> Optional[Dict[str, Any]]:
             "weather_code": code,
             "geocode_source": geocode_source_city,
             "geocode_error": err_c,
+            "weather_source": weather_source,
         }

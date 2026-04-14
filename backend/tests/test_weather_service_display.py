@@ -3,6 +3,7 @@
 import pytest
 
 from app.services.weather_service import (
+    _amap_cn_weather_to_wmo_approx,
     _display_address_after_route_filter,
     _format_full_address,
     _is_route_like_road,
@@ -64,3 +65,11 @@ def test_normalize_admin_parts_dedup_city_district():
     assert c == "郑州市"
     assert d == ""
     assert _format_full_address(p, c, d, s) == "河南省 郑州市"
+
+
+def test_amap_cn_weather_to_wmo_approx_maps_common():
+    assert _amap_cn_weather_to_wmo_approx("晴") == 0
+    assert _amap_cn_weather_to_wmo_approx("多云") == 2
+    assert _amap_cn_weather_to_wmo_approx("阴") == 3
+    assert _amap_cn_weather_to_wmo_approx("阵雨") == 61
+    assert _amap_cn_weather_to_wmo_approx("雷阵雨") == 95

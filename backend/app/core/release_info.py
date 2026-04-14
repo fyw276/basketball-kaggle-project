@@ -60,6 +60,7 @@ def build_env_snapshot(settings: Settings) -> Dict[str, Any]:
         "ai_recommender_model": settings.AI_RECOMMENDER_MODEL,
         "ai_recommender_timeout_ms": settings.AI_RECOMMENDER_TIMEOUT_MS,
         "amap_web_configured": bool((settings.AMAP_WEB_KEY or "").strip()),
+        "amap_weather_enabled": getattr(settings, "AMAP_WEATHER_ENABLED", False),
         "hf_endpoint_configured": bool((settings.HF_ENDPOINT or "").strip()),
         "hf_home_configured": bool((settings.HF_HOME or "").strip()),
         "enable_rate_limit": settings.ENABLE_RATE_LIMIT,

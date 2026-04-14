@@ -77,6 +77,7 @@ async def get_weather_context(
             "weather_code": data["weather_code"],
             "geocode_source": data.get("geocode_source", ""),
             "geocode_error": data.get("geocode_error", ""),
+            "weather_source": data.get("weather_source", "open_meteo"),
             "fallback": False,
         }
     except Exception as e:
@@ -116,6 +117,7 @@ async def get_weather_by_city(
             "weather_code": res["weather_code"],
             "geocode_source": res.get("geocode_source", ""),
             "geocode_error": res.get("geocode_error", ""),
+            "weather_source": res.get("weather_source", "open_meteo"),
             "fallback": False,
         }
     except HTTPException:
