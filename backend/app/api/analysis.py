@@ -139,6 +139,74 @@ def _get_image_recognizer() -> ImageRecognizer:
     return _image_recognizer_instance
 
 
+def _normalize_similarity_category(category: Optional[str]) -> str:
+    text = (category or "").strip().lower()
+    if not text:
+        return "unknown"
+
+    top_keywords = [
+        "上衣",
+        "t恤",
+        "t-shirt",
+        "shirt",
+        "衬衫",
+        "卫衣",
+        "毛衣",
+        "针织",
+        "外套",
+        "夹克",
+        "top",
+        "coat",
+    ]
+    bottom_keywords = [
+        "裤",
+        "pants",
+        "trousers",
+        "jeans",
+        "短裤",
+        "半裙",
+        "半身裙",
+        "skirt",
+        "裙子",
+    ]
+    dress_keywords = ["连衣裙", "dress"]
+    shoes_keywords = ["鞋", "shoe", "sneaker", "靴", "boot", "凉鞋", "sandals"]
+    bag_keywords = ["包", "bag", "backpack", "handbag", "tote"]
+    accessory_keywords = [
+        "帽",
+        "hat",
+        "围巾",
+        "scarf",
+        "腰带",
+        "belt",
+        "首饰",
+        "accessory",
+        "眼镜",
+        "glasses",
+        "袜",
+    ]
+
+    if any(k in text for k in top_keywords):
+        return "top"
+    if any(k in text for k in bottom_keywords):
+        return "bottom"
+    if any(k in text for k in dress_keywords):
+        return "dress"
+    if any(k in text for k in shoes_keywords):
+        return "shoes"
+    if any(k in text for k in bag_keywords):
+        return "bag"
+    if any(k in text for k in accessory_keywords):
+        return "accessory"
+    return "unknown"
+
+
+def _is_similarity_category_compatible(target_group: str, candidate_group: str) -> bool:
+    if target_group == "unknown" or candidate_group == "unknown":
+        return True
+    return target_group == candidate_group
+
+
 class SimilarGarmentInfo(BaseModel):
     """Similar garment information"""
 
@@ -235,11 +303,29 @@ async def analyze_similarity(
                 recommendation="您的衣橱中还没有服饰，这是第一件！",
             )
 
+        # Prepare candidate garments with coarse category filtering to reduce
+        # cross-category false positives (e.g., top image matching shoes/bags).
+        target_group = _normalize_similarity_category(recognition_result.category)
+        target_conf = float(getattr(recognition_result, "category_confidence", 0.0) or 0.0)
+
+        filtered_garments = wardrobe_garments
+        if target_group != "unknown" and target_conf >= 0.45:
+            compatible = [
+                g
+                for g in wardrobe_garments
+                if _is_similarity_category_compatible(
+                    target_group,
+                    _normalize_similarity_category(getattr(g, "category", None)),
+                )
+            ]
+            if compatible:
+                filtered_garments = compatible
+
         # Prepare wardrobe features
         import numpy as np
 
         wardrobe_features = [
-            (garment.garment_id, np.array(garment.feature_vector)) for garment in wardrobe_garments
+            (garment.garment_id, np.array(garment.feature_vector)) for garment in filtered_garments
         ]
 
         # Initialize similarity analyzer
@@ -256,7 +342,7 @@ async def analyze_similarity(
 
         # Build similar garments info
         similar_garments_info = []
-        garment_dict = {g.garment_id: g for g in wardrobe_garments}
+        garment_dict = {g.garment_id: g for g in filtered_garments}
 
         for match in similarity_matches:
             garment = garment_dict.get(match.garment_id)
