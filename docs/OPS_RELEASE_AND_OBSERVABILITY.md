@@ -46,6 +46,21 @@ Manifest JSON 可使用的键（与示例文件兼容）：`frontend_index_sha25
 
 每项含 `counts`（success/failure/timeout/degraded）、`total`、以及各 `*_rate`（有样本时）。
 
+### Weather 数据来源（Open-Meteo vs 高德实况）
+
+智能穿搭天气接口在返回体中附带：
+
+- `weather_source`: `open_meteo`（默认）或 `amap`（启用高德实况后）
+
+启用高德实况天气（独立 API `v3/weather/weatherInfo`，`extensions=base`）需在 `backend/.env` 中配置：
+
+```env
+AMAP_WEB_KEY=你的_Web服务_Key
+AMAP_WEATHER_ENABLED=true
+```
+
+若高德调用失败或未启用，则自动回退 Open-Meteo；该切换不影响主流程（仅覆盖温度与中文天气文案）。
+
 **限制**：多 worker 时各进程独立计数；全局 SLO 需在网关或 Prometheus 侧聚合，或配合单 worker / 共享存储扩展。
 
 ## 4. HTML 看板 `GET /ops/dependency-board`
