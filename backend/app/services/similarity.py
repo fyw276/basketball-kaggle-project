@@ -41,8 +41,10 @@ class SimilarityAnalyzer:
 
     def __init__(
         self,
-        high_threshold: float = 0.8,
-        medium_threshold: float = 0.5,
+        high_threshold: float = 0.86,
+        medium_threshold: float = 0.65,
+        calibration_offset: float = 0.08,
+        calibration_power: float = 1.1,
     ):
         """
         Initialize similarity analyzer
@@ -53,6 +55,8 @@ class SimilarityAnalyzer:
         """
         self.high_threshold = high_threshold
         self.medium_threshold = medium_threshold
+        self.calibration_offset = max(0.0, min(0.4, calibration_offset))
+        self.calibration_power = max(1.0, min(1.6, calibration_power))
 
         logger.info(
             f"SimilarityAnalyzer initialized with thresholds: "
@@ -102,6 +106,15 @@ class SimilarityAnalyzer:
 
         # Clip to [0, 1] range (cosine similarity can be [-1, 1])
         # but for normalized feature vectors, it should be [0, 1]
+        similarity = np.clip(similarity, 0.0, 1.0)
+
+        # Calibrate raw cosine scores to suppress optimistic high-similarity
+        # labels when visual overlap is weak.
+        if self.calibration_offset > 0:
+            similarity = max(0.0, float(similarity) - self.calibration_offset)
+            similarity = similarity / (1.0 - self.calibration_offset)
+        if self.calibration_power > 1.0:
+            similarity = float(similarity) ** self.calibration_power
         similarity = np.clip(similarity, 0.0, 1.0)
 
         logger.debug(f"Calculated similarity: {similarity:.4f}")
@@ -214,6 +227,15 @@ class SimilarityAnalyzer:
         similarities = np.dot(features_norms, target_norm)
 
         # Clip to [0, 1]
+        similarities = np.clip(similarities, 0.0, 1.0)
+
+        # Apply the same calibration used by calculate_similarity so batch
+        # results stay numerically consistent with individual comparisons.
+        if self.calibration_offset > 0:
+            similarities = np.maximum(0.0, similarities - self.calibration_offset)
+            similarities = similarities / (1.0 - self.calibration_offset)
+        if self.calibration_power > 1.0:
+            similarities = np.power(similarities, self.calibration_power)
         similarities = np.clip(similarities, 0.0, 1.0)
 
         return similarities

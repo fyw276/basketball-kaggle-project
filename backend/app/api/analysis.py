@@ -16,8 +16,14 @@ from app.db.session import get_db
 from app.ml.image_recognizer import ImageRecognizer, RecognitionResult
 from app.models.user import User
 from app.schemas.garment import ColorSchema
+from app.services.finetuned_infer_client import try_finetuned_infer
 from app.services.garment import get_garments_by_user
 from app.services.similarity import SimilarityAnalyzer, SimilarityMatch
+from app.services.similarity_category import (
+    detect_similarity_category,
+    is_similarity_category_compatible,
+    normalize_similarity_category,
+)
 from app.services.user_profile import get_profile_by_user_id
 
 router = APIRouter(prefix="/analysis", tags=["Analysis"])
@@ -86,6 +92,10 @@ def _merge_clip_like_results(results: List[dict]) -> dict:
 
 def _recognize_image_bytes_to_clip_dict(image_bytes: bytes) -> dict:
     """单张图 → CLIP 结果 dict；失败则 MobileNet 兜底。"""
+    finetuned_result = try_finetuned_infer(image_bytes, feature="analysis_recognition")
+    if finetuned_result is not None:
+        return finetuned_result
+
     try:
         from app.ml.clip_recognizer import get_clip_recognizer
 
@@ -105,6 +115,48 @@ def _recognize_image_bytes_to_clip_dict(image_bytes: bytes) -> dict:
             "feature_vector": list(legacy.feature_vector),
             "main_color": legacy.main_color.model_dump(),
         }
+
+
+def _find_similarity_matches_with_fallback(
+    analyzer: SimilarityAnalyzer,
+    target_feature,
+    wardrobe_garments,
+    target_group: str,
+) -> tuple[List[SimilarityMatch], list, str]:
+    import numpy as np
+
+    same_category_garments = [
+        garment
+        for garment in wardrobe_garments
+        if is_similarity_category_compatible(
+            target_group,
+            normalize_similarity_category(getattr(garment, "category", None)),
+        )
+    ]
+
+    search_plans = [
+        ("same_category_strict", same_category_garments, 0.45),
+        ("same_category_relaxed", same_category_garments, 0.30),
+        ("global_relaxed", wardrobe_garments, 0.30),
+    ]
+
+    for scope_name, candidate_garments, min_threshold in search_plans:
+        if not candidate_garments:
+            continue
+
+        wardrobe_features = [
+            (garment.garment_id, np.array(garment.feature_vector)) for garment in candidate_garments
+        ]
+        similarity_matches = analyzer.find_similar_garments(
+            target_feature=target_feature,
+            wardrobe_features=wardrobe_features,
+            min_threshold=min_threshold,
+            top_k=10,
+        )
+        if similarity_matches:
+            return similarity_matches, candidate_garments, scope_name
+
+    return [], wardrobe_garments, "none"
 
 
 def _map_ui_scene_to_engine(scene: Optional[str]) -> Optional[str]:
@@ -137,74 +189,6 @@ def _get_image_recognizer() -> ImageRecognizer:
     if _image_recognizer_instance is None:
         _image_recognizer_instance = ImageRecognizer()
     return _image_recognizer_instance
-
-
-def _normalize_similarity_category(category: Optional[str]) -> str:
-    text = (category or "").strip().lower()
-    if not text:
-        return "unknown"
-
-    top_keywords = [
-        "上衣",
-        "t恤",
-        "t-shirt",
-        "shirt",
-        "衬衫",
-        "卫衣",
-        "毛衣",
-        "针织",
-        "外套",
-        "夹克",
-        "top",
-        "coat",
-    ]
-    bottom_keywords = [
-        "裤",
-        "pants",
-        "trousers",
-        "jeans",
-        "短裤",
-        "半裙",
-        "半身裙",
-        "skirt",
-        "裙子",
-    ]
-    dress_keywords = ["连衣裙", "dress"]
-    shoes_keywords = ["鞋", "shoe", "sneaker", "靴", "boot", "凉鞋", "sandals"]
-    bag_keywords = ["包", "bag", "backpack", "handbag", "tote"]
-    accessory_keywords = [
-        "帽",
-        "hat",
-        "围巾",
-        "scarf",
-        "腰带",
-        "belt",
-        "首饰",
-        "accessory",
-        "眼镜",
-        "glasses",
-        "袜",
-    ]
-
-    if any(k in text for k in top_keywords):
-        return "top"
-    if any(k in text for k in bottom_keywords):
-        return "bottom"
-    if any(k in text for k in dress_keywords):
-        return "dress"
-    if any(k in text for k in shoes_keywords):
-        return "shoes"
-    if any(k in text for k in bag_keywords):
-        return "bag"
-    if any(k in text for k in accessory_keywords):
-        return "accessory"
-    return "unknown"
-
-
-def _is_similarity_category_compatible(target_group: str, candidate_group: str) -> bool:
-    if target_group == "unknown" or candidate_group == "unknown":
-        return True
-    return target_group == candidate_group
 
 
 class SimilarGarmentInfo(BaseModel):
@@ -303,46 +287,34 @@ async def analyze_similarity(
                 recommendation="您的衣橱中还没有服饰，这是第一件！",
             )
 
-        # Prepare candidate garments with coarse category filtering to reduce
-        # cross-category false positives (e.g., top image matching shoes/bags).
-        target_group = _normalize_similarity_category(recognition_result.category)
-        target_conf = float(getattr(recognition_result, "category_confidence", 0.0) or 0.0)
+        # Category-first retrieval with relaxed fallback to avoid missing obvious duplicates.
+        target_decision = detect_similarity_category(
+            image_bytes=image_bytes,
+            clip_category=recognition_result.category,
+            clip_confidence=float(getattr(recognition_result, "category_confidence", 0.0) or 0.0),
+        )
 
-        filtered_garments = wardrobe_garments
-        if target_group != "unknown" and target_conf >= 0.45:
-            compatible = [
-                g
-                for g in wardrobe_garments
-                if _is_similarity_category_compatible(
-                    target_group,
-                    _normalize_similarity_category(getattr(g, "category", None)),
-                )
-            ]
-            if compatible:
-                filtered_garments = compatible
-
-        # Prepare wardrobe features
-        import numpy as np
-
-        wardrobe_features = [
-            (garment.garment_id, np.array(garment.feature_vector)) for garment in filtered_garments
-        ]
+        target_group = target_decision.group
 
         # Initialize similarity analyzer
         analyzer = SimilarityAnalyzer(high_threshold=0.8, medium_threshold=0.5)
 
-        # Find similar garments
+        # Find similar garments with fallback search scope and threshold.
+        import numpy as np
+
         target_feature = np.array(recognition_result.feature_vector)
-        similarity_matches: List[SimilarityMatch] = analyzer.find_similar_garments(
-            target_feature=target_feature,
-            wardrobe_features=wardrobe_features,
-            min_threshold=0.3,  # Only show matches above 0.3
-            top_k=10,  # Top 10 similar garments
+        similarity_matches, matched_garments, _search_scope = (
+            _find_similarity_matches_with_fallback(
+                analyzer=analyzer,
+                target_feature=target_feature,
+                wardrobe_garments=wardrobe_garments,
+                target_group=target_group,
+            )
         )
 
         # Build similar garments info
         similar_garments_info = []
-        garment_dict = {g.garment_id: g for g in filtered_garments}
+        garment_dict = {g.garment_id: g for g in matched_garments}
 
         for match in similarity_matches:
             garment = garment_dict.get(match.garment_id)
@@ -370,8 +342,10 @@ async def analyze_similarity(
 
         return SimilarityAnalysisResponse(
             target_garment={
-                "category": recognition_result.category,
-                "category_confidence": recognition_result.category_confidence,
+                "category": target_decision.category,
+                "category_group": target_group,
+                "category_confidence": target_decision.confidence,
+                "category_source": target_decision.source,
                 "main_color": recognition_result.main_color.model_dump(),
                 "secondary_colors": [c.model_dump() for c in recognition_result.secondary_colors],
                 "style_tags": recognition_result.style_tags,
