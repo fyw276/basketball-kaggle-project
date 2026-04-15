@@ -103,6 +103,28 @@ class Settings(BaseSettings):
         description="为 true 时请求 response_format=json_object；若上游不支持会自动回退",
     )
 
+    # Fine-tuned model inference
+    FINETUNED_INFER_ENABLED: bool = Field(
+        default=False,
+        description="Enable fine-tuned model inference fallback for image classification",
+    )
+    FINETUNED_INFER_API_BASE_URL: str = Field(
+        default="",
+        description="Base URL for fine-tuned model inference service",
+    )
+    FINETUNED_INFER_API_PATH: str = Field(
+        default="/infer/fashion",
+        description="API endpoint path on the fine-tuned service",
+    )
+    FINETUNED_INFER_API_KEY: str = Field(
+        default="",
+        description="API key for fine-tuned model service (if required)",
+    )
+    FINETUNED_INFER_TIMEOUT_MS: int = Field(
+        default=5000,
+        description="Timeout in milliseconds for fine-tuned inference calls",
+    )
+
     # Try-on resilience
     TRYON_MAX_RETRIES: int = Field(
         default=1,
