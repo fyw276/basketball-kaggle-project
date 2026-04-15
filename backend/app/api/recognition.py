@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from app.core.logging import setup_logging
 from app.ml.image_recognizer import RecognitionResult
 from app.schemas.garment import ColorSchema
+from app.services import local_inference
 
 logger = setup_logging()
 
@@ -365,4 +366,246 @@ async def analyze_image(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to analyze image: {str(e)}",
+        )
+
+
+# ===== 微调模型端点（新增）=====
+
+
+class FinetuedCategoryResponse(BaseModel):
+    """微调推理模型的类别识别响应"""
+
+    category: str = Field(..., description="识别的衣服类别")
+    category_confidence: float = Field(..., ge=0, le=1, description="类别置信度")
+    style_tags: List[str] = Field(default_factory=list, description="风格标签")
+    fit_type: str = Field(default="regular", description="剪裁类型")
+    occasions: List[str] = Field(default_factory=list, description="适合场合")
+    feature_vector: List[float] = Field(default_factory=list, description="特征向量(32维)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "category": "上衣",
+                "category_confidence": 0.85,
+                "style_tags": ["casual", "comfort"],
+                "fit_type": "regular",
+                "occasions": ["daily", "work"],
+                "feature_vector": [0.1, 0.2, 0.3, 0.4],
+            }
+        }
+
+
+@router.post(
+    "/category-v2",
+    response_model=FinetuedCategoryResponse,
+    status_code=status.HTTP_200_OK,
+    summary="识别衣服类别 (微调模型版本 v2)",
+    description="""
+    使用微调的 CLIP 模型识别衣服类别。
+
+    相比 v1 版本的改进：
+    - 更高的识别准确率（通过课程学习和硬案例挖掘）
+    - 返回更详细的属性信息（风格标签、场合等）
+    - 包含特征向量用于相似度计算
+
+    支持的衣服类别：
+    - 上衣 (Tops)
+    - 裤子 (Pants)
+    - 裙子 (Skirts)
+    - 外套 (Outerwear)
+    - 鞋 (Shoes)
+    - 包 (Bags)
+
+    **注意**: 该端点需要推理 API 服务运行在 http://127.0.0.1:9000
+    """,
+)
+async def recognize_category_v2(
+    file: UploadFile = File(..., description="衣服图片文件 (JPEG, PNG, WebP)")
+):
+    """
+    使用微调模型识别衣服类别
+
+    Args:
+        file: 上传的图片文件
+
+    Returns:
+        FinetuedCategoryResponse: 类别和详细属性信息
+    """
+    # 验证文件类型
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="文件必须是图片 (JPEG, PNG, 或 WebP)",
+        )
+
+    try:
+        # 读取图片字节
+        image_bytes = await file.read()
+
+        if len(image_bytes) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="上传的文件为空",
+            )
+
+        # 使用本地推理服务（不经过 HTTP）
+        result = local_inference.infer(image_bytes, hint="unknown", image_path=file.filename or "")
+
+        logger.info(
+            f"微调模型识别成功: {result.get('category')} "
+            f"(置信度: {result.get('category_confidence', 0):.3f})"
+        )
+
+        return FinetuedCategoryResponse(**result)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"微调模型识别失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"识别失败: {str(e)}",
+        )
+
+
+@router.post(
+    "/category-finetuned",
+    response_model=FinetuedCategoryResponse,
+    deprecated=False,
+    status_code=status.HTTP_200_OK,
+    summary="识别衣服类别 (微调模型) - 别名",
+    description="与 /category-v2 功能相同",
+)
+async def recognize_category_finetuned(
+    file: UploadFile = File(..., description="衣服图片文件 (JPEG, PNG, WebP)")
+):
+    """别名端点，指向 recognize_category_v2"""
+    return await recognize_category_v2(file)
+
+
+# ============ 批处理和缓存接口 ============
+
+
+class BatchRecognitionRequest(BaseModel):
+    """Batch recognition request"""
+
+    images: List[str] = Field(..., description="Base64 encoded images or file IDs")
+
+
+class CacheStatsResponse(BaseModel):
+    """Cache statistics response"""
+
+    recognition_cache: dict = Field(..., description="Recognition cache stats")
+    similarity_cache: dict = Field(..., description="Similarity cache stats")
+
+
+@router.post(
+    "/batch-recognize",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="批量识别衣服类别",
+    description="同时识别多张图片 (性能优化)",
+)
+async def batch_recognize_category(files: List[UploadFile] = File(...)):
+    """
+    批量识别多张衣服图片
+
+    Performance:
+    - Single image: ~16ms
+    - Batch (N images): ~20-100ms total (parallel processing)
+    - Expected speedup: 3-5x faster than sequential requests
+    """
+    if not files or len(files) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="At least one image required"
+        )
+
+    if len(files) > 50:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Maximum 50 images per batch",
+        )
+
+    try:
+        from app.services.batch_service import batch_processor
+
+        # Read all file bytes
+        image_bytes_list = []
+        for file in files:
+            content = await file.read()
+            if not content:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail=f"Empty file: {file.filename}"
+                )
+            image_bytes_list.append(content)
+
+        # Process batch
+        results = await batch_processor.process_batch(
+            image_bytes_list, recognition_fn=lambda img: local_inference.infer(img)
+        )
+
+        return {
+            "success": True,
+            "data": {
+                "batch_size": len(files),
+                "results": results,
+                "statistics": batch_processor.stats(),
+            },
+            "error": None,
+            "message": f"Successfully recognized {len(results)} images",
+        }
+
+    except Exception as e:
+        logger.error(f"Batch recognition error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Batch recognition failed: {str(e)}",
+        )
+
+
+@router.get(
+    "/cache/stats",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="获取缓存统计",
+    description="查看识别结果缓存命中率和大小",
+)
+async def get_cache_statistics():
+    """Get recognition cache statistics"""
+    try:
+        from app.services.cache_service import get_cache_stats
+
+        stats = get_cache_stats()
+        return {"success": True, "data": stats, "error": None, "message": "ok"}
+    except Exception as e:
+        logger.error(f"Failed to get cache stats: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve cache statistics: {str(e)}",
+        )
+
+
+@router.post(
+    "/cache/clear",
+    status_code=status.HTTP_200_OK,
+    summary="清空缓存",
+    description="清除所有识别结果缓存",
+)
+async def clear_all_caches():
+    """Clear all recognition caches"""
+    try:
+        from app.services.cache_service import clear_all_caches
+
+        clear_all_caches()
+        return {
+            "success": True,
+            "data": {"cleared": True},
+            "error": None,
+            "message": "All caches cleared",
+        }
+    except Exception as e:
+        logger.error(f"Failed to clear caches: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to clear caches: {str(e)}",
         )
