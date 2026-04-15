@@ -5,7 +5,7 @@ Simplified wardrobe API for easier frontend integration
 import io
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,7 @@ from app.schemas.garment import (
     GarmentResponse,
     GarmentUpdate,
 )
+from app.services.finetuned_infer_client import try_finetuned_infer
 from app.services.garment import (
     count_garments_by_user,
     create_garment,
@@ -78,7 +79,8 @@ def _normalize_category_for_update(raw: str) -> str:
 @router.post("/garments", response_model=GarmentResponse, status_code=status.HTTP_201_CREATED)
 async def upload_garment_simple(
     file: UploadFile = File(...),
-    notes: Optional[str] = None,
+    category: Optional[str] = Form(None),
+    notes: Optional[str] = Form(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -115,8 +117,10 @@ async def upload_garment_simple(
 
         # Step 1: Recognize image using CLIP (FashionCLIP approach)
         try:
-            recognizer = get_clip_recognizer()
-            recognition_result = recognizer.recognize(image_bytes)
+            recognition_result = try_finetuned_infer(image_bytes, feature="wardrobe_simple_upload")
+            if recognition_result is None:
+                recognizer = get_clip_recognizer()
+                recognition_result = recognizer.recognize(image_bytes)
         except (UnidentifiedImageError, ValueError, OSError):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -134,6 +138,16 @@ async def upload_garment_simple(
         recognized_category = str(recognition_result.get("category") or "").strip()
         category_confidence = float(recognition_result.get("category_confidence") or 0.0)
         category_for_save = _normalize_auto_category(recognized_category)
+
+        # 前端可显式传 category（手动选择或先前识别结果），优先使用并做统一规范化。
+        if category is not None and category.strip():
+            manual_category = _normalize_category_for_update(category.strip())
+            if manual_category not in VALID_CATEGORIES:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid category. Must be one of: {', '.join(VALID_CATEGORIES)}",
+                )
+            category_for_save = manual_category
 
         # CLIP 不可用或置信度过低时，用 MobileNet 六大类兜底，保证侧栏分类可用。
         if category_confidence < 0.15:

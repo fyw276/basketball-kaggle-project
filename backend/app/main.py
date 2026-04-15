@@ -144,6 +144,20 @@ async def _app_lifespan(app: FastAPI):
             e,
         )
 
+    # 初始化本地推理服务（微调模型）
+    try:
+        from app.services import local_inference
+
+        local_inference.init()
+        logger.info(
+            "Local fine-tuned inference service initialized (POST /recognition/category-v2)"
+        )
+    except Exception as e:
+        logger.warning(
+            "Local fine-tuned inference service initialization failed: %s",
+            e,
+        )
+
     try:
         from app.services.external_enhance_client import (
             get_external_enhance_status,

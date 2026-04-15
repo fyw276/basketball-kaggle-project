@@ -241,10 +241,22 @@ class AnalysisResultDisplay extends StatelessWidget {
         }
         break;
       case 'similarity':
-        if (result is Map && result.containsKey('similar_items')) {
-          final items = result['similar_items'] as List? ?? [];
-          for (var item in items) {
-            cards.add(SimilarityResultCard(item: item));
+        if (result is Map) {
+          // 兼容两类返回：
+          // 1) 前端已归一化: { similar_items: [{ similarity, note, ... }] }
+          // 2) 后端原始:   { similar_garments: [{ similarity_score, similarity_level, ... }] }
+          final dynamic rawItems =
+              result['similar_items'] ?? result['similar_garments'] ?? const [];
+          final items = rawItems is List ? rawItems : <dynamic>[];
+          for (final raw in items) {
+            if (raw is Map) {
+              final mapped = Map<String, dynamic>.from(raw);
+              mapped['similarity'] =
+                  mapped['similarity'] ?? mapped['similarity_score'] ?? 0.0;
+              mapped['note'] =
+                  mapped['note'] ?? mapped['similarity_level'] ?? '';
+              cards.add(SimilarityResultCard(item: mapped));
+            }
           }
         }
         break;
@@ -620,9 +632,10 @@ class SimilarityResultCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final similarity = (item['similarity'] ?? item['score'] ?? 0.0) as double;
+    final similarityRaw = item['similarity'] ?? item['score'] ?? 0.0;
+    final similarity = similarityRaw is num ? similarityRaw.toDouble() : 0.0;
     final category = item['category']?.toString() ?? '未知';
-    final note = item['note'] ?? '';
+    final note = item['note']?.toString() ?? '';
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),

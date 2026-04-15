@@ -148,6 +148,26 @@ docs/_build/
 site/
 docs/smart_outfit_project_tutorial.pdf
 
+# Generated training/evaluation artifacts (local only)
+backend/training_data.json
+backend/training_data_curriculum.json
+backend/training_data_hardcases.json
+training_data.json
+training_data_curriculum.json
+training_data_hardcases.json
+backend/hardcase_batch_report.json
+backend/hardcase_closed_loop_summary.json
+backend/hardcase_eval_report.json
+hardcase_eval_report.json
+finetuned_batch_report.json
+test_report.json
+
+# Local binaries / cacheable large artifacts
+models/clip_finetuned/*.pt
+*.whl
+temp_test_shirt.png
+mobile/devtools_options.yaml
+
 # Flutter: always track app Dart sources. Keep this block LAST so it wins if anyone re-adds a broad `lib/` rule.
 !mobile/lib/
 !mobile/lib/**
