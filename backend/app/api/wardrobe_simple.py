@@ -3,7 +3,7 @@ Simplified wardrobe API for easier frontend integration
 """
 
 import io
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from PIL import Image, UnidentifiedImageError
@@ -20,6 +20,7 @@ from app.schemas.garment import (
     GarmentResponse,
     GarmentUpdate,
 )
+from app.services.cache_service import get_cache
 from app.services.finetuned_infer_client import try_finetuned_infer
 from app.services.garment import (
     count_garments_by_user,
@@ -76,6 +77,42 @@ def _normalize_category_for_update(raw: str) -> str:
     return s
 
 
+def _as_recognition_dict(recognition_result: Any) -> dict[str, Any]:
+    """Normalize recognizer output to dict for unified downstream logic."""
+    if isinstance(recognition_result, dict):
+        return recognition_result
+    if hasattr(recognition_result, "model_dump"):
+        return recognition_result.model_dump()
+    return {
+        "category": getattr(recognition_result, "category", "上衣"),
+        "category_confidence": getattr(recognition_result, "category_confidence", 0.0),
+        "style_tags": getattr(recognition_result, "style_tags", []),
+        "feature_vector": getattr(recognition_result, "feature_vector", []),
+        "fit_type": getattr(recognition_result, "fit_type", None),
+    }
+
+
+def _recognize_with_cache(image_bytes: bytes) -> tuple[dict[str, Any], bool]:
+    """Recognize image with cache-first strategy.
+
+    Returns:
+        (recognition_result_dict, cache_hit)
+    """
+    cache = get_cache()
+    cached = cache.get(image_bytes)
+    if cached is not None:
+        return _as_recognition_dict(cached), True
+
+    recognition_result = try_finetuned_infer(image_bytes, feature="wardrobe_simple_upload")
+    if recognition_result is None:
+        recognizer = get_clip_recognizer()
+        recognition_result = recognizer.recognize(image_bytes)
+
+    recognition_result_dict = _as_recognition_dict(recognition_result)
+    cache.set(image_bytes, recognition_result_dict)
+    return recognition_result_dict, False
+
+
 @router.post("/garments", response_model=GarmentResponse, status_code=status.HTTP_201_CREATED)
 async def upload_garment_simple(
     file: UploadFile = File(...),
@@ -117,10 +154,7 @@ async def upload_garment_simple(
 
         # Step 1: Recognize image using CLIP (FashionCLIP approach)
         try:
-            recognition_result = try_finetuned_infer(image_bytes, feature="wardrobe_simple_upload")
-            if recognition_result is None:
-                recognizer = get_clip_recognizer()
-                recognition_result = recognizer.recognize(image_bytes)
+            recognition_result, _cache_hit = _recognize_with_cache(image_bytes)
         except (UnidentifiedImageError, ValueError, OSError):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -247,6 +281,131 @@ async def upload_garment_simple(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to upload garment: {str(e)}",
         )
+
+
+@router.post("/garments/batch")
+async def upload_garments_batch_simple(
+    files: list[UploadFile] = File(...),
+    category: Optional[str] = Form(None),
+    notes: Optional[str] = Form(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Batch upload garments with cache-first recognition.
+
+    This endpoint enables production batch import flow and uses the same
+    category normalization and fallback policy as single upload.
+    """
+    if not files:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No files uploaded")
+    if len(files) > 20:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Batch size cannot exceed 20 files",
+        )
+
+    from app.ml.color_extractor import ColorExtractor
+    from app.schemas.garment import ColorSchema
+
+    storage = get_storage_service()
+    color_extractor = ColorExtractor(n_colors=3)
+
+    created_ids: list[int] = []
+    failures: list[dict[str, str]] = []
+    cache_hits = 0
+
+    for idx, file in enumerate(files):
+        filename = file.filename or f"file_{idx}"
+        try:
+            image_bytes = await file.read()
+            if len(image_bytes) == 0:
+                raise ValueError("Uploaded file is empty")
+
+            ct = (file.content_type or "").lower()
+            if not ct.startswith("image/"):
+                Image.open(io.BytesIO(image_bytes)).verify()
+
+            recognition_result, cache_hit = _recognize_with_cache(image_bytes)
+            if cache_hit:
+                cache_hits += 1
+
+            recognized_category = str(recognition_result.get("category") or "").strip()
+            category_confidence = float(recognition_result.get("category_confidence") or 0.0)
+            category_for_save = _normalize_auto_category(recognized_category)
+
+            if category is not None and category.strip():
+                manual_category = _normalize_category_for_update(category.strip())
+                if manual_category not in VALID_CATEGORIES:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=(f"Invalid category. Must be one of: {', '.join(VALID_CATEGORIES)}"),
+                    )
+                category_for_save = manual_category
+
+            if category_confidence < 0.15:
+                try:
+                    from app.ml.category_classifier import CategoryClassifier
+
+                    fallback_category, _ = CategoryClassifier().classify_category(image_bytes)
+                    category_for_save = _normalize_auto_category(fallback_category)
+                except Exception:
+                    pass
+
+            await file.seek(0)
+            image_path, image_url = await storage.save_image(file, str(current_user.user_id))
+
+            clip_features = recognition_result.get("feature_vector") or []
+            if not isinstance(clip_features, list) or len(clip_features) == 0:
+                raise ValueError("Recognition feature_vector missing")
+
+            feature_dim = len(clip_features)
+            if feature_dim == 768:
+                feature_vector = clip_features + [0.0] * 512
+            elif feature_dim == 512:
+                feature_vector = clip_features + [0.0] * 768
+            else:
+                feature_vector = clip_features[:1280] + [0.0] * max(0, 1280 - len(clip_features))
+
+            colors = color_extractor.extract_colors(image_bytes)
+            main_color = (
+                colors[0]
+                if colors
+                else ColorSchema(
+                    name="灰",
+                    rgb=(128, 128, 128),
+                    hsv=(0.0, 0.0, 50.0),
+                    hex_code="#808080",
+                    confidence=0.2,
+                )
+            )
+            secondary_colors = colors[1:] if len(colors) > 1 else []
+
+            garment_in = GarmentCreate(
+                category=category_for_save,
+                main_color=main_color,
+                secondary_colors=secondary_colors,
+                style_tags=recognition_result.get("style_tags") or [],
+                fit_type=recognition_result.get("fit_type"),
+                image_path=image_path,
+                image_url=image_url,
+                feature_vector=feature_vector,
+                notes=notes,
+            )
+
+            garment = create_garment(db, current_user.user_id, garment_in)
+            created_ids.append(int(garment.garment_id))
+        except HTTPException as e:
+            failures.append({"filename": filename, "error": str(e.detail)})
+        except Exception as e:
+            failures.append({"filename": filename, "error": str(e)})
+
+    return {
+        "created_count": len(created_ids),
+        "failed_count": len(failures),
+        "cache_hits": cache_hits,
+        "created_ids": created_ids,
+        "failures": failures,
+    }
 
 
 @router.get("/garments", response_model=GarmentListResponse)
