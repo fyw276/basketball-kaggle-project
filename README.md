@@ -1,6 +1,6 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-04-14（发布台账 `/release`、外部依赖观测与混合增强指标；文档与 Nginx 片段同步）
+**最后更新**: 2026-04-18（虚拟试衣：diffusers 依赖与 fallback 粘贴策略、`garment_category` 表单字段；本地启动与端口占用说明同步）
 **状态**: ✅ 可用于演示与迭代（后端 FastAPI + Flutter Web/移动端）
 
 ## 项目简介
@@ -41,7 +41,9 @@
 ### 5. 虚拟试衣（Try-on）
 - 前端自动 3 次请求生成 `front/side/back view`
 - 支持人物 3 视角上传：正面必填，侧面/背面可选（未上传则复用正面照）
-- **衣服图**：需无模特（后端做人脸检测）；未加载扩散模型时使用 **去背景 + alpha 粘贴**，避免旧版半透明叠图导致的重影
+- **衣服图**：需无模特（后端做人脸检测）；**扩散模型就绪**时用 Stable Diffusion inpainting；否则 **去背景 + alpha 粘贴（fallback）**，并按可选 **`garment_category`**（如衣柜里的「下装」）改善下装锚点与上半身遮罩，避免整块商品图盖住躯干
+- **依赖**：`torch` 与 `torchvision` 须同一代、成对安装（例如均来自同一 `pip install`）；否则可能出现 `CLIPImageProcessor` / `torchvision::nms` 导入失败并长期落在 fallback
+- 勿在 `.env` 中开启 **`TRYON_FORCE_FALLBACK=true`**（除非刻意跳过扩散）；详见 [`docs/AI_OUTFIT_PREDICT_AND_TRYON.md`](docs/AI_OUTFIT_PREDICT_AND_TRYON.md)
 - 轮播与全屏预览：等比例完整显示（`contain`），支持缩放/拖拽
 
 ### 6. AI 穿搭风格分（演示用 `POST /predict`）
@@ -160,9 +162,18 @@ clothing-assistant/
 
 ### 快速启动
 
+**注意**：
+
+- 必须在 **`backend` 目录**下启动，否则会出现 `ModuleNotFoundError: No module named 'app'`（包 `app` 在 `backend/app/`）。
+- 推荐使用仓库根目录的 **`.venv`**：`..\.venv\Scripts\python.exe`（Windows）或先 `Activate.ps1`，与 `backend/requirements.txt` 一致。
+- 没有 `backend/.env` 时仍可启动：配置来自 `Settings` 默认值与环境变量；本地无 PostgreSQL 时可设 `DATABASE_URL=sqlite:///./outfit_local.db`（PowerShell：`$env:DATABASE_URL=...`）。
+- 若出现 **`WinError 10048`（端口已被占用）**，说明 **8010** 上已有进程：结束旧 `uvicorn` 或改用 `--port 8011`（Flutter 需 `--dart-define=API_PORT=8011`）。
+
 ```bash
-# 1. 启动后端服务（端口默认 8010，见 backend/.env 的 PORT，避免与本机其它占用 8000 的服务冲突）
+# 1. 启动后端服务（端口默认 8010；与 mobile/lib/core/services/api_port_config.dart 中 kApiPort 一致）
 cd backend
+# Windows（示例：使用仓库根 .venv，无需 activate）:
+# ..\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8010
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8010
 
 # 2. 启动前端应用（新终端，默认请求 http://127.0.0.1:8010/api/v1）

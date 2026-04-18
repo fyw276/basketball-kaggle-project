@@ -54,7 +54,7 @@ HF_HUB_DOWNLOAD_TIMEOUT=600
 
 ### 虚拟试衣不可用时的常见原因
 
-首次生成会从 Hugging Face 拉取 `runwayml/stable-diffusion-inpainting`（或 `SD_VTON_MODEL_ID` 指定模型）。若日志出现 `cas-bridge.xethub.hf.co`、`Read timed out`、`SSLError`，属于**网络或缓存不完整**，按上文配置镜像、清理半截缓存后重试，或换稳定网络/代理。
+首次生成会从 Hugging Face 拉取 `stable-diffusion-v1-5/stable-diffusion-inpainting`（或 `SD_VTON_MODEL_ID` 指定模型）。若日志出现 `cas-bridge.xethub.hf.co`、`Read timed out`、`SSLError`，属于**网络或缓存不完整**，按上文配置镜像、清理半截缓存后重试，或换稳定网络/代理。
 
 ---
 

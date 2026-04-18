@@ -374,6 +374,36 @@ def _is_safe_image_url_for_user(user_id: str, image_url: str) -> bool:
     return uid in u and "/uploads/" in u
 
 
+def _recognize_reference_image_nonblocking(image_bytes: bytes) -> Dict[str, Any]:
+    """
+    Recognize smart-outfit reference image without triggering heavyweight CLIP downloads.
+
+    Strategy:
+    1. Try configured external fine-tuned inference.
+    2. If unavailable/failed, immediately fall back to the local ImageRecognizer.
+    3. Do not attempt CLIP online loading in this path, so generation can continue.
+    """
+    from app.ml.image_recognizer import ImageRecognizer
+    from app.services.finetuned_infer_client import try_finetuned_infer
+
+    finetuned_result = try_finetuned_infer(image_bytes, feature="analysis_recognition")
+    if finetuned_result is not None:
+        return finetuned_result
+
+    logger.warning(
+        "Smart outfit reference recognition fell back to ImageRecognizer; skip CLIP download path"
+    )
+    legacy = ImageRecognizer().recognize(image_bytes)
+    return {
+        "category": legacy.category,
+        "category_confidence": getattr(legacy, "category_confidence", 0.5),
+        "style_tags": legacy.style_tags,
+        "fit_type": None,
+        "feature_vector": list(legacy.feature_vector),
+        "main_color": legacy.main_color.model_dump(),
+    }
+
+
 async def load_image_bytes(image_url: str) -> bytes:
     """
     加载参考图字节。若 image_url 为本服务上的 /uploads/ 绝对地址，**直接从磁盘读取**，
@@ -539,7 +569,7 @@ async def generate_smart_outfits(
     """
     生成智能穿搭结果字典：outfits, city, weather, temperature, mood, weather_fallback 等。
     """
-    from app.api.analysis import _coerce_str_list, _recognize_image_bytes_to_clip_dict
+    from app.api.analysis import _coerce_str_list
 
     mood = normalize_mood_input(mood)
 
@@ -547,7 +577,7 @@ async def generate_smart_outfits(
         raise ValueError("无效的图片地址，请使用本账号上传的参考图")
 
     image_bytes = await load_image_bytes(image_url)
-    clip_result = _recognize_image_bytes_to_clip_dict(image_bytes)
+    clip_result = _recognize_reference_image_nonblocking(image_bytes)
 
     user_profile = get_profile_by_user_id(db, UUID(str(user_id)))
     user_style_prefs = _coerce_str_list(user_profile.style_preference if user_profile else [])

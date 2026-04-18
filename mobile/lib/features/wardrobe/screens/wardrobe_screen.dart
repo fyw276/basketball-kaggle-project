@@ -127,6 +127,15 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
 
   int get _suspectBrokenCount => _items.where(_suspectBrokenGarment).length;
 
+  /// 上传/拆分入库后：避免仍停留在侧栏子分类或「仅坏图」导致看不到新品。
+  void _focusAllTabForNewItems() {
+    if (!mounted) return;
+    setState(() {
+      _chip = '全部';
+      _onlySuspectBroken = false;
+    });
+  }
+
   bool _matchCat(String from, String to) {
     if (to == '全部') return true;
     if (from == to) return true;
@@ -447,9 +456,10 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     await _refresh();
     if (!mounted) return;
     if (ok > 0) {
+      _focusAllTabForNewItems();
       showAppSnackBar(
         context,
-        '成功上传 $ok 件${lastErr.isNotEmpty ? '（部分失败）' : ''}',
+        '成功上传 $ok 件（已切到「全部」）${lastErr.isNotEmpty ? '（部分失败）' : ''}',
         backgroundColor: palette.successColor,
       );
     }
@@ -757,9 +767,10 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
       await _refresh();
       if (!mounted) return;
       if (savedCount > 0) {
+        _focusAllTabForNewItems();
         showAppSnackBar(
           context,
-          '已将 $savedCount 件拆分单品保存到衣橱',
+          '已将 $savedCount 件拆分单品保存到衣橱（已切到「全部」）',
           backgroundColor: palette.successColor,
         );
       } else {

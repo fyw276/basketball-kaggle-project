@@ -457,12 +457,17 @@ class ApiClient {
     String? category,
     String? color,
     String? style,
+    int page = 1,
+    int pageSize = 100,
   }) async {
-    final params = <String>[];
+    final params = <String>[
+      'page=$page',
+      'page_size=$pageSize',
+    ];
     if (category != null) params.add('category=$category');
     if (color != null) params.add('color=$color');
     if (style != null) params.add('style=$style');
-    final query = params.isNotEmpty ? '?${params.join('&')}' : '';
+    final query = '?${params.join('&')}';
 
     final raw = await getList('/wardrobe/simple/garments$query');
 
@@ -770,6 +775,7 @@ class ApiClient {
     dynamic personImage,
     String? prompt,
     String modelGender = 'neutral',
+    String? garmentCategory,
     Duration timeout = const Duration(seconds: 900),
   }) async {
     try {
@@ -794,6 +800,9 @@ class ApiClient {
       request.fields['model_gender'] = modelGender;
       if (prompt != null && prompt.trim().isNotEmpty) {
         request.fields['prompt'] = prompt.trim();
+      }
+      if (garmentCategory != null && garmentCategory.trim().isNotEmpty) {
+        request.fields['garment_category'] = garmentCategory.trim();
       }
 
       final streamedResponse = await request.send().timeout(timeout);

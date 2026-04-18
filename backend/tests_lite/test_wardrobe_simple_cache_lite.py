@@ -79,24 +79,50 @@ def test_recognize_with_cache_miss_uses_finetuned(monkeypatch):
     assert len(cache.set_calls) == 1
 
 
-def test_recognize_with_cache_miss_fallback_clip(monkeypatch):
+def test_recognize_with_cache_miss_fallback_image_recognizer(monkeypatch):
     cache = _DummyCache(cached=None)
-    clip_payload = {
+    legacy_payload = {
         "category": "裤子",
         "category_confidence": 0.83,
         "style_tags": ["日常"],
         "feature_vector": [0.1] * 1280,
     }
 
-    class _Recognizer:
+    class _ImageRecognizer:
         def recognize(self, _b):
-            return clip_payload
+            return type("R", (), legacy_payload)()
 
     monkeypatch.setattr(mod, "get_cache", lambda: cache)
     monkeypatch.setattr(mod, "try_finetuned_infer", lambda _b, feature=None: None)
-    monkeypatch.setattr(mod, "get_clip_recognizer", lambda: _Recognizer())
+    monkeypatch.delenv("WARDROBE_USE_CLIP_FALLBACK", raising=False)
+    monkeypatch.setattr("app.ml.image_recognizer.ImageRecognizer", _ImageRecognizer)
 
     result, cache_hit = mod._recognize_with_cache(b"img")
     assert cache_hit is False
     assert result["category"] == "裤子"
+    assert len(cache.set_calls) == 1
+
+
+def test_recognize_with_cache_miss_optional_clip_fallback(monkeypatch):
+    cache = _DummyCache(cached=None)
+    clip_payload = {
+        "category": "裙子",
+        "category_confidence": 0.81,
+        "style_tags": ["优雅"],
+        "feature_vector": [0.1] * 1280,
+    }
+
+    class _ClipRecognizer:
+        def recognize(self, _b):
+            return clip_payload
+
+    monkeypatch.setenv("WARDROBE_USE_CLIP_FALLBACK", "1")
+    monkeypatch.delenv("DISABLE_CLIP", raising=False)
+    monkeypatch.setattr(mod, "get_cache", lambda: cache)
+    monkeypatch.setattr(mod, "try_finetuned_infer", lambda _b, feature=None: None)
+    monkeypatch.setattr("app.ml.clip_recognizer.get_clip_recognizer", lambda: _ClipRecognizer())
+
+    result, cache_hit = mod._recognize_with_cache(b"img")
+    assert cache_hit is False
+    assert result["category"] == "裙子"
     assert len(cache.set_calls) == 1

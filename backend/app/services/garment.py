@@ -124,7 +124,8 @@ def get_garments_by_user(
     if category:
         query = query.filter(Garment.category == category)
 
-    return query.offset(skip).limit(limit).all()
+    # Newest first so paginated wardrobe UIs and default page=1 show recent uploads.
+    return query.order_by(Garment.created_at.desc()).offset(skip).limit(limit).all()
 
 
 def count_garments_by_user(db: Session, user_id: UUID, category: Optional[str] = None) -> int:

@@ -4,7 +4,7 @@ Virtual Try-On API endpoints
 
 from typing import Any, Dict, Tuple
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -107,6 +107,10 @@ async def try_on_garment(
     garment_file: UploadFile = File(..., alias="garment_file", description="Garment product photo"),
     person_file: UploadFile = File(..., alias="person_file", description="Person photo"),
     prompt: str = "",
+    garment_category: str = Form(
+        "",
+        description="Optional wardrobe category (e.g. 下装) for better fallback paste placement",
+    ),
     # 无性别推荐系统新增参数
     model_gender: str = "neutral",
     current_user: User = Depends(get_current_user),
@@ -200,12 +204,14 @@ async def try_on_garment(
         last_msg = "Virtual try-on failed"
         last_retryable = False
 
+        gc = (garment_category or "").strip() or None
         for attempt in range(max_retries + 1):
             result = service.tryon_garment(
                 garment_image=garment_image,
                 person_image=person_image,
                 prompt=prompt or None,
                 model_gender=model_gender,
+                garment_category=gc,
             )
 
             st = (result or {}).get("status") or ""
@@ -243,6 +249,11 @@ async def try_on_garment(
 
             # Use a stable, collision-resistant key so different inputs never overwrite each other.
             # NOTE: built-in `hash()` is salted per-process and the old modulo could collide easily.
+            # NOTE: include a pipeline version to avoid client-side image cache
+            # when fallback processing changes but inputs stay the same.
+            from app.services.virtual_tryon import FALLBACK_PIPELINE_VERSION
+
+            gc_bytes = ((garment_category or "").strip()).encode("utf-8", errors="ignore")
             key_src = (
                 garment_bytes
                 + b"||"
@@ -251,6 +262,10 @@ async def try_on_garment(
                 + (prompt or "").encode("utf-8", errors="ignore")
                 + b"||"
                 + model_gender.encode("utf-8", errors="ignore")
+                + b"||"
+                + gc_bytes
+                + b"||"
+                + FALLBACK_PIPELINE_VERSION.encode("utf-8", errors="ignore")
             )
             key = hashlib.sha256(key_src).hexdigest()[:16]
             result_path = os.path.join(str(current_user.user_id), "tryon", f"result_{key}.jpg")

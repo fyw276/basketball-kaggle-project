@@ -3,6 +3,7 @@ Simplified wardrobe API for easier frontend integration
 """
 
 import io
+import os
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
@@ -10,8 +11,8 @@ from PIL import Image, UnidentifiedImageError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
+from app.core.logging import setup_logging
 from app.db.session import get_db
-from app.ml.clip_recognizer import get_clip_recognizer
 from app.models.user import User
 from app.schemas.garment import (
     VALID_CATEGORIES,
@@ -33,6 +34,8 @@ from app.services.garment import (
 )
 from app.services.garment_visual import refresh_garment_visuals
 from app.services.storage import get_storage_service
+
+logger = setup_logging()
 
 router = APIRouter(prefix="/wardrobe/simple", tags=["Wardrobe (Simplified)"])
 
@@ -105,8 +108,37 @@ def _recognize_with_cache(image_bytes: bytes) -> tuple[dict[str, Any], bool]:
 
     recognition_result = try_finetuned_infer(image_bytes, feature="wardrobe_simple_upload")
     if recognition_result is None:
-        recognizer = get_clip_recognizer()
-        recognition_result = recognizer.recognize(image_bytes)
+        # Default: avoid triggering heavyweight CLIP / HuggingFace downloads on wardrobe upload.
+        # Opt-in only: WARDROBE_USE_CLIP_FALLBACK=1 (honors DISABLE_CLIP like clip_recognizer).
+        clip_allowed = str(os.environ.get("WARDROBE_USE_CLIP_FALLBACK", "")).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        clip_disabled = str(os.environ.get("DISABLE_CLIP", "")).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if clip_allowed and not clip_disabled:
+            from app.ml.clip_recognizer import get_clip_recognizer
+
+            recognizer = get_clip_recognizer()
+            recognition_result = recognizer.recognize(image_bytes)
+        else:
+            from app.ml.image_recognizer import ImageRecognizer
+
+            logger.warning(
+                "Wardrobe upload recognition fell back to ImageRecognizer; skip CLIP download path"
+            )
+            legacy = ImageRecognizer().recognize(image_bytes)
+            recognition_result = {
+                "category": legacy.category,
+                "category_confidence": legacy.category_confidence,
+                "style_tags": legacy.style_tags,
+                "fit_type": None,
+                "feature_vector": list(legacy.feature_vector),
+            }
 
     recognition_result_dict = _as_recognition_dict(recognition_result)
     cache.set(image_bytes, recognition_result_dict)
@@ -152,7 +184,7 @@ async def upload_garment_simple(
                     detail="File must be an image (JPEG, PNG, WebP)",
                 )
 
-        # Step 1: Recognize image using CLIP (FashionCLIP approach)
+        # Step 1: Recognize image (fine-tuned API if configured, else local pipeline)
         try:
             recognition_result, _cache_hit = _recognize_with_cache(image_bytes)
         except (UnidentifiedImageError, ValueError, OSError):

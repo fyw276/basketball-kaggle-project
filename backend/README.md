@@ -83,9 +83,14 @@ copy .env.example .env  # Windows
 > 模型相关提示：
 > - CLIP / 虚拟试衣首次运行可能会下载权重（弱网易超时）。
 > - 在 `.env` 中设置 `HF_ENDPOINT=https://hf-mirror.com`（及可选 `HF_HUB_DOWNLOAD_TIMEOUT` 等）；这些键已在 `app.core.config.Settings` 中声明，启动时会注入 `os.environ`。详见仓库根目录 [docs/WEATHER_DISPLAY_AND_HF_ENV.md](../docs/WEATHER_DISPLAY_AND_HF_ENV.md)。
-> - 虚拟试衣默认模型为公开的 `runwayml/stable-diffusion-inpainting`；若改用 gated 模型（例如 stabilityai/*），需要配置 `HF_TOKEN` 并在 HF 网站同意条款。
+> - 虚拟试衣默认模型为公开的 `stable-diffusion-v1-5/stable-diffusion-inpainting`；若改用 gated 模型（例如 stabilityai/*），需要配置 `HF_TOKEN` 并在 HF 网站同意条款。
+> - **扩散试衣依赖**：`torch` 与 `torchvision` 须版本匹配（同一轮 `pip install`）；勿随意开启 `TRYON_FORCE_FALLBACK=true`（会跳过扩散）。可选表单字段 `garment_category` 改善 fallback 粘贴，见 [docs/AI_OUTFIT_PREDICT_AND_TRYON.md](../docs/AI_OUTFIT_PREDICT_AND_TRYON.md)。
 
 ### 4. 启动开发服务器
+
+以下命令须在 **`backend` 当前目录**执行（在仓库根目录运行会 `No module named 'app'`）。可使用仓库根的 **`.venv`**：`..\.venv\Scripts\python.exe`（Windows）。
+
+若 **`WinError 10048`**，表示 **8010** 已被占用，请结束旧进程或改用 `--port 8011`。
 
 ```bash
 python run.py

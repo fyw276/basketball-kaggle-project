@@ -130,6 +130,14 @@ class Settings(BaseSettings):
         default=1,
         description="虚拟试衣错误重试次数（仅对可重试错误生效）",
     )
+    TRYON_MODEL_LOCAL_PATH: str = Field(
+        default="",
+        description="可选：虚拟试衣模型本地目录；配置后优先从该目录加载，不依赖 HF cache",
+    )
+    TRYON_FORCE_FALLBACK: bool = Field(
+        default=False,
+        description="为 true 时跳过 diffusers/HF 模型加载，直接使用本地去背景+粘贴 fallback",
+    )
 
     # Subscription & quota
     USAGE_QUOTA_ENABLED: bool = Field(default=False, description="启用后执行功能额度扣减")

@@ -7,11 +7,14 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.orm import Session
 
+from app.core.logging import setup_logging
 from app.ml.color_extractor import ColorExtractor
 from app.schemas.garment import ColorSchema
 
 if TYPE_CHECKING:
     from app.models.garment import Garment
+
+logger = setup_logging()
 
 
 def _fallback_main_color() -> ColorSchema:
@@ -32,8 +35,9 @@ def refresh_garment_visuals(
 ) -> Garment:
     """
     Read bytes from ``garment.image_path``, refresh ``main_color`` / ``secondary_colors``.
-    If ``recategorize`` is True, also re-run CLIP (+ low-confidence MobileNet fallback)
-    and update ``category`` / ``feature_vector`` (same padding rules as simple upload).
+    If ``recategorize`` is True, also re-run the same recognition stack as simple upload
+    (fine-tuned API if configured, else local ImageRecognizer; optional CLIP only if
+    ``WARDROBE_USE_CLIP_FALLBACK`` is enabled) plus the low-confidence MobileNet fallback.
     """
     path = Path(garment.image_path or "")
     if not path.is_file():
@@ -49,11 +53,45 @@ def refresh_garment_visuals(
     garment.secondary_colors = [c.model_dump() for c in secondaries]
 
     if recategorize:
-        from app.api.wardrobe_simple import _normalize_auto_category
-        from app.ml.clip_recognizer import get_clip_recognizer
+        import os
 
-        recognizer = get_clip_recognizer()
-        recognition_result = recognizer.recognize(image_bytes)
+        from app.api.wardrobe_simple import _normalize_auto_category
+        from app.services.finetuned_infer_client import try_finetuned_infer
+
+        recognition_result = try_finetuned_infer(image_bytes, feature="wardrobe_simple_upload")
+        if recognition_result is None:
+            clip_allowed = str(
+                os.environ.get("WARDROBE_USE_CLIP_FALLBACK", "")
+            ).strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            clip_disabled = str(os.environ.get("DISABLE_CLIP", "")).strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            if clip_allowed and not clip_disabled:
+                from app.ml.clip_recognizer import get_clip_recognizer
+
+                recognizer = get_clip_recognizer()
+                recognition_result = recognizer.recognize(image_bytes)
+            else:
+                from app.ml.image_recognizer import ImageRecognizer
+
+                logger.warning(
+                    "Garment recategorize fell back to ImageRecognizer; skip CLIP download path"
+                )
+                legacy = ImageRecognizer().recognize(image_bytes)
+                recognition_result = {
+                    "category": legacy.category,
+                    "category_confidence": legacy.category_confidence,
+                    "style_tags": legacy.style_tags,
+                    "fit_type": None,
+                    "feature_vector": list(legacy.feature_vector),
+                }
+
         recognized_category = str(recognition_result.get("category") or "").strip()
         category_confidence = float(recognition_result.get("category_confidence") or 0.0)
         category_for_save = _normalize_auto_category(recognized_category)

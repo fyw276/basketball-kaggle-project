@@ -6,7 +6,10 @@
 
 ### 步骤 1: 启动后端服务
 
-首次克隆请配置环境文件：`cd backend` 后执行 `copy .env.example .env`（macOS/Linux: `cp .env.example .env`），再启动。
+1. **进入 `backend` 目录**再启动（在仓库根目录直接跑会出现 `No module named 'app'`）。
+2. 首次克隆可复制环境文件：`cd backend` 后 `copy .env.example .env`（macOS/Linux: `cp .env.example .env`）。**没有 `.env` 也能启动**，此时用代码默认值；无 PostgreSQL 时请设置 `DATABASE_URL=sqlite:///./outfit_local.db`（见根目录 `README.md`）。
+3. 推荐使用仓库根目录 **`.venv`** 中的 Python（与依赖一致），例如 Windows：`..\.venv\Scripts\python.exe -m uvicorn ...`
+4. 若 **`WinError 10048`**：8010 已被占用，关掉旧的 `uvicorn` 或换端口。
 
 ```bash
 cd backend

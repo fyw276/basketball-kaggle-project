@@ -36,7 +36,8 @@ tensorflow==2.18.0
 # ── NEW: Fashion AI (CLIP + Diffusers) ──────────────────────────────────────
 # CLIP for zero-shot fashion classification (FashionCLIP approach)
 transformers>=4.36.0,<5.0.0    # CLIP model support
-torch>=2.0.0                    # PyTorch for transformers
+torch>=2.6.0                    # PyTorch 2.6+ required to load diffusers .bin weights (CVE-2025-32434); use safetensors or upgrade
+torchvision>=0.22.0             # Must match torch; old torchvision breaks CLIPImageProcessor (transformers) and diffusers import
 # Stable Diffusion for virtual try-on (SD-VTON approach)
 diffusers>=0.25.0              # Stable Diffusion pipelines
 accelerate>=0.25.0              # Faster model loading

@@ -15,7 +15,9 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
+
+from huggingface_hub import snapshot_download
 
 
 def _ensure_backend_on_syspath() -> None:
@@ -36,6 +38,24 @@ def _print_kv(title: str, kv: dict) -> None:
         print(f"{k}={v}")
 
 
+def _download_model_repo(
+    model_id: str,
+    label: str,
+    allow_patterns: Optional[List[str]] = None,
+    ignore_patterns: Optional[List[str]] = None,
+) -> str:
+    print(f"\n[{label}] downloading repo: {model_id}", flush=True)
+    local_dir = snapshot_download(
+        repo_id=model_id,
+        repo_type="model",
+        allow_patterns=allow_patterns,
+        ignore_patterns=ignore_patterns,
+        max_workers=4,
+    )
+    print(f"[{label}] cached at: {local_dir}", flush=True)
+    return local_dir
+
+
 def _ensure_imports() -> None:
     try:
         import transformers  # noqa: F401
@@ -50,14 +70,11 @@ def _prefetch_clip(model_ids: Iterable[str]) -> List[str]:
 
     apply_hf_hub_env_defaults()
 
-    from transformers import CLIPModel, CLIPProcessor
-
+    model_list = list(model_ids)
     done: List[str] = []
-    for model_id in model_ids:
-        print(f"\n[CLIP] downloading: {model_id}")
-        # `from_pretrained` will populate HF cache (HF_HOME / TRANSFORMERS_CACHE)
-        CLIPModel.from_pretrained(model_id)
-        CLIPProcessor.from_pretrained(model_id)
+    for index, model_id in enumerate(model_list, start=1):
+        print(f"\n[CLIP] [{index}/{len(model_list)}] start: {model_id}", flush=True)
+        _download_model_repo(model_id, "CLIP")
         done.append(model_id)
     return done
 
@@ -77,8 +94,35 @@ def _prefetch_tryon(sd_model_id: str) -> str:
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float16 if device == "cuda" else torch.float32
-    print(f"\n[TRYON] downloading: {sd_model_id} (device={device}, dtype={dtype})")
-    StableDiffusionInpaintPipeline.from_pretrained(sd_model_id, torch_dtype=dtype)
+    print(
+        f"\n[TRYON] downloading: {sd_model_id} (device={device}, dtype={dtype})",
+        flush=True,
+    )
+    # Download only the core weights required by the inpaint pipeline.
+    # The runtime disables the safety checker / feature extractor so we do not
+    # need to prefetch those extra files.
+    required_patterns = [
+        "model_index.json",
+        "scheduler/*",
+        "text_encoder/*",
+        "tokenizer/*",
+        "unet/*",
+        "vae/*",
+    ]
+    ignore_patterns = [
+        "*.onnx",
+        "*.tflite",
+        "*.pb",
+        "*.h5",
+        "*.ot",
+        "*.msgpack",
+    ]
+    _download_model_repo(
+        sd_model_id,
+        "TRYON",
+        allow_patterns=required_patterns,
+        ignore_patterns=ignore_patterns,
+    )
     return sd_model_id
 
 
@@ -99,8 +143,16 @@ def main(argv: List[str] | None = None) -> int:
     )
     parser.add_argument(
         "--sd-model-id",
-        default=os.environ.get("SD_VTON_MODEL_ID", "runwayml/stable-diffusion-inpainting"),
+        default=os.environ.get(
+            "SD_VTON_MODEL_ID", "stable-diffusion-v1-5/stable-diffusion-inpainting"
+        ),
         help="Diffusers model id for try-on (default from SD_VTON_MODEL_ID env).",
+    )
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=5,
+        help="Retry times for unstable network download (default: 5).",
     )
 
     args = parser.parse_args(argv)
@@ -132,11 +184,24 @@ def main(argv: List[str] | None = None) -> int:
         "none": [],
     }
 
+    def _run_with_retries(label: str, fn) -> None:
+        last_error: Exception | None = None
+        for attempt in range(1, max(1, args.retries) + 1):
+            try:
+                print(f"\n[{label}] attempt {attempt}/{max(1, args.retries)}", flush=True)
+                fn()
+                return
+            except Exception as e:  # pragma: no cover
+                last_error = e
+                print(f"[{label}] attempt {attempt} failed: {e}", flush=True)
+        assert last_error is not None
+        raise last_error
+
     try:
         if args.clip != "none":
-            _prefetch_clip(clip_map[args.clip])
+            _run_with_retries("CLIP", lambda: _prefetch_clip(clip_map[args.clip]))
         if args.tryon:
-            _prefetch_tryon(args.sd_model_id)
+            _run_with_retries("TRYON", lambda: _prefetch_tryon(args.sd_model_id))
     except KeyboardInterrupt:  # pragma: no cover
         print("\nInterrupted.")
         return 130
