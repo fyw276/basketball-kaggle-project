@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
@@ -11,9 +10,45 @@ import '../../../core/utils/app_snackbar.dart';
 import '../../../core/utils/media_url.dart';
 import '../../../core/widgets/platform_image.dart';
 
-/// 虚拟试衣：上传衣服图 + 人物图
-/// 自动生成正面 / 侧面 / 背面 3 张图（伪 3D）
-/// 左右滑动轮播展示伪 3D 效果
+/// 衣物品类（传给后端 `garment_category`，用于百炼等路由）
+enum _GarmentCategoryChoice {
+  auto,
+  top,
+  bottom,
+  skirt,
+}
+
+extension _GarmentCategoryChoiceApi on _GarmentCategoryChoice {
+  /// 为 null 时不传表单字段，由后端自动推断
+  String? get apiValue {
+    switch (this) {
+      case _GarmentCategoryChoice.auto:
+        return null;
+      case _GarmentCategoryChoice.top:
+        return '上装';
+      case _GarmentCategoryChoice.bottom:
+        return '下装';
+      case _GarmentCategoryChoice.skirt:
+        return '裙装';
+    }
+  }
+
+  String get label {
+    switch (this) {
+      case _GarmentCategoryChoice.auto:
+        return '自动识别';
+      case _GarmentCategoryChoice.top:
+        return '上装';
+      case _GarmentCategoryChoice.bottom:
+        return '下装';
+      case _GarmentCategoryChoice.skirt:
+        return '裙装';
+    }
+  }
+}
+
+/// 虚拟试衣：上传衣服图 + 人物照（建议全身正面），单次请求生成一张结果图。
+/// 品类（上装/下装/裙装）用于后端与专用 VTON 路由；试裤子时请选手动「下装」。
 class VirtualTryonScreen extends StatefulWidget {
   const VirtualTryonScreen({super.key});
 
@@ -24,13 +59,12 @@ class VirtualTryonScreen extends StatefulWidget {
 class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
   XFile? _garmentImage;
   String? _garmentQualityHint;
-  // 人物多视角：正面必填，侧面/背面可选
   XFile? _personFront;
-  XFile? _personSide;
-  XFile? _personBack;
+  _GarmentCategoryChoice _garmentCategory = _GarmentCategoryChoice.auto;
   bool _loading = false;
   bool _usedFallback = false;
-  // 伪 3D 结果：正面、侧面、背面
+
+  /// 试衣结果图 URL 列表（当前为单次生成，通常 1 张；保留列表以兼容轮播）
   List<String> _results = [];
   int _currentIndex = 0;
   final _pageCtrl = PageController();
@@ -106,22 +140,6 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
     if (img != null) setState(() => _personFront = img);
   }
 
-  Future<void> _pickPersonSide() async {
-    final source = await _pickSource();
-    if (source == null) return;
-    final picker = ImagePicker();
-    final img = await picker.pickImage(source: source);
-    if (img != null) setState(() => _personSide = img);
-  }
-
-  Future<void> _pickPersonBack() async {
-    final source = await _pickSource();
-    if (source == null) return;
-    final picker = ImagePicker();
-    final img = await picker.pickImage(source: source);
-    if (img != null) setState(() => _personBack = img);
-  }
-
   Future<void> _generate() async {
     if (_garmentImage == null || _personFront == null) return;
 
@@ -160,58 +178,46 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
 
     final base = auth.apiClient.baseUrl;
     try {
-      // 3 次请求：front / side / back（若用户提供对应人物照则绑定，否则复用正面照）
-      final views = <({String view, String label, XFile? person})>[
-        (view: 'front view', label: '正面', person: _personFront),
-        (view: 'side view', label: '侧面', person: _personSide ?? _personFront),
-        (view: 'back view', label: '背面', person: _personBack ?? _personFront),
-      ];
-
-      final urls = <String>[];
-      for (final v in views) {
-        final raw = await auth.apiClient.virtualTryon(
-          garmentImage: _garmentImage,
-          personImage: v.person,
-          prompt: v.view,
-        );
-        final map = Map<String, dynamic>.from(raw as Map<dynamic, dynamic>);
-        if (map['error'] != null) {
-          if (mounted) {
-            showAppSnackBar(
-              context,
-              '试衣失败：${userFacingApiError(map['error'])}',
-            );
-          }
-          setState(() {
-            _loading = false;
-          });
-          return;
+      final raw = await auth.apiClient.virtualTryon(
+        garmentImage: _garmentImage,
+        personImage: _personFront,
+        garmentCategory: _garmentCategory.apiValue,
+      );
+      final map = Map<String, dynamic>.from(raw as Map<dynamic, dynamic>);
+      if (map['error'] != null) {
+        if (mounted) {
+          showAppSnackBar(
+            context,
+            '试衣失败：${userFacingApiError(map['error'])}',
+          );
         }
-
-        if (map['status']?.toString() == 'error') {
-          if (mounted) {
-            showAppSnackBar(
-              context,
-              map['message']?.toString() ?? '试衣失败',
-            );
-          }
-          setState(() {
-            _loading = false;
-          });
-          return;
-        }
-
-        final status = map['status']?.toString();
-        if (status == 'fallback') {
-          _usedFallback = true;
-        }
-
-        final resultUrl = map['result_image_url']?.toString();
-        final resolved = resolveGarmentImageUrl(resultUrl, base);
-        urls.add(resolved ?? '');
+        setState(() {
+          _loading = false;
+        });
+        return;
       }
 
-      _results = urls;
+      if (map['status']?.toString() == 'error') {
+        if (mounted) {
+          showAppSnackBar(
+            context,
+            map['message']?.toString() ?? '试衣失败',
+          );
+        }
+        setState(() {
+          _loading = false;
+        });
+        return;
+      }
+
+      final status = map['status']?.toString();
+      if (status == 'fallback') {
+        _usedFallback = true;
+      }
+
+      final resultUrl = map['result_image_url']?.toString();
+      final resolved = resolveGarmentImageUrl(resultUrl, base);
+      _results = resolved != null && resolved.isNotEmpty ? [resolved] : [];
     } catch (e) {
       if (mounted) {
         showAppSnackBar(context, '请求失败：${userFacingApiError(e)}');
@@ -237,7 +243,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
   Future<String?> _precheckTryOnInputs() async {
     final garment = _garmentImage;
     final person = _personFront;
-    if (garment == null || person == null) return '请先上传衣服图和正面照';
+    if (garment == null || person == null) return '请先上传衣服图和人物照';
 
     final garmentCheck = await _inspectImage(garment);
     if (garmentCheck != null) return garmentCheck;
@@ -670,7 +676,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                 const SizedBox(width: 16),
                 Expanded(
                   child: _PickBox(
-                    label: '正面照（必填）',
+                    label: '人物照（必填，建议全身）',
                     image: _personFront,
                     onTap: _pickPerson,
                     onClear: () => setState(() => _personFront = null),
@@ -687,29 +693,80 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                 color: _garmentQualityColor(_garmentQualityHint, palette),
               ),
             ],
+            const SizedBox(height: 14),
+            Text(
+              '衣物品类',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: palette.textTitle,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: _GarmentCategoryChoice.values.map((c) {
+                final selected = _garmentCategory == c;
+                return ChoiceChip(
+                  label: Text(c.label),
+                  selected: selected,
+                  onSelected: (_) => setState(() => _garmentCategory = c),
+                  selectedColor: palette.primary.withValues(alpha: 0.22),
+                  labelStyle: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: selected ? palette.primary : palette.textBody,
+                  ),
+                );
+              }).toList(),
+            ),
             const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: _PickBox(
-                    label: '侧面照（可选）',
-                    image: _personSide,
-                    onTap: _pickPersonSide,
-                    onClear: () => setState(() => _personSide = null),
-                    palette: palette,
-                  ),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.amber.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: Colors.amber.withValues(alpha: 0.35),
                 ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: _PickBox(
-                    label: '背面照（可选）',
-                    image: _personBack,
-                    onTap: _pickPersonBack,
-                    onClear: () => setState(() => _personBack = null),
-                    palette: palette,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        Icons.warning_amber_rounded,
+                        size: 18,
+                        color: Colors.amber.shade900,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '试裤子、裙子时请点选对应品类；仅用「自动」可能路由不准。',
+                          style: TextStyle(
+                            fontSize: 12,
+                            height: 1.35,
+                            color: palette.textBody,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-              ],
+                  const SizedBox(height: 8),
+                  Text(
+                    '人物图请尽量「全身、正面」；试裤子需拍到腿部。若人物已穿连衣裙等一体式服装，再试裤子容易与模型假设冲突，建议换简洁上下装照片。',
+                    style: TextStyle(
+                      fontSize: 12,
+                      height: 1.35,
+                      color: palette.textBody,
+                    ),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 24),
 
@@ -737,7 +794,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                             strokeWidth: 2, color: Colors.white),
                       )
                     : const Icon(Icons.auto_fix_high),
-                label: Text(_loading ? '正在生成多角度试衣图…' : '生成虚拟试衣',
+                label: Text(_loading ? '正在生成试衣图…' : '生成虚拟试衣',
                     style: const TextStyle(
                         fontSize: 16, fontWeight: FontWeight.w700)),
               ),
@@ -751,7 +808,6 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 12),
-              // 伪 3D 轮播
               _TryOnCarousel(
                 urls: _results,
                 palette: palette,
@@ -761,30 +817,32 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                 aspectRatioCache: _aspectRatioCache,
               ),
               const SizedBox(height: 12),
-              // 页码指示器
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: List.generate(_results.length, (i) {
-                  return AnimatedContainer(
-                    duration: const Duration(milliseconds: 250),
-                    margin: const EdgeInsets.symmetric(horizontal: 4),
-                    width: i == _currentIndex ? 24 : 8,
-                    height: 8,
-                    decoration: BoxDecoration(
-                      color: i == _currentIndex
-                          ? palette.primary
-                          : palette.divider,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                  );
-                }),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '← 左右滑动查看多角度 →',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 12, color: palette.textBody),
-              ),
+              if (_results.length > 1) ...[
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: List.generate(_results.length, (i) {
+                    return AnimatedContainer(
+                      duration: const Duration(milliseconds: 250),
+                      margin: const EdgeInsets.symmetric(horizontal: 4),
+                      width: i == _currentIndex ? 24 : 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: i == _currentIndex
+                            ? palette.primary
+                            : palette.divider,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    );
+                  }),
+                ),
+                const SizedBox(height: 8),
+              ],
+              if (_results.length > 1)
+                Text(
+                  '← 左右滑动切换 →',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 12, color: palette.textBody),
+                ),
             ],
           ],
         ),

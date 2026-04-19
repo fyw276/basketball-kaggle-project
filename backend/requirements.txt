@@ -27,7 +27,8 @@ pydantic-settings==2.7.1
 email-validator==2.2.0
 
 # Image Processing
-Pillow==11.1.0
+# Pillow 12+ 与可选 rembg 更兼容；与 TF/torch 常用组合无冲突
+Pillow>=12.1.0,<13.0.0
 opencv-python==4.10.0.84
 
 # Machine Learning - 使用 TensorFlow 2.18+ (支持 Python 3.14)
@@ -36,15 +37,16 @@ tensorflow==2.18.0
 # ── NEW: Fashion AI (CLIP + Diffusers) ──────────────────────────────────────
 # CLIP for zero-shot fashion classification (FashionCLIP approach)
 transformers>=4.36.0,<5.0.0    # CLIP model support
-torch>=2.6.0                    # PyTorch 2.6+ required to load diffusers .bin weights (CVE-2025-32434); use safetensors or upgrade
-torchvision>=0.22.0             # Must match torch; old torchvision breaks CLIPImageProcessor (transformers) and diffusers import
+# 务必加版本上界：否则 pip 会装成 torch 2.11+（CPU 轮），覆盖你在 CUDA 上手动装的 +cu124
+torch>=2.6.0,<2.7.0
+torchvision>=0.21.0,<0.22.0     # 须与 torch 小版本一致；CUDA 请见 docs/PYTORCH_CUDA_WINDOWS.md
 # Stable Diffusion for virtual try-on (SD-VTON approach)
 diffusers>=0.25.0              # Stable Diffusion pipelines
 accelerate>=0.25.0              # Faster model loading
 # Scipy for image processing (used in virtual try-on)
 scipy>=1.11.0                  # For morphological operations in masking
 opencv-python-headless>=4.9.0  # Lightweight OpenCV (no GUI)
-# Optional: pip install rembg — stronger garment cutout for virtual try-on (fallback path)
+# 可选 rembg：试衣抠图更强。注意 rembg 2.x 常要求 numpy>=2.3，与本文件为 TensorFlow 保留的 numpy<2.1 冲突——请勿与 rembg 同环境强装，或改用独立 venv / 卸载 rembg。
 
 # Scientific Computing
 numpy>=1.26.0,<2.1.0
@@ -54,6 +56,7 @@ scikit-learn==1.6.1
 # Utilities
 python-dotenv==1.0.1
 httpx==0.28.1
+dashscope>=1.20.0,<2.0.0  # 阿里云百炼 / DashScope（可选：虚拟试衣 wanx）
 
 # Logging
 loguru==0.7.3

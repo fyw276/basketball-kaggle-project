@@ -1,0 +1,24 @@
+# 示例：仅展示如何将 vton_inference_service 与主 API 分列部署。
+# 真实 OOTDiffusion/IDM 需在镜像内安装 CUDA、PyTorch 与上游依赖，并替换 Stub — 此处为 CPU Stub 示例。
+version: "3.8"
+services:
+  vton-stub:
+    build:
+      context: ../../vton_inference_service
+      dockerfile: Dockerfile
+    ports:
+      - "8011:8011"
+    environment:
+      - VTON_STUB_MODE=true
+    # 若需与主 API 共享密钥：
+    # - VTON_SERVICE_API_KEY=change-me
+
+  # 主应用（示例）需自行配置 DATABASE_URL、JWT 等，并设置：
+  # VTON_INFERENCE_URL=http://vton-stub:8011/v1/tryon
+  # clothing-api:
+  #   build:
+  #     context: ../../backend
+  #   depends_on:
+  #     - vton-stub
+  #   environment:
+  #     - VTON_INFERENCE_URL=http://vton-stub:8011/v1/tryon

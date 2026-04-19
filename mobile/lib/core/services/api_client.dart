@@ -769,14 +769,14 @@ class ApiClient {
   // 后端路由: POST /tryon/garment
   // 后端字段: garment_file=UploadFile, person_file=UploadFile, prompt=str, model_gender=str
 
-  /// 虚拟试衣：CPU 扩散常超过 3 分钟，默认单次超时 15 分钟；页面会连发 3 次（正/侧/背）。
+  /// 虚拟试衣：单次请求一张结果；本机 diffusers 首次可能需长时间加载，默认超时 40 分钟。
   Future<Map<String, dynamic>> virtualTryon({
     dynamic garmentImage,
     dynamic personImage,
     String? prompt,
     String modelGender = 'neutral',
     String? garmentCategory,
-    Duration timeout = const Duration(seconds: 900),
+    Duration timeout = const Duration(seconds: 2400),
   }) async {
     try {
       final request = http.MultipartRequest(

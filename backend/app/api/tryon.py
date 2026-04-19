@@ -22,6 +22,31 @@ from app.services.subscription_billing import consume_usage
 router = APIRouter(prefix="/tryon", tags=["Virtual Try-On"])
 
 
+def _pil_image_to_jpeg_bytes(img, quality: int = 90) -> bytes:
+    """
+    Encode a PIL image as JPEG bytes.
+
+    Saving directly to io.BytesIO can fail on Windows: BytesIO has no fileno(), and
+    Pillow's JPEG path may fall into a buggy encoder branch (TypeError: 16 vs 17 args).
+    Writing to a real temp file avoids that.
+    """
+    import os
+    import tempfile
+
+    rgb = img.convert("RGB")
+    fd, path = tempfile.mkstemp(suffix=".jpg")
+    try:
+        os.close(fd)
+        rgb.save(path, format="JPEG", quality=quality, optimize=False)
+        with open(path, "rb") as f:
+            return f.read()
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
 class TryOnResponse(BaseModel):
     """Virtual try-on response"""
 
@@ -192,10 +217,27 @@ async def try_on_garment(
         garment_image = Image.open(BytesIO(garment_bytes)).convert("RGB")
         person_image = Image.open(BytesIO(person_bytes)).convert("RGB")
 
-        # Run virtual try-on
-        from app.services.virtual_tryon import get_tryon_service
+        from app.services.bailian_tryon_client import call_bailian_tryon
+        from app.services.virtual_tryon import (
+            check_tryon_garment_has_face,
+            get_tryon_service,
+            sanitize_tryon_prompt,
+        )
+        from app.services.vton_remote_client import call_remote_vton
 
-        service = get_tryon_service()
+        gc = (garment_category or "").strip() or None
+        prompt_clean = sanitize_tryon_prompt(prompt or None) or ""
+
+        if check_tryon_garment_has_face(garment_image):
+            record_dependency_outcome("tryon", "failure")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "message": "衣服图检测到人像，请上传无模特的白底商品图，否则会出现重影。",
+                    "error_code": "TRYON_GARMENT_CONTAINS_MODEL",
+                    "retryable": False,
+                },
+            )
 
         max_retries = max(0, int(getattr(settings, "TRYON_MAX_RETRIES", 1) or 1))
         result = None
@@ -204,29 +246,79 @@ async def try_on_garment(
         last_msg = "Virtual try-on failed"
         last_retryable = False
 
-        gc = (garment_category or "").strip() or None
-        for attempt in range(max_retries + 1):
-            result = service.tryon_garment(
-                garment_image=garment_image,
-                person_image=person_image,
-                prompt=prompt or None,
-                model_gender=model_gender,
-                garment_category=gc,
-            )
+        used_bailian = False
+        used_remote_vton = False
 
-            st = (result or {}).get("status") or ""
-            if st != "error":
-                break
+        bailian_result = await call_bailian_tryon(
+            garment_bytes=garment_bytes,
+            person_bytes=person_bytes,
+            prompt=prompt_clean,
+            garment_category=gc,
+        )
+        if bailian_result is not None:
+            st_b = (bailian_result.get("status") or "").lower()
+            if st_b in ("success", "fallback"):
+                result = bailian_result
+                used_bailian = True
+            elif not getattr(settings, "DASHSCOPE_TRYON_FALLBACK_LOCAL", True):
+                record_dependency_outcome("tryon", "failure")
+                http_code, err_code, err_msg, retryable = _normalize_tryon_error(bailian_result)
+                raise HTTPException(
+                    status_code=http_code,
+                    detail={
+                        "message": err_msg,
+                        "error_code": err_code,
+                        "retryable": retryable,
+                    },
+                )
 
-            http_code, err_code, err_msg, retryable = _normalize_tryon_error(result or {})
-            last_http, last_code, last_msg, last_retryable = (
-                http_code,
-                err_code,
-                err_msg,
-                retryable,
-            )
-            if not retryable or attempt >= max_retries:
-                break
+        if result is None:
+            try:
+                remote_result = await call_remote_vton(
+                    garment_bytes=garment_bytes,
+                    person_bytes=person_bytes,
+                    prompt=prompt_clean,
+                    model_gender=model_gender,
+                    garment_category=gc,
+                )
+            except Exception as e:
+                record_dependency_outcome("tryon", "failure")
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        "message": f"远程试衣服务不可用: {e}",
+                        "error_code": "VTON_REMOTE_UNAVAILABLE",
+                        "retryable": True,
+                    },
+                ) from e
+
+            if remote_result is not None:
+                result = remote_result
+                used_remote_vton = True
+            else:
+                service = get_tryon_service()
+                for attempt in range(max_retries + 1):
+                    result = service.tryon_garment(
+                        garment_image=garment_image,
+                        person_image=person_image,
+                        prompt=prompt_clean or None,
+                        model_gender=model_gender,
+                        garment_category=gc,
+                    )
+
+                    st = (result or {}).get("status") or ""
+                    if st != "error":
+                        break
+
+                    http_code, err_code, err_msg, retryable = _normalize_tryon_error(result or {})
+                    last_http, last_code, last_msg, last_retryable = (
+                        http_code,
+                        err_code,
+                        err_msg,
+                        retryable,
+                    )
+                    if not retryable or attempt >= max_retries:
+                        break
 
         st = (result or {}).get("status") or ""
         if st == "error":
@@ -242,10 +334,7 @@ async def try_on_garment(
 
         # Save result image
         if result["result_image"] is not None:
-            # Save the result
-            output = BytesIO()
-            result["result_image"].save(output, format="JPEG", quality=90)
-            output.seek(0)
+            jpeg_bytes = _pil_image_to_jpeg_bytes(result["result_image"], quality=90)
 
             # Use a stable, collision-resistant key so different inputs never overwrite each other.
             # NOTE: built-in `hash()` is salted per-process and the old modulo could collide easily.
@@ -254,6 +343,9 @@ async def try_on_garment(
             from app.services.virtual_tryon import FALLBACK_PIPELINE_VERSION
 
             gc_bytes = ((garment_category or "").strip()).encode("utf-8", errors="ignore")
+            route_tag = (
+                b"bailian" if used_bailian else (b"remote_vton" if used_remote_vton else b"local")
+            )
             key_src = (
                 garment_bytes
                 + b"||"
@@ -266,12 +358,14 @@ async def try_on_garment(
                 + gc_bytes
                 + b"||"
                 + FALLBACK_PIPELINE_VERSION.encode("utf-8", errors="ignore")
+                + b"||"
+                + route_tag
             )
             key = hashlib.sha256(key_src).hexdigest()[:16]
             result_path = os.path.join(str(current_user.user_id), "tryon", f"result_{key}.jpg")
 
             storage_service = get_storage_service()
-            saved_path, result_url = storage_service._save_bytes(output.getvalue(), result_path)
+            saved_path, result_url = storage_service._save_bytes(jpeg_bytes, result_path)
             result_image_url = result_url
         else:
             result_image_url = None

@@ -1,6 +1,6 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-04-18（虚拟试衣：diffusers 依赖与 fallback 粘贴策略、`garment_category` 表单字段；本地启动与端口占用说明同步）
+**最后更新**: 2026-04-19（虚拟试衣：百炼可选接入、`VTON_INFERENCE_URL` 远程链路与 Stub 服务、Flutter 单次试衣请求与品类选择；Windows 下试衣结果 JPEG 保存修复；文档见 [`docs/VTON_DELIVERY_2026-04.md`](docs/VTON_DELIVERY_2026-04.md)）
 **状态**: ✅ 可用于演示与迭代（后端 FastAPI + Flutter Web/移动端）
 
 ## 项目简介
@@ -39,8 +39,7 @@
 - 后端输出：风格建议、适用场景、配色倾向（权重）、衣橱单品匹配列表
 
 ### 5. 虚拟试衣（Try-on）
-- 前端自动 3 次请求生成 `front/side/back view`
-- 支持人物 3 视角上传：正面必填，侧面/背面可选（未上传则复用正面照）
+- Flutter **单次请求**生成一张试衣结果图（轮播 UI 兼容单张）；历史多视角人物照仍可上传正面（必填）及可选侧面/背面，未上传则复用正面照
 - **衣服图**：需无模特（后端做人脸检测）；**扩散模型就绪**时用 Stable Diffusion inpainting；否则 **去背景 + alpha 粘贴（fallback）**，并按可选 **`garment_category`**（如衣柜里的「下装」）改善下装锚点与上半身遮罩，避免整块商品图盖住躯干
 - **依赖**：`torch` 与 `torchvision` 须同一代、成对安装（例如均来自同一 `pip install`）；否则可能出现 `CLIPImageProcessor` / `torchvision::nms` 导入失败并长期落在 fallback
 - 勿在 `.env` 中开启 **`TRYON_FORCE_FALLBACK=true`**（除非刻意跳过扩散）；详见 [`docs/AI_OUTFIT_PREDICT_AND_TRYON.md`](docs/AI_OUTFIT_PREDICT_AND_TRYON.md)
@@ -58,7 +57,7 @@
 - **数据库**: PostgreSQL + Redis
 - **AI**:
   - CLIP（`transformers` + `torch`）用于类别/风格/场景与相似检索特征
-  - 虚拟试衣：diffusers inpainting pipeline（可选，需下载模型；未就绪时 fallback）
+  - 虚拟试衣：可选 **百炼（DashScope）**、**`VTON_INFERENCE_URL` 远程专用 VTON**、或本机 **diffusers** inpainting（未就绪时 fallback）；概述见 [`docs/VTON_DELIVERY_2026-04.md`](docs/VTON_DELIVERY_2026-04.md)
 
 ### 移动端 (Flutter)
 - **框架**: Flutter 3.x + Dart（iOS / Android / Web）
@@ -152,6 +151,7 @@ clothing-assistant/
 - [ECS 部署目录与 Tar/Git 模式、RELEASE_MANIFEST](deploy/ecs/README.md)
 - [线上值班速查（1页）](docs/ONCALL_QUICK_REFERENCE.md)
 - [本地完整运行 + 最小 API 接入（执行清单）](docs/LOCAL_FULL_RUN_AND_MINIMAL_API.md)
+- [专用 VTON（OOTDiffusion / IDM-VTON）选型、PoC 与 `VTON_INFERENCE_URL`](docs/VTON_INTEGRATION.md) · [2026-04 试衣/百炼/Stub 交付说明](docs/VTON_DELIVERY_2026-04.md) · [最小 HTTP 服务 `vton_inference_service/`](vton_inference_service/README.md)
 
 ### 环境要求
 
@@ -159,6 +159,7 @@ clothing-assistant/
 - PostgreSQL 14+ (开发环境可使用 SQLite)
 - Redis 7+ (可选，用于缓存)
 - Flutter 3.x (前端开发)
+- 使用 **NVIDIA GPU + 本机 PyTorch CUDA** 时：全量 `pip install -r requirements.txt` 可能把 `torch` 换成 **CPU 新版**；恢复方式见 [docs/PYTORCH_CUDA_WINDOWS.md](docs/PYTORCH_CUDA_WINDOWS.md)。
 
 ### 快速启动
 

@@ -108,6 +108,16 @@ flutter run --dart-define=PREDICT_API_PORT=8010
 
 ## 3. 虚拟试衣（`/api/v1/tryon/garment`）
 
+### 服务端推理优先级（实现）
+
+主应用在 [`tryon.py`](../backend/app/api/tryon.py) 中按顺序尝试：
+
+1. **百炼（DashScope）**：`DASHSCOPE_TRYON_ENABLED=true` 且配置 `DASHSCOPE_API_KEY`（详见 [`VTON_INTEGRATION.md`](VTON_INTEGRATION.md)）。
+2. **远程专用 VTON**：`VTON_INFERENCE_URL`（multipart 契约与 [`vton_remote_client.py`](../backend/app/services/vton_remote_client.py) 一致）。
+3. **本机 `virtual_tryon`**：diffusers inpainting，失败则抠图 + 粘贴 fallback。
+
+交付摘要见 [`VTON_DELIVERY_2026-04.md`](VTON_DELIVERY_2026-04.md)。
+
 ### 认证
 
 需 JWT（`Authorization: Bearer`），与主 API 一致。
@@ -170,10 +180,14 @@ fallback 合成链路，适合校园网或未完成模型下载时先验证接�
 
 ### Flutter 客户端
 
-- 单次请求超时默认较长（虚拟试衣 CPU 推理慢），见 `ApiClient.virtualTryon`。
-- 可选参数 **`garmentCategory`**：非空时随 multipart 发送 `garment_category`，与衣橱品类一致时 fallback 效果更好。
+- **单次请求**返回一张结果图（见 `VirtualTryonScreen`）；超时默认较长（虚拟试衣 CPU/GPU 推理慢），见 `ApiClient.virtualTryon`。
+- 可选参数 **`garmentCategory`**：非空时随 multipart 发送 `garment_category`（如 `上装` / `下装` / `裙装`），供百炼与远程 VTON 路由；与衣橱品类一致时本机 fallback 锚点效果更好。
 - 非 200 响应会解析 JSON 中的 **`detail`**（FastAPI 错误信息）。
 - 页面提示：**请上传无模特的衣服图，否则效果会出现重影**。
+
+### Windows 与结果图 JPEG
+
+在部分 Windows 环境将 PIL 图像直接保存到内存 `BytesIO` 再编码 JPEG 可能触发 Pillow 内部异常；后端对试衣结果采用**临时文件**写出 JPEG 再读回字节，避免扩散成功但接口 500。详见 [`VTON_DELIVERY_2026-04.md`](VTON_DELIVERY_2026-04.md)。
 
 ---
 
@@ -190,3 +204,4 @@ fallback 合成链路，适合校园网或未完成模型下载时先验证接�
 - 若某处仍写「predict 仅在 8765」或「主 API 无 `/predict`」——以 **本节第 1 条** 为准：主应用已挂载 **`POST /predict`**。
 - 若写「虚拟试衣为半透明叠图」——以 **本节第 3 条** 为准：fallback 已改为 **抠图 + 粘贴**（并拒绝含人脸的衣服图）。
 - 若写「试衣仅粘贴、无扩散」——以环境为准：依赖齐全且未设 `TRYON_FORCE_FALLBACK` 时，应能加载 **inpainting**；日志中 **`Using fallback composition mode`** 表示本次仍在 fallback，需对照 **`Failed to load try-on model`** 的完整报错排查（多为 torch/torchvision 不匹配或离线缓存缺失）。
+- 若写「前端对试衣自动发起 3 次请求」——以当前 Flutter 为准：**单次请求**一张结果图（多视角人物照仍为可选上传，不是三次试衣 API 调用）。

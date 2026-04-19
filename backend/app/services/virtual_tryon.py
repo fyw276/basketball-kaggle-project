@@ -31,6 +31,19 @@ logger = setup_logging()
 # Bump this to force new cached results for fallback.
 FALLBACK_PIPELINE_VERSION = "fallback_v7"
 
+# 旧客户端曾传「front view」等，易把通用 inpainting 带偏成场景生成而非试衣
+_VIEW_PROMPT_DISCARD = frozenset({"front view", "side view", "back view"})
+
+
+def sanitize_tryon_prompt(prompt: Optional[str]) -> Optional[str]:
+    """Drop misleading view-only prompts; keep None for default try-on prompts."""
+    if not prompt or not str(prompt).strip():
+        return None
+    s = str(prompt).strip().lower()
+    if s in _VIEW_PROMPT_DISCARD:
+        return None
+    return str(prompt).strip()
+
 
 def _infer_fallback_placement(garment_category: Optional[str]) -> Optional[str]:
     """Map wardrobe category to paste region: bottom, top, or None (aspect heuristics only)."""
@@ -326,6 +339,8 @@ class VirtualTryOnService:
                 - metadata: Processing info (steps, seed, model_gender, etc.)
         """
         logger.info(f"Starting virtual try-on (model_gender={model_gender})")
+
+        prompt = sanitize_tryon_prompt(prompt)
 
         # Check cache (include model_gender in cache key)
         cache_key = self._compute_cache_key(
@@ -1369,3 +1384,12 @@ def get_tryon_service() -> VirtualTryOnService:
     if _tryon_instance is None:
         _tryon_instance = VirtualTryOnService()
     return _tryon_instance
+
+
+def check_tryon_garment_has_face(garment_image: Image.Image) -> bool:
+    """True if the garment product photo likely contains a face (reject before upstream APIs)."""
+    svc = get_tryon_service()
+    fn = getattr(svc, "_garment_has_face", None)
+    if fn is None:
+        return False
+    return bool(fn(garment_image))

@@ -138,6 +138,57 @@ class Settings(BaseSettings):
         default=False,
         description="为 true 时跳过 diffusers/HF 模型加载，直接使用本地去背景+粘贴 fallback",
     )
+    # 可选：专用 2D VTON 远程推理（照片级试衣）；非空时 POST /tryon/garment 优先转发，详见 docs/VTON_INTEGRATION.md
+    VTON_INFERENCE_URL: str = Field(
+        default="",
+        description="例如 http://127.0.0.1:8011/v1/tryon；空则使用本机 virtual_tryon",
+    )
+    VTON_INFERENCE_TIMEOUT_SECONDS: float = Field(
+        default=2400.0,
+        description="远程 VTON 请求超时（秒）；首次加载模型可能很久",
+    )
+    VTON_INFERENCE_API_KEY: str = Field(
+        default="",
+        description="可选 Bearer Token，调用远程 VTON 时使用",
+    )
+
+    # 阿里云百炼 / DashScope（虚拟试衣：通义万相等 image2image；见 docs/VTON_INTEGRATION.md）
+    DASHSCOPE_TRYON_ENABLED: bool = Field(
+        default=False,
+        description="为 true 且配置了 DASHSCOPE_API_KEY 时，POST /tryon/garment 优先走百炼",
+    )
+    DASHSCOPE_API_KEY: str = Field(
+        default="",
+        description="DashScope API Key（与百炼控制台 API-KEY 一致）",
+    )
+    DASHSCOPE_TRYON_MODEL: str = Field(
+        default="wanx2.1-imageedit",
+        description="默认识别模型；空则回退 wanx2.1-imageedit",
+    )
+    DASHSCOPE_TRYON_MODEL_TOP: str = Field(
+        default="",
+        description="可选：上装品类覆盖模型名；空则用 DASHSCOPE_TRYON_MODEL",
+    )
+    DASHSCOPE_TRYON_MODEL_BOTTOM: str = Field(
+        default="",
+        description="可选：下装品类覆盖模型名",
+    )
+    DASHSCOPE_TRYON_MODEL_SKIRT: str = Field(
+        default="",
+        description="可选：裙装品类覆盖模型名",
+    )
+    DASHSCOPE_TRYON_FUNCTION: str = Field(
+        default="stylization_all",
+        description="万相图像编辑 function，如 stylization_all；以控制台文档为准",
+    )
+    DASHSCOPE_TRYON_FALLBACK_LOCAL: bool = Field(
+        default=True,
+        description="百炼失败时是否回退到远程 VTON 或本机 virtual_tryon",
+    )
+    DASHSCOPE_TRYON_DOWNLOAD_TIMEOUT_SECONDS: float = Field(
+        default=120.0,
+        description="从百炼返回的 OSS URL 下载结果图超时（秒）",
+    )
 
     # Subscription & quota
     USAGE_QUOTA_ENABLED: bool = Field(default=False, description="启用后执行功能额度扣减")

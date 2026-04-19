@@ -1,0 +1,5 @@
+# 独立进程：与主 backend 的依赖隔离，避免与 TF/torch 主栈冲突
+fastapi>=0.115.0,<0.116.0
+uvicorn[standard]>=0.34.0,<0.35.0
+python-multipart>=0.0.9,<0.1.0
+Pillow>=11.0.0,<13.0.0

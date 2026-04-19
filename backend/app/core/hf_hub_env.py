@@ -7,8 +7,30 @@
 
 from __future__ import annotations
 
+import importlib.util
+import logging
 import os
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+def _disable_hf_transfer_if_package_missing() -> None:
+    """
+    huggingface_hub: HF_HUB_ENABLE_HF_TRANSFER=1 requires the optional `hf_transfer`
+    package. If the env is set (often globally on Windows) but the package is
+    absent, any from_pretrained (including cache hits) fails immediately.
+    """
+    flag = (os.environ.get("HF_HUB_ENABLE_HF_TRANSFER") or "").strip().lower()
+    if flag not in ("1", "true", "yes", "on"):
+        return
+    if importlib.util.find_spec("hf_transfer") is not None:
+        return
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+    logger.info(
+        "HF_HUB_ENABLE_HF_TRANSFER was set but hf_transfer is not installed; "
+        "disabled fast transfer. Install with: pip install hf_transfer"
+    )
 
 
 def sync_hf_env_from_settings(settings: Any) -> None:
@@ -33,6 +55,7 @@ def sync_hf_env_from_settings(settings: Any) -> None:
 
 def apply_hf_hub_env_defaults() -> None:
     """幂等：仅对未设置的环境变量写入默认值。"""
+    _disable_hf_transfer_if_package_missing()
     # 单次下载/连接超时（秒），官方默认偏短，易在国内网络下失败
     os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
     # huggingface_hub 对 `HEAD` / etag 的超时（默认约 10s，常导致国内网络反复重试）

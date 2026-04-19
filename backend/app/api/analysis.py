@@ -6,7 +6,7 @@ import io
 import json
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from PIL import Image
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -427,7 +427,10 @@ async def recommend_outfits(
         description="多张图片（字段名 files，可重复；优先于 file）",
     ),
     num_outfits: int = 3,
-    scene: Optional[str] = None,
+    scene: Optional[str] = Form(
+        default=None,
+        description="穿搭场景，与前端 chip 一致（multipart 表单字段 scene）",
+    ),
     # 无性别推荐系统参数（修正版）
     gender_expression: Optional[float] = Query(
         default=None,
