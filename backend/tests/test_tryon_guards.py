@@ -122,3 +122,121 @@ def test_tryon_error_envelope_contains_error_code_and_retryable(
     assert isinstance(err, dict)
     assert err.get("error_code") == "TRYON_UPSTREAM_QUOTA"
     assert err.get("retryable") is True
+
+
+def test_tryon_result_image_url_uses_forward_slashes_only(
+    client: TestClient, auth_headers: dict, monkeypatch: pytest.MonkeyPatch
+):
+    """E2E contract: result_image_url should be URL-safe on Windows."""
+
+    async def _stub_bailian_tryon(**kwargs):
+        return {
+            "result_image": Image.new("RGB", (64, 64), color=(200, 200, 200)),
+            "status": "success",
+            "message": "ok",
+            "metadata": {"provider": "stub"},
+        }
+
+    def _stub_check_tryon_garment_has_face(_img):
+        return False
+
+    import app.services.bailian_tryon_client as bailian_tryon_client
+    import app.services.virtual_tryon as virtual_tryon
+
+    monkeypatch.setattr(bailian_tryon_client, "call_bailian_tryon", _stub_bailian_tryon)
+    monkeypatch.setattr(
+        virtual_tryon,
+        "check_tryon_garment_has_face",
+        _stub_check_tryon_garment_has_face,
+    )
+
+    garment_bytes = _jpeg_bytes(color=(250, 250, 250))
+    person_bytes = _jpeg_bytes(color=(220, 220, 220))
+    files = {
+        "garment_file": ("garment.jpg", garment_bytes, "image/jpeg"),
+        "person_file": ("person.jpg", person_bytes, "image/jpeg"),
+    }
+    res = client.post("/api/v1/tryon/garment", headers=auth_headers, files=files)
+
+    assert res.status_code == status.HTTP_200_OK
+    body = res.json()
+    data = body.get("data") if isinstance(body, dict) else None
+    assert isinstance(data, dict)
+    url = data.get("result_image_url")
+    assert isinstance(url, str) and url.startswith("/uploads/")
+    assert "\\" not in url
+
+
+def test_tryon_bottom_category_forces_identity_fallback_and_skips_upstreams(
+    client: TestClient, auth_headers: dict, monkeypatch: pytest.MonkeyPatch
+):
+    calls = {"bailian": 0, "remote": 0}
+
+    async def _stub_bailian_tryon(**kwargs):
+        calls["bailian"] += 1
+        return {
+            "result_image": Image.new("RGB", (64, 64), color=(1, 2, 3)),
+            "status": "success",
+            "message": "should_not_be_used",
+            "metadata": {},
+        }
+
+    async def _stub_remote_vton(**kwargs):
+        calls["remote"] += 1
+        return {
+            "result_image": Image.new("RGB", (64, 64), color=(4, 5, 6)),
+            "status": "success",
+            "message": "should_not_be_used",
+            "metadata": {},
+        }
+
+    class _StubService:
+        def tryon_garment(self, **kwargs):
+            forced = bool(kwargs.get("force_fallback"))
+            return {
+                "result_image": Image.new("RGB", (64, 64), color=(200, 200, 200)),
+                "status": "fallback" if forced else "error",
+                "message": "forced_identity_preservation" if forced else "not_forced",
+                "metadata": {"forced": forced},
+            }
+
+    def _stub_get_tryon_service():
+        return _StubService()
+
+    def _stub_check_tryon_garment_has_face(_img):
+        return False
+
+    import app.services.bailian_tryon_client as bailian_tryon_client
+    import app.services.virtual_tryon as virtual_tryon
+    import app.services.vton_remote_client as vton_remote_client
+
+    monkeypatch.setattr(bailian_tryon_client, "call_bailian_tryon", _stub_bailian_tryon)
+    monkeypatch.setattr(vton_remote_client, "call_remote_vton", _stub_remote_vton)
+    monkeypatch.setattr(virtual_tryon, "get_tryon_service", _stub_get_tryon_service)
+    monkeypatch.setattr(
+        virtual_tryon,
+        "check_tryon_garment_has_face",
+        _stub_check_tryon_garment_has_face,
+    )
+
+    garment_bytes = _jpeg_bytes(color=(250, 250, 250))
+    person_bytes = _jpeg_bytes(color=(220, 220, 220))
+    files = {
+        "garment_file": ("garment.jpg", garment_bytes, "image/jpeg"),
+        "person_file": ("person.jpg", person_bytes, "image/jpeg"),
+    }
+
+    res = client.post(
+        "/api/v1/tryon/garment",
+        headers=auth_headers,
+        files=files,
+        data={"garment_category": "下装"},
+    )
+
+    assert res.status_code == status.HTTP_200_OK
+    body = res.json()
+    data = body.get("data") if isinstance(body, dict) else None
+    assert isinstance(data, dict)
+    assert data.get("status") == "fallback"
+    assert calls["bailian"] == 0
+    assert calls["remote"] == 0

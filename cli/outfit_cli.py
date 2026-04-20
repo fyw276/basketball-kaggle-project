@@ -213,6 +213,78 @@ def post_tryon_files(
             fd.close()
 
 
+def post_tryon_v2_validate(
+    base_url: str,
+    garment_path: str,
+    person_path: str,
+    token: Optional[str],
+    garment_category: str = "bottom",
+    mode: str = "strict",
+    *,
+    timeout: float = 120.0,
+) -> Any:
+    """POST /tryon/validate-input — 方案 A 输入预检。"""
+    g = _file_part(garment_path)
+    p = _file_part(person_path)
+    opened = [g[1], p[1]]
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(
+                f"{base_url}/tryon/validate-input",
+                headers=auth_headers(token),
+                data={
+                    "garment_category": garment_category,
+                    "mode": mode,
+                },
+                files={
+                    "garment_file": (g[0], g[1], g[2]),
+                    "person_file": (p[0], p[1], p[2]),
+                },
+            )
+        return handle_response(resp)
+    finally:
+        for fd in opened:
+            fd.close()
+
+
+def post_tryon_v2_pants(
+    base_url: str,
+    garment_path: str,
+    person_path: str,
+    token: Optional[str],
+    prompt: str = "",
+    model_gender: str = "neutral",
+    garment_category: str = "bottom",
+    mode: str = "strict",
+    *,
+    timeout: float = 300.0,
+) -> Any:
+    """POST /tryon/pants — 方案 A 生成。"""
+    g = _file_part(garment_path)
+    p = _file_part(person_path)
+    opened = [g[1], p[1]]
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(
+                f"{base_url}/tryon/pants",
+                headers=auth_headers(token),
+                data={
+                    "prompt": prompt,
+                    "model_gender": model_gender,
+                    "garment_category": garment_category,
+                    "mode": mode,
+                },
+                files={
+                    "garment_file": (g[0], g[1], g[2]),
+                    "person_file": (p[0], p[1], p[2]),
+                },
+            )
+        return handle_response(resp)
+    finally:
+        for fd in opened:
+            fd.close()
+
+
 def cmd_config(args: argparse.Namespace, config: Dict[str, Any]) -> None:
     if args.base_url:
         config["base_url"] = args.base_url.rstrip("/")
@@ -393,15 +465,62 @@ def cmd_tryon(args: argparse.Namespace, base_url: str, config: Dict[str, Any]) -
     token = args.token or config.get("token")
     if not token:
         raise CLIError("Missing token. Run auth login first or pass --token")
-    print_json(
-        post_tryon_files(
+    if not bool(args.v2):
+        print_json(
+            post_tryon_files(
+                base_url,
+                args.garment,
+                args.person,
+                token=token,
+                prompt=args.prompt or "",
+                model_gender=args.model_gender or "neutral",
+            )
+        )
+        return
+
+    mode = args.mode or "strict"
+    garment_category = args.garment_category or "bottom"
+
+    precheck: Any = None
+    if not bool(args.skip_precheck):
+        precheck = post_tryon_v2_validate(
             base_url,
             args.garment,
             args.person,
             token=token,
-            prompt=args.prompt or "",
-            model_gender=args.model_gender or "neutral",
+            garment_category=garment_category,
+            mode=mode,
         )
+        if bool(args.precheck_only):
+            print_json({"precheck": precheck})
+            return
+
+        passed = isinstance(precheck, dict) and (
+            precheck.get("passed") is True or str(precheck.get("status") or "").lower() == "pass"
+        )
+        if not passed:
+            print_json({
+                "ok": False,
+                "error": "v2 precheck failed",
+                "precheck": precheck,
+            })
+            return
+
+    result = post_tryon_v2_pants(
+        base_url,
+        args.garment,
+        args.person,
+        token=token,
+        prompt=args.prompt or "",
+        model_gender=args.model_gender or "neutral",
+        garment_category=garment_category,
+        mode=mode,
+    )
+    print_json(
+        {
+            "precheck": precheck,
+            "result": result,
+        }
     )
 
 
@@ -574,6 +693,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--model-gender",
         default="neutral",
         choices=["male", "female", "neutral"],
+    )
+    p_to.add_argument(
+        "--v2",
+        action="store_true",
+        help="Use v2 scheme A flow (/tryon/validate-input + /tryon/pants)",
+    )
+    p_to.add_argument(
+        "--precheck-only",
+        action="store_true",
+        help="Only run v2 precheck and exit",
+    )
+    p_to.add_argument(
+        "--skip-precheck",
+        action="store_true",
+        help="Skip v2 precheck before generation",
+    )
+    p_to.add_argument(
+        "--mode",
+        default="strict",
+        choices=["strict", "balanced"],
+        help="v2 mode",
+    )
+    p_to.add_argument(
+        "--garment-category",
+        default="bottom",
+        help="v2 garment_category, e.g. bottom/下装/裙装",
     )
     p_to.add_argument("--token", default=None)
 

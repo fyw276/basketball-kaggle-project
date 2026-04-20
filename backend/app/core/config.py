@@ -130,64 +130,41 @@ class Settings(BaseSettings):
         default=1,
         description="虚拟试衣错误重试次数（仅对可重试错误生效）",
     )
-    TRYON_MODEL_LOCAL_PATH: str = Field(
-        default="",
-        description="可选：虚拟试衣模型本地目录；配置后优先从该目录加载，不依赖 HF cache",
-    )
-    TRYON_FORCE_FALLBACK: bool = Field(
-        default=False,
-        description="为 true 时跳过 diffusers/HF 模型加载，直接使用本地去背景+粘贴 fallback",
-    )
-    # 可选：专用 2D VTON 远程推理（照片级试衣）；非空时 POST /tryon/garment 优先转发，详见 docs/VTON_INTEGRATION.md
-    VTON_INFERENCE_URL: str = Field(
-        default="",
-        description="例如 http://127.0.0.1:8011/v1/tryon；空则使用本机 virtual_tryon",
-    )
-    VTON_INFERENCE_TIMEOUT_SECONDS: float = Field(
-        default=2400.0,
-        description="远程 VTON 请求超时（秒）；首次加载模型可能很久",
-    )
-    VTON_INFERENCE_API_KEY: str = Field(
-        default="",
-        description="可选 Bearer Token，调用远程 VTON 时使用",
-    )
-
-    # 阿里云百炼 / DashScope（虚拟试衣：通义万相等 image2image；见 docs/VTON_INTEGRATION.md）
-    DASHSCOPE_TRYON_ENABLED: bool = Field(
-        default=False,
-        description="为 true 且配置了 DASHSCOPE_API_KEY 时，POST /tryon/garment 优先走百炼",
-    )
-    DASHSCOPE_API_KEY: str = Field(
-        default="",
-        description="DashScope API Key（与百炼控制台 API-KEY 一致）",
-    )
-    DASHSCOPE_TRYON_MODEL: str = Field(
-        default="wanx2.1-imageedit",
-        description="默认识别模型；空则回退 wanx2.1-imageedit",
-    )
-    DASHSCOPE_TRYON_MODEL_TOP: str = Field(
-        default="",
-        description="可选：上装品类覆盖模型名；空则用 DASHSCOPE_TRYON_MODEL",
-    )
-    DASHSCOPE_TRYON_MODEL_BOTTOM: str = Field(
-        default="",
-        description="可选：下装品类覆盖模型名",
-    )
-    DASHSCOPE_TRYON_MODEL_SKIRT: str = Field(
-        default="",
-        description="可选：裙装品类覆盖模型名",
-    )
-    DASHSCOPE_TRYON_FUNCTION: str = Field(
-        default="stylization_all",
-        description="万相图像编辑 function，如 stylization_all；以控制台文档为准",
-    )
-    DASHSCOPE_TRYON_FALLBACK_LOCAL: bool = Field(
+    TRYON_BOTTOM_FORCE_FALLBACK: bool = Field(
         default=True,
-        description="百炼失败时是否回退到远程 VTON 或本机 virtual_tryon",
+        description="下装/裙装默认走身份保护模式（本地 fallback 粘贴，避免生成式换人）",
     )
-    DASHSCOPE_TRYON_DOWNLOAD_TIMEOUT_SECONDS: float = Field(
-        default=120.0,
-        description="从百炼返回的 OSS URL 下载结果图超时（秒）",
+    TRYON_V2_ENABLED: bool = Field(
+        default=True,
+        description="启用虚拟试衣 v2 接口（/api/v2/tryon/*）",
+    )
+    TRYON_V2_STRICT_IDENTITY: bool = Field(
+        default=True,
+        description="v2 默认是否开启严格身份保护（优先贴合而非生成）",
+    )
+    TRYON_V2_MIN_FULL_BODY_SCORE: float = Field(
+        default=0.55,
+        description="v2 输入门禁：全身可见最低分",
+    )
+    TRYON_V2_MIN_LEG_VISIBILITY_SCORE: float = Field(
+        default=0.45,
+        description="v2 输入门禁：腿部可见最低分",
+    )
+    TRYON_V2_MIN_FRONT_POSE_SCORE: float = Field(
+        default=0.35,
+        description="v2 输入门禁：正面姿态最低分",
+    )
+    TRYON_V2_MIN_GARMENT_FRONT_SCORE: float = Field(
+        default=0.45,
+        description="v2 输入门禁：商品图正面度最低分",
+    )
+    TRYON_V2_QC_THRESHOLD: float = Field(
+        default=0.6,
+        description="v2 质量门槛预留字段（后续阶段使用）",
+    )
+    TRYON_V2_TIMEOUT_MS: int = Field(
+        default=12000,
+        description="v2 接口超时预算（毫秒，预留）",
     )
 
     # Subscription & quota

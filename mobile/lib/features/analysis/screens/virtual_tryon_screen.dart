@@ -63,6 +63,13 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
   _GarmentCategoryChoice _garmentCategory = _GarmentCategoryChoice.auto;
   bool _loading = false;
   bool _usedFallback = false;
+  bool? _precheckPassed;
+  String? _precheckMessage;
+  String? _precheckHint;
+  String? _precheckErrorCode;
+  Map<String, double> _precheckScores = const {};
+  Map<String, double> _precheckThresholds = const {};
+  String? _precheckSource;
 
   /// 试衣结果图 URL 列表（当前为单次生成，通常 1 张；保留列表以兼容轮播）
   List<String> _results = [];
@@ -123,6 +130,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
       setState(() {
         _garmentImage = img;
         _garmentQualityHint = '正在评估衣服图是否适合试衣...';
+        _resetPrecheckPanel();
       });
       final hint = await _evaluateGarmentQuality(img);
       if (!mounted) return;
@@ -137,7 +145,34 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
     if (source == null) return;
     final picker = ImagePicker();
     final img = await picker.pickImage(source: source);
-    if (img != null) setState(() => _personFront = img);
+    if (img != null) {
+      setState(() {
+        _personFront = img;
+        _resetPrecheckPanel();
+      });
+    }
+  }
+
+  void _resetPrecheckPanel() {
+    _precheckPassed = null;
+    _precheckMessage = null;
+    _precheckHint = null;
+    _precheckErrorCode = null;
+    _precheckScores = const {};
+    _precheckThresholds = const {};
+    _precheckSource = null;
+  }
+
+  Map<String, double> _toScoreMap(dynamic raw) {
+    if (raw is! Map) return const {};
+    final out = <String, double>{};
+    raw.forEach((k, v) {
+      final parsed = double.tryParse(v.toString());
+      if (parsed != null) {
+        out[k.toString()] = parsed;
+      }
+    });
+    return out;
   }
 
   Future<void> _generate() async {
@@ -160,7 +195,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
       return;
     }
 
-    final precheckError = await _precheckTryOnInputs();
+    final precheckError = await _precheckTryOnInputs(auth.apiClient);
     if (precheckError != null) {
       if (mounted) {
         showAppSnackBar(context, precheckError);
@@ -178,18 +213,15 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
 
     final base = auth.apiClient.baseUrl;
     try {
-      final raw = await auth.apiClient.virtualTryon(
-        garmentImage: _garmentImage,
-        personImage: _personFront,
-        garmentCategory: _garmentCategory.apiValue,
-      );
+      final raw = await _requestTryOn(auth);
       final map = Map<String, dynamic>.from(raw as Map<dynamic, dynamic>);
       if (map['error'] != null) {
+        final hint = map['action_hint']?.toString();
+        final msg = hint != null && hint.trim().isNotEmpty
+            ? '${userFacingApiError(map['error'])}（建议：$hint）'
+            : userFacingApiError(map['error']);
         if (mounted) {
-          showAppSnackBar(
-            context,
-            '试衣失败：${userFacingApiError(map['error'])}',
-          );
+          showAppSnackBar(context, '试衣失败：$msg');
         }
         setState(() {
           _loading = false;
@@ -240,16 +272,144 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
     }
   }
 
-  Future<String?> _precheckTryOnInputs() async {
+  Future<Map<String, dynamic>> _requestTryOn(AuthProvider auth) async {
+    final category = (_garmentCategory.apiValue ?? 'bottom').trim();
+    final mode = _garmentCategory == _GarmentCategoryChoice.bottom
+        ? 'strict'
+        : 'balanced';
+
+    final v2 = await auth.apiClient.virtualTryonV2Pants(
+      garmentImage: _garmentImage,
+      personImage: _personFront,
+      garmentCategory: category,
+      mode: mode,
+    );
+
+    if (v2['error'] == null) {
+      return v2;
+    }
+
+    final code = v2['error_code']?.toString();
+    final msg = v2['error']?.toString() ?? '';
+    final disabledByServer =
+        code == 'TRYON_V2_DISABLED' || msg.contains('v2 未启用');
+    final v2NotFound = msg.contains('/tryon/pants') && msg.contains('404');
+    if (disabledByServer || v2NotFound) {
+      return auth.apiClient.virtualTryon(
+        garmentImage: _garmentImage,
+        personImage: _personFront,
+        garmentCategory: _garmentCategory.apiValue,
+      );
+    }
+    return v2;
+  }
+
+  Future<String?> _precheckTryOnInputs(dynamic apiClient) async {
     final garment = _garmentImage;
     final person = _personFront;
     if (garment == null || person == null) return '请先上传衣服图和人物照';
 
     final garmentCheck = await _inspectImage(garment);
-    if (garmentCheck != null) return garmentCheck;
+    if (garmentCheck != null) {
+      if (mounted) {
+        setState(() {
+          _precheckPassed = false;
+          _precheckMessage = garmentCheck;
+          _precheckHint = '请优先替换为无模特白底商品图';
+          _precheckErrorCode = 'LOCAL_GARMENT_PRECHECK_FAILED';
+          _precheckScores = const {};
+          _precheckThresholds = const {};
+          _precheckSource = 'local';
+        });
+      }
+      return garmentCheck;
+    }
 
     final personCheck = await _inspectImage(person);
-    if (personCheck != null) return personCheck;
+    if (personCheck != null) {
+      if (mounted) {
+        setState(() {
+          _precheckPassed = false;
+          _precheckMessage = personCheck;
+          _precheckHint = '请上传更清晰、全身正面的站姿照片';
+          _precheckErrorCode = 'LOCAL_PERSON_PRECHECK_FAILED';
+          _precheckScores = const {};
+          _precheckThresholds = const {};
+          _precheckSource = 'local';
+        });
+      }
+      return personCheck;
+    }
+
+    final category = (_garmentCategory.apiValue ?? 'bottom').trim();
+    final mode = _garmentCategory == _GarmentCategoryChoice.bottom
+        ? 'strict'
+        : 'balanced';
+    final remote = await apiClient.tryonV2ValidateInput(
+      garmentImage: garment,
+      personImage: person,
+      garmentCategory: category,
+      mode: mode,
+    );
+
+    final remoteError = remote['error'];
+    if (remoteError != null) {
+      final code = remote['error_code']?.toString() ?? '';
+      final msg = remoteError.toString();
+      // 服务端未启用 v2 时，不阻断，转为兼容旧链路。
+      if (code == 'TRYON_V2_DISABLED' || msg.contains('v2 未启用')) {
+        if (mounted) {
+          setState(() {
+            _precheckPassed = null;
+            _precheckMessage = '服务端未启用 v2 预检，已使用兼容链路';
+            _precheckHint = null;
+            _precheckErrorCode = null;
+            _precheckScores = const {};
+            _precheckThresholds = const {};
+            _precheckSource = 'compat';
+          });
+        }
+        return null;
+      }
+      final hint = remote['action_hint']?.toString();
+      if (mounted) {
+        setState(() {
+          _precheckPassed = false;
+          _precheckMessage = msg;
+          _precheckHint = hint;
+          _precheckErrorCode = code.isEmpty ? null : code;
+          _precheckScores = _toScoreMap(remote['qc_scores']);
+          _precheckThresholds = const {};
+          _precheckSource = 'remote';
+        });
+      }
+      if (hint != null && hint.trim().isNotEmpty) {
+        return '预检失败：$msg（建议：$hint）';
+      }
+      return '预检失败：$msg';
+    }
+
+    final passed =
+        remote['passed'] == true || remote['status']?.toString() == 'pass';
+    if (mounted) {
+      setState(() {
+        _precheckPassed = passed;
+        _precheckMessage = remote['message']?.toString();
+        _precheckHint = remote['action_hint']?.toString();
+        _precheckErrorCode = remote['error_code']?.toString();
+        _precheckScores = _toScoreMap(remote['qc_scores']);
+        _precheckThresholds = _toScoreMap(remote['thresholds']);
+        _precheckSource = 'remote';
+      });
+    }
+    if (!passed) {
+      final msg = remote['message']?.toString() ?? '输入未通过试衣预检';
+      final hint = remote['action_hint']?.toString();
+      if (hint != null && hint.trim().isNotEmpty) {
+        return '$msg（建议：$hint）';
+      }
+      return msg;
+    }
 
     return null;
   }
@@ -669,6 +829,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                     onClear: () => setState(() {
                       _garmentImage = null;
                       _garmentQualityHint = null;
+                      _resetPrecheckPanel();
                     }),
                     palette: palette,
                   ),
@@ -679,7 +840,10 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                     label: '人物照（必填，建议全身）',
                     image: _personFront,
                     onTap: _pickPerson,
-                    onClear: () => setState(() => _personFront = null),
+                    onClear: () => setState(() {
+                      _personFront = null;
+                      _resetPrecheckPanel();
+                    }),
                     palette: palette,
                   ),
                 ),
@@ -691,6 +855,19 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                 title: _garmentQualityTitle(_garmentQualityHint),
                 message: _garmentQualityHint!,
                 color: _garmentQualityColor(_garmentQualityHint, palette),
+              ),
+            ],
+            if (_precheckMessage != null || _precheckScores.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              _PrecheckResultCard(
+                passed: _precheckPassed,
+                message: _precheckMessage,
+                hint: _precheckHint,
+                errorCode: _precheckErrorCode,
+                scores: _precheckScores,
+                thresholds: _precheckThresholds,
+                source: _precheckSource,
+                palette: palette,
               ),
             ],
             const SizedBox(height: 14),
@@ -711,7 +888,10 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                 return ChoiceChip(
                   label: Text(c.label),
                   selected: selected,
-                  onSelected: (_) => setState(() => _garmentCategory = c),
+                  onSelected: (_) => setState(() {
+                    _garmentCategory = c;
+                    _resetPrecheckPanel();
+                  }),
                   selectedColor: palette.primary.withValues(alpha: 0.22),
                   labelStyle: TextStyle(
                     fontSize: 12,
@@ -965,6 +1145,243 @@ class _QualityBadge extends StatelessWidget {
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PrecheckResultCard extends StatelessWidget {
+  final bool? passed;
+  final String? message;
+  final String? hint;
+  final String? errorCode;
+  final Map<String, double> scores;
+  final Map<String, double> thresholds;
+  final String? source;
+  final Palette palette;
+
+  const _PrecheckResultCard({
+    required this.passed,
+    required this.message,
+    required this.hint,
+    required this.errorCode,
+    required this.scores,
+    required this.thresholds,
+    required this.source,
+    required this.palette,
+  });
+
+  String _label(String key) {
+    switch (key) {
+      case 'full_body_score':
+      case 'full_body':
+        return '全身可见';
+      case 'leg_visibility_score':
+      case 'leg_visibility':
+        return '腿部可见';
+      case 'front_pose_score':
+      case 'front_pose':
+        return '正面姿态';
+      case 'garment_front_score':
+      case 'garment_front':
+        return '商品图正面度';
+      default:
+        return key;
+    }
+  }
+
+  String? _mappedFixSuggestion(String? code) {
+    switch ((code ?? '').trim()) {
+      case 'TRYON_V2_PERSON_NOT_FULL_BODY':
+        return '请上传完整站立照，确保头顶到脚部全部入镜。';
+      case 'TRYON_V2_PERSON_LEG_NOT_VISIBLE':
+        return '请避免遮挡腿部，拍摄时退后并保证下半身清晰。';
+      case 'TRYON_V2_PERSON_NOT_FRONT_VIEW':
+        return '请改用正面站姿照片，避免侧身或大角度转身。';
+      case 'TRYON_V2_GARMENT_NOT_FRONT_VIEW':
+        return '请使用正面商品图，主体完整、背景干净。';
+      case 'TRYON_V2_UNSUPPORTED_CATEGORY':
+        return '当前仅支持下装，请将品类切到下装或裙装后再试。';
+      case 'TRYON_GARMENT_CONTAINS_MODEL':
+        return '请使用无模特商品图，避免人物脸部或上身出现在衣物图中。';
+      case 'LOCAL_GARMENT_PRECHECK_FAILED':
+        return '请替换为清晰的无模特商品图，建议白底且主体占比更大。';
+      case 'LOCAL_PERSON_PRECHECK_FAILED':
+        return '请上传清晰全身正面照，保证腿部可见且分辨率足够。';
+      default:
+        return null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scoreKeys = <String>[
+      'full_body_score',
+      'leg_visibility_score',
+      'front_pose_score',
+      'garment_front_score',
+    ];
+    final scoreRows = <MapEntry<String, double>>[];
+    for (final k in scoreKeys) {
+      final v = scores[k];
+      if (v != null) scoreRows.add(MapEntry(k, v));
+    }
+
+    final Color tone = passed == true
+        ? Colors.green
+        : passed == false
+            ? Colors.redAccent
+            : palette.primary;
+    final String title = passed == true
+        ? '预检通过'
+        : passed == false
+            ? '预检未通过'
+            : '预检状态';
+    final mappedHint = _mappedFixSuggestion(errorCode);
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            tone.withValues(alpha: 0.12),
+            tone.withValues(alpha: 0.03),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: tone.withValues(alpha: 0.34)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                passed == true
+                    ? Icons.verified_outlined
+                    : passed == false
+                        ? Icons.gpp_bad_outlined
+                        : Icons.info_outline,
+                size: 16,
+                color: tone,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  color: tone,
+                ),
+              ),
+              if (source != null && source!.trim().isNotEmpty) ...[
+                const SizedBox(width: 8),
+                Text(
+                  '来源: $source',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.black.withValues(alpha: 0.52),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          if (message != null && message!.trim().isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              message!,
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.black.withValues(alpha: 0.74),
+                height: 1.35,
+              ),
+            ),
+          ],
+          if (errorCode != null && errorCode!.trim().isNotEmpty) ...[
+            const SizedBox(height: 6),
+            SelectableText(
+              '错误码：$errorCode',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: Colors.black.withValues(alpha: 0.62),
+              ),
+            ),
+          ],
+          if (hint != null && hint!.trim().isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              '建议：$hint',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.black.withValues(alpha: 0.72),
+              ),
+            ),
+          ],
+          if ((hint == null || hint!.trim().isEmpty) &&
+              mappedHint != null &&
+              mappedHint.trim().isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              '建议：$mappedHint',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.black.withValues(alpha: 0.72),
+              ),
+            ),
+          ],
+          if (scoreRows.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            ...scoreRows.map((entry) {
+              final normalizedThresholdKey = entry.key.replaceAll('_score', '');
+              final threshold = thresholds[normalizedThresholdKey];
+              final value = entry.value;
+              final pass = threshold == null ? null : value >= threshold;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _label(entry.key),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.black.withValues(alpha: 0.7),
+                        ),
+                      ),
+                    ),
+                    Text(
+                      value.toStringAsFixed(2),
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: pass == true
+                            ? Colors.green
+                            : pass == false
+                                ? Colors.redAccent
+                                : Colors.black.withValues(alpha: 0.72),
+                      ),
+                    ),
+                    if (threshold != null) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        '/ ${threshold.toStringAsFixed(2)}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.black.withValues(alpha: 0.45),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              );
+            }),
+          ],
         ],
       ),
     );

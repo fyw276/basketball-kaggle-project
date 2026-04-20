@@ -35,6 +35,7 @@ from app.api.smart_outfit import router as smart_outfit_router
 from app.api.subscription import router as subscription_router
 from app.api.subscription import usage_router
 from app.api.tryon import router as tryon_router
+from app.api.tryon_v2 import router as tryon_v2_router
 from app.api.wardrobe_simple import router as wardrobe_simple_router
 from app.core.config import settings
 from app.core.error_handlers import (
@@ -581,6 +582,7 @@ app.include_router(wardrobe_simple_router, prefix="/api/v1")  # Simplified API
 app.include_router(recognition_router, prefix="/api/v1")
 app.include_router(analysis_router, prefix="/api/v1")
 app.include_router(tryon_router, prefix="/api/v1")  # Virtual Try-On
+app.include_router(tryon_v2_router, prefix="/api/v2")  # Virtual Try-On v2 (pipeline A)
 app.include_router(outfit_collections_router, prefix="/api/v1")  # Outfit Collections
 app.include_router(mood_router, prefix="/api/v1")  # Mood Recommendation
 app.include_router(smart_outfit_router, prefix="/api/v1")  # Smart outfit (weather + mood)

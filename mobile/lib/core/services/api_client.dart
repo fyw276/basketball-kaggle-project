@@ -102,6 +102,15 @@ class ApiClient {
     return h;
   }
 
+  String _resolveV2BaseUrl() {
+    final trimmed = baseUrl.replaceAll(RegExp(r'/+$'), '');
+    if (trimmed.endsWith('/api/v2')) return trimmed;
+    final upgraded = trimmed.replaceFirst(RegExp(r'/api/v1$'), '/api/v2');
+    if (upgraded != trimmed) return upgraded;
+    if (trimmed.endsWith('/api')) return '$trimmed/v2';
+    return '$trimmed/api/v2';
+  }
+
   // ─── 工具：Web / 移动端统一用字节上传（避免 MultipartFile.fromPath 在 Web 不可用）──
 
   static Future<http.MultipartFile?> _multipartImage(
@@ -842,6 +851,151 @@ class ApiClient {
     }
   }
 
+  /// 方案 A 预检：只评估输入质量，不生成试衣图。
+  Future<Map<String, dynamic>> tryonV2ValidateInput({
+    dynamic garmentImage,
+    dynamic personImage,
+    String garmentCategory = 'bottom',
+    String mode = 'strict',
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    try {
+      final v2Base = _resolveV2BaseUrl();
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$v2Base/tryon/validate-input'),
+      );
+      request.headers.addAll(_authHeaders);
+
+      if (garmentImage != null) {
+        final part = await _multipartImage('garment_file', garmentImage);
+        if (part == null) return {'error': 'Unsupported garment image type'};
+        request.files.add(part);
+      }
+
+      if (personImage != null) {
+        final part = await _multipartImage('person_file', personImage);
+        if (part == null) return {'error': 'Unsupported person image type'};
+        request.files.add(part);
+      }
+
+      if (garmentCategory.trim().isNotEmpty) {
+        request.fields['garment_category'] = garmentCategory.trim();
+      }
+      request.fields['mode'] = mode;
+
+      final streamedResponse = await request.send().timeout(timeout);
+      final response =
+          await http.Response.fromStream(streamedResponse).timeout(timeout);
+
+      if (response.statusCode == 200) {
+        final decoded = json.decode(response.body);
+        final unwrapped = unwrapApiResponseEnvelope(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
+      }
+
+      final body = _parseFastApiErrorBodyMap(response.body);
+      if (body != null) {
+        return {
+          'error': body['message']?.toString() ??
+              'Try-on precheck failed with status: ${response.statusCode}',
+          if (body['error_code'] != null) 'error_code': body['error_code'],
+          if (body['retryable'] != null) 'retryable': body['retryable'],
+          if (body['action_hint'] != null) 'action_hint': body['action_hint'],
+          if (body['qc_scores'] is Map) 'qc_scores': body['qc_scores'],
+        };
+      }
+
+      return {
+        'error': 'Try-on precheck failed with status: ${response.statusCode}'
+      };
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
+  /// 方案 A 生成：/api/v2/tryon/pants。
+  Future<Map<String, dynamic>> virtualTryonV2Pants({
+    dynamic garmentImage,
+    dynamic personImage,
+    String? prompt,
+    String modelGender = 'neutral',
+    String garmentCategory = 'bottom',
+    String mode = 'strict',
+    Duration timeout = const Duration(seconds: 2400),
+  }) async {
+    try {
+      final v2Base = _resolveV2BaseUrl();
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$v2Base/tryon/pants'),
+      );
+      request.headers.addAll(_authHeaders);
+
+      if (garmentImage != null) {
+        final part = await _multipartImage('garment_file', garmentImage);
+        if (part == null) return {'error': 'Unsupported garment image type'};
+        request.files.add(part);
+      }
+
+      if (personImage != null) {
+        final part = await _multipartImage('person_file', personImage);
+        if (part == null) return {'error': 'Unsupported person image type'};
+        request.files.add(part);
+      }
+
+      request.fields['model_gender'] = modelGender;
+      request.fields['mode'] = mode;
+      if (prompt != null && prompt.trim().isNotEmpty) {
+        request.fields['prompt'] = prompt.trim();
+      }
+      if (garmentCategory.trim().isNotEmpty) {
+        request.fields['garment_category'] = garmentCategory.trim();
+      }
+
+      final streamedResponse = await request.send().timeout(timeout);
+      final response =
+          await http.Response.fromStream(streamedResponse).timeout(timeout);
+
+      if (response.statusCode == 200) {
+        final decoded = json.decode(response.body);
+        final unwrapped = unwrapApiResponseEnvelope(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
+      }
+      if (response.statusCode == 401) {
+        return {
+          'error': '未登录或登录已过期，请重新登录后再试',
+        };
+      }
+
+      var errMsg =
+          'Virtual try-on v2 failed with status: ${response.statusCode}';
+      String? errCode;
+      bool? retryable;
+      String? actionHint;
+      try {
+        final body = _parseFastApiErrorBodyMap(response.body);
+        if (body != null) {
+          errMsg = body['message']?.toString() ?? errMsg;
+          errCode = body['error_code']?.toString();
+          final rb = body['retryable'];
+          if (rb is bool) retryable = rb;
+          actionHint = body['action_hint']?.toString();
+        }
+      } catch (_) {}
+      return {
+        'error': errMsg,
+        if (errCode != null) 'error_code': errCode,
+        if (retryable != null) 'retryable': retryable,
+        if (actionHint != null) 'action_hint': actionHint,
+      };
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
   // ─── 智能穿搭：天气 + 参考图 + 情绪 ─────────────────────────────
   // 后端: GET /smart-outfit/weather, GET /smart-outfit/weather-by-city
   // POST /smart-outfit/upload-reference, POST /smart-outfit/generate
@@ -1034,20 +1188,36 @@ class ApiClient {
       }
       if (detail is Map) {
         final m = Map<String, dynamic>.from(detail as Map);
+        final nestedDetails = m['details'];
         return {
           'message': m['message']?.toString() ?? m.toString(),
           if (m['error_code'] != null) 'error_code': m['error_code'].toString(),
           if (m['retryable'] is bool) 'retryable': m['retryable'],
+          if (m['action_hint'] != null)
+            'action_hint': m['action_hint'].toString(),
+          if (m['qc_scores'] is Map) 'qc_scores': m['qc_scores'],
+          if (nestedDetails is Map && nestedDetails['qc_scores'] is Map)
+            'qc_scores': nestedDetails['qc_scores'],
+          if (nestedDetails is Map && nestedDetails['action_hint'] != null)
+            'action_hint': nestedDetails['action_hint'].toString(),
         };
       }
 
       final error = decoded['error'];
       if (error is Map && error['message'] != null) {
+        final details = error['details'];
         return {
           'message': error['message'].toString(),
           if (error['error_code'] != null)
             'error_code': error['error_code'].toString(),
           if (error['retryable'] is bool) 'retryable': error['retryable'],
+          if (error['action_hint'] != null)
+            'action_hint': error['action_hint'].toString(),
+          if (error['qc_scores'] is Map) 'qc_scores': error['qc_scores'],
+          if (details is Map && details['qc_scores'] is Map)
+            'qc_scores': details['qc_scores'],
+          if (details is Map && details['action_hint'] != null)
+            'action_hint': details['action_hint'].toString(),
         };
       }
       if (decoded['message'] != null) {

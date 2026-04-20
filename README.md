@@ -228,6 +228,52 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\push_and_run_remot
 
 更完整的 curl 示例见 [`backend/API_EXAMPLES.md`](backend/API_EXAMPLES.md)。
 
+### 虚拟试衣 v2（方案 A）
+
+虚拟试衣 v2 接口统一挂在 **`http://<host>/api/v2`** 下，建议移动端采用“先预检再生成”的双阶段流程：
+
+> 移动端 `ApiClient` 默认 `baseUrl` 为 `/api/v1`，但 v2 方法会自动切换到 `/api/v2`，无需手动改基址。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/v2/tryon/validate-input` | 仅做输入门禁评估，不生成图片；返回 `passed/error_code/action_hint/qc_scores/thresholds` |
+| `POST` | `/api/v2/tryon/pants` | 方案 A 下装试衣生成；`multipart/form-data` 字段 `person_file`、`garment_file`、`garment_category`，可选 `mode=strict\|balanced` |
+| `GET` | `/api/v2/tryon/capabilities` | 查询 v2 能力开关、默认模式、支持品类与当前阈值（需登录） |
+
+后端配置项（`backend/.env`）：
+- `TRYON_BOTTOM_FORCE_FALLBACK`
+- `TRYON_V2_ENABLED`
+- `TRYON_V2_STRICT_IDENTITY`
+- `TRYON_V2_MIN_FULL_BODY_SCORE`
+- `TRYON_V2_MIN_LEG_VISIBILITY_SCORE`
+- `TRYON_V2_MIN_FRONT_POSE_SCORE`
+- `TRYON_V2_MIN_GARMENT_FRONT_SCORE`
+- `TRYON_V2_QC_THRESHOLD`
+- `TRYON_V2_TIMEOUT_MS`
+
+CLI 调用示例（`cli/outfit_cli.py`）：
+
+```bash
+# 仅做 v2 预检
+python cli/outfit_cli.py tryon --v2 --precheck-only \
+  --garment ./samples/garment.jpg \
+  --person ./samples/person.jpg \
+  --garment-category bottom \
+  --mode strict
+
+# v2 预检通过后再生成
+python cli/outfit_cli.py tryon --v2 \
+  --garment ./samples/garment.jpg \
+  --person ./samples/person.jpg \
+  --garment-category bottom \
+  --mode strict
+
+# 如需跳过预检（不推荐）
+python cli/outfit_cli.py tryon --v2 --skip-precheck \
+  --garment ./samples/garment.jpg \
+  --person ./samples/person.jpg
+```
+
 ### 适合度分析接口（原因说明）
 
 适合度分析接口位于：
