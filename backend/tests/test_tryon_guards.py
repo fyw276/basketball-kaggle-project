@@ -69,3 +69,56 @@ def test_tryon_rejects_garment_with_face(
     assert "error" in body
     msg = body["error"].get("message") if isinstance(body["error"], dict) else str(body["error"])
     assert "检测到人像" in str(msg)
+
+
+def test_tryon_error_envelope_contains_error_code_and_retryable(
+    client: TestClient, auth_headers: dict, monkeypatch: pytest.MonkeyPatch
+):
+    """E2E contract: error envelope should expose client-facing try-on fields."""
+
+    async def _stub_bailian_tryon(**kwargs):
+        return {
+            "result_image": None,
+            "status": "error",
+            "message": "Error: 429 quota exceeded",
+            "metadata": {},
+        }
+
+    async def _stub_remote_vton(**kwargs):
+        return None
+
+    class _StubService:
+        def tryon_garment(self, **kwargs):
+            return {
+                "result_image": None,
+                "status": "error",
+                "message": "Error: 429 quota exceeded",
+                "metadata": {},
+            }
+
+    def _stub_get_tryon_service():
+        return _StubService()
+
+    import app.services.bailian_tryon_client as bailian_tryon_client
+    import app.services.virtual_tryon as virtual_tryon
+    import app.services.vton_remote_client as vton_remote_client
+
+    monkeypatch.setattr(bailian_tryon_client, "call_bailian_tryon", _stub_bailian_tryon)
+    monkeypatch.setattr(vton_remote_client, "call_remote_vton", _stub_remote_vton)
+    monkeypatch.setattr(virtual_tryon, "get_tryon_service", _stub_get_tryon_service)
+
+    garment_bytes = _jpeg_bytes(color=(250, 250, 250))
+    person_bytes = _jpeg_bytes(color=(220, 220, 220))
+
+    files = {
+        "garment_file": ("garment.jpg", garment_bytes, "image/jpeg"),
+        "person_file": ("person.jpg", person_bytes, "image/jpeg"),
+    }
+    res = client.post("/api/v1/tryon/garment", headers=auth_headers, files=files)
+
+    assert res.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    body = res.json()
+    err = body.get("error") if isinstance(body, dict) else None
+    assert isinstance(err, dict)
+    assert err.get("error_code") == "TRYON_UPSTREAM_QUOTA"
+    assert err.get("retryable") is True

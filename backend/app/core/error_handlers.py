@@ -93,9 +93,35 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
         path=request.url.path,
     ).warning("HTTP error: {}", exc.detail)
 
+    detail = exc.detail
+    if isinstance(detail, dict):
+        msg = str(detail.get("message") or "HTTP exception")
+        payload = error_payload(
+            message=msg,
+            error_type="HTTPException",
+            status_code=exc.status_code,
+            details=detail,
+            path=request.url.path,
+        )
+
+        # Promote client-facing fields for mobile/web parsers.
+        error_obj = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(error_obj, dict):
+            for key in (
+                "error_code",
+                "retryable",
+                "requires_upgrade",
+                "remaining",
+                "limit",
+            ):
+                if key in detail:
+                    error_obj[key] = detail.get(key)
+
+        return JSONResponse(status_code=exc.status_code, content=payload)
+
     return create_error_response(
         status_code=exc.status_code,
-        message=str(exc.detail),
+        message=str(detail),
         error_type="HTTPException",
         path=request.url.path,
     )
