@@ -9,12 +9,14 @@
 - 后端 v2 API：`POST /api/v2/tryon/validate-input`、`POST /api/v2/tryon/pants`、`GET /api/v2/tryon/capabilities`。
 - 输入门禁模块：`backend/app/services/tryon_v2/input_gate.py`（包含可解释失败码与分数）。
 - 流水线模块：`backend/app/services/tryon_v2/pipeline_a.py`（门禁 -> 身份保护试衣 -> 统一结果）。
+- 质量评估模块：`backend/app/services/tryon_v2/qc.py`（identity/boundary/occlusion + aggregate）。
 - 配置项：`TRYON_BOTTOM_FORCE_FALLBACK` 与 `TRYON_V2_*` 阈值/开关。
 - 移动端接入：预检面板、失败码可视化、action_hint 展示、v2 不可用自动回退 v1。
 - CLI 接入：`--v2 --precheck-only --skip-precheck --mode --garment-category`。
 
 当前验证状态：
 - `tests/test_tryon_v2_api.py` 与 `tests/test_tryon_guards.py` 已稳定通过。
+- `tests/test_tryon_v2_qc.py` 已覆盖方案 A 质量评分通过/失败分支。
 - 预检失败码与错误 envelope 字段已在客户端解析并展示。
 
 尚未落地：

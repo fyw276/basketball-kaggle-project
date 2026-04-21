@@ -36,3 +36,13 @@ async def get_dependency_observability(
     from app.observability.dependency_metrics import snapshot_rates
 
     return success_response(snapshot_rates(), message="ok")
+
+
+@router.get("/tryon-v2-observability")
+async def get_tryon_v2_observability(
+    _current_user: User = Depends(get_current_user),
+):
+    """方案 A 试衣 v2：成功率、失败码分布、时延分位数（单进程累计）。"""
+    from app.observability.tryon_v2_metrics import snapshot_tryon_v2_metrics
+
+    return success_response(snapshot_tryon_v2_metrics(), message="ok")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -12,6 +13,7 @@ from app.api.dependencies import get_current_user
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.user import User
+from app.observability.tryon_v2_metrics import record_tryon_v2_failure, record_tryon_v2_success
 from app.services.storage import get_storage_service
 from app.services.subscription_billing import consume_usage
 from app.services.tryon_v2 import run_pipeline_a
@@ -122,6 +124,7 @@ async def tryon_pants_v2(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    started = time.perf_counter()
     _ensure_tryon_v2_enabled()
 
     if not garment_file.content_type or not garment_file.content_type.startswith("image/"):
@@ -199,6 +202,7 @@ async def tryon_pants_v2(
         strict_identity = bool(getattr(settings, "TRYON_V2_STRICT_IDENTITY", True))
 
     thresholds = _v2_thresholds(strict_mode=(mode == "strict"))
+    qc_threshold = float(getattr(settings, "TRYON_V2_QC_THRESHOLD", 0.6) or 0.6)
 
     result = run_pipeline_a(
         person_image=person_image,
@@ -208,9 +212,13 @@ async def tryon_pants_v2(
         model_gender=model_gender,
         strict_identity=strict_identity,
         thresholds=thresholds,
+        qc_threshold=qc_threshold,
     )
 
     if result.get("status") != "success":
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        err_code = result.get("error_code") or "TRYON_V2_QC_NOT_PASSED"
+        record_tryon_v2_failure(str(err_code), latency_ms)
         http_code = status.HTTP_400_BAD_REQUEST
         if result.get("retryable"):
             http_code = status.HTTP_503_SERVICE_UNAVAILABLE
@@ -243,6 +251,7 @@ async def tryon_pants_v2(
     key = hashlib.sha1(image_bytes).hexdigest()[:20]
     result_path = f"{current_user.user_id}/tryon_v2/result_{key}.jpg"
     _, result_url = get_storage_service()._save_bytes(image_bytes, result_path)
+    record_tryon_v2_success(int((time.perf_counter() - started) * 1000))
 
     return TryOnV2Response(
         status="success",
@@ -350,5 +359,8 @@ async def tryon_v2_capabilities(
         strict_identity_default=strict_identity_default,
         supported_garment_categories=["bottom", "pants", "skirt", "下装", "裤装", "裙装"],
         modes=["strict", "balanced"],
-        thresholds=_v2_thresholds(strict_mode=True),
+        thresholds={
+            **_v2_thresholds(strict_mode=True),
+            "qc_threshold": float(getattr(settings, "TRYON_V2_QC_THRESHOLD", 0.6) or 0.6),
+        },
     )
