@@ -184,12 +184,18 @@ def evaluate_input_gate(
             scores=scores,
         )
 
-    if scores["front_pose_score"] < front_pose_min:
+    # Front-view check is important for stable geometric warps, but selfie / phone / bag
+    # often breaks left-right symmetry. Relax for top/skirt in balanced mode.
+    effective_front_pose_min = front_pose_min
+    if not strict and kind in {"top", "skirt"}:
+        effective_front_pose_min = max(0.0, front_pose_min - 0.12)
+
+    if scores["front_pose_score"] < effective_front_pose_min:
         return GateResult(
             passed=False,
             error_code="TRYON_V2_PERSON_NOT_FRONT_VIEW",
             message="人物图偏离正面视角，建议使用正面站姿图。",
-            action_hint="请上传正面拍摄的人像。",
+            action_hint="请上传正面拍摄的人像；自拍/侧身过大时建议换站姿正面照。",
             retryable=False,
             scores=scores,
         )

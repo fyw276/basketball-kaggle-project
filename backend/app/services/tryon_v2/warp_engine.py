@@ -114,6 +114,56 @@ def _estimate_lower_body_bounds(gray: np.ndarray) -> tuple[int, int, int, int]:
     return x0, x1, waist_y, ankle_y
 
 
+def _estimate_upper_body_bounds(gray: np.ndarray) -> tuple[int, int, int, int]:
+    """Estimate (x0, x1, neck_y, waist_y) for upper body placement."""
+    h, w = gray.shape[:2]
+    if h < 32 or w < 32:
+        return int(w * 0.20), int(w * 0.80), int(h * 0.14), int(h * 0.62)
+
+    gy, gx = np.gradient(gray)
+    grad = np.sqrt(gx * gx + gy * gy)
+
+    y_roi0 = int(h * 0.08)
+    y_roi1 = int(h * 0.70)
+    roi = grad[y_roi0:y_roi1, :]
+    if roi.size == 0:
+        return int(w * 0.20), int(w * 0.80), int(h * 0.14), int(h * 0.62)
+
+    col_energy = roi.mean(axis=0)
+    thr = float(np.quantile(col_energy, 0.82))
+    cols = np.where(col_energy >= thr)[0]
+    if cols.size >= max(8, int(w * 0.06)):
+        x0 = int(cols.min())
+        x1 = int(cols.max()) + 1
+        pad = int((x1 - x0) * 0.10)
+        x0 = _clamp_int(x0 - pad, 0, w - 2)
+        x1 = _clamp_int(x1 + pad, x0 + 2, w)
+    else:
+        x0 = int(w * 0.20)
+        x1 = int(w * 0.80)
+
+    row_energy = grad[:, x0:x1].mean(axis=1)
+    neck_search0 = int(h * 0.06)
+    neck_search1 = int(h * 0.30)
+    seg = row_energy[neck_search0:neck_search1]
+    rthr = float(np.quantile(seg, 0.72)) if seg.size else float(np.quantile(row_energy, 0.72))
+    candidates = np.where(row_energy >= rthr)[0]
+    candidates = candidates[(candidates >= neck_search0) & (candidates <= neck_search1)]
+    neck_y = int(candidates.min()) if candidates.size else int(h * 0.14)
+
+    waist_search0 = int(h * 0.30)
+    waist_search1 = int(h * 0.72)
+    seg2 = row_energy[waist_search0:waist_search1]
+    rthr2 = float(np.quantile(seg2, 0.58)) if seg2.size else rthr
+    candidates2 = np.where(row_energy >= rthr2)[0]
+    candidates2 = candidates2[(candidates2 >= waist_search0) & (candidates2 <= waist_search1)]
+    waist_y = int(candidates2.max()) if candidates2.size else int(h * 0.62)
+
+    neck_y = _clamp_int(neck_y, int(h * 0.08), int(h * 0.28))
+    waist_y = _clamp_int(waist_y, int(h * 0.42), int(h * 0.78))
+    return x0, x1, neck_y, waist_y
+
+
 def _compute_target_boxes(person_image: Image.Image) -> tuple[tuple[int, int, int, int], ...]:
     """Adaptive target boxes (waist, left leg, right leg) in person coordinates."""
     gray = np.asarray(person_image.convert("L"), dtype=np.float32)
@@ -220,7 +270,7 @@ def tryon_top_warp(
     person_image: Image.Image,
     garment_image: Image.Image,
     *,
-    alpha_feather_ratio: float = 0.012,
+    alpha_feather_ratio: float = 0.009,
 ) -> tuple[Image.Image, WarpMetadata]:
     base = person_image.convert("RGBA")
     pw, ph = base.size
@@ -231,17 +281,26 @@ def tryon_top_warp(
     if gw < 16 or gh < 16:
         raise ValueError("garment too small for top warp")
 
-    # Torso box: a bit wider, centered; do not touch head region.
-    x0 = int(pw * 0.20)
-    x1 = int(pw * 0.80)
-    y0 = int(ph * 0.14)
-    y1 = int(ph * 0.62)
+    gray = np.asarray(person_image.convert("L"), dtype=np.float32)
+    x0, x1, neck_y, waist_y = _estimate_upper_body_bounds(gray)
+    # Expand slightly for sleeves/outerwear.
+    pad_x = int((x1 - x0) * 0.06)
+    x0 = _clamp_int(x0 - pad_x, 0, pw - 2)
+    x1 = _clamp_int(x1 + pad_x, x0 + 2, pw)
+    y0 = _clamp_int(int(neck_y - ph * 0.02), 0, int(ph * 0.35))
+    y1 = _clamp_int(int(waist_y + ph * 0.06), y0 + 2, int(ph * 0.86))
     tw = max(2, x1 - x0)
     th = max(2, y1 - y0)
 
-    g = g.resize((tw, th), Image.Resampling.LANCZOS)
+    # Slightly shrink into target box to reduce "floating blanket" effect.
+    inner_scale = 0.92
+    itw = max(2, int(tw * inner_scale))
+    ith = max(2, int(th * inner_scale))
+    g = g.resize((itw, ith), Image.Resampling.LANCZOS)
     layer = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
-    layer.paste(g, (x0, y0), g)
+    ox = x0 + (tw - itw) // 2
+    oy = y0 + (th - ith) // 2
+    layer.paste(g, (ox, oy), g)
 
     feather_px = _clamp_int(int(max(pw, ph) * float(alpha_feather_ratio)), 1, 12)
     layer = _feather_alpha(layer, radius_px=feather_px)
