@@ -166,6 +166,10 @@ class Settings(BaseSettings):
         default=12000,
         description="v2 接口超时预算（毫秒，预留）",
     )
+    TRYON_V2_AUTO_PREPROCESS: bool = Field(
+        default=True,
+        description="v2 试衣在 garment_category=auto 时自动预处理（去背景白底+自动品类）",
+    )
 
     # Subscription & quota
     USAGE_QUOTA_ENABLED: bool = Field(default=False, description="启用后执行功能额度扣减")

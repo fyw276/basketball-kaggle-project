@@ -18,6 +18,7 @@ from app.services.storage import get_storage_service
 from app.services.subscription_billing import consume_usage
 from app.services.tryon_v2 import run_pipeline_a
 from app.services.tryon_v2.input_gate import evaluate_input_gate
+from app.services.tryon_v2.preprocess import preprocess_garment_image
 from app.services.virtual_tryon import check_tryon_garment_has_face
 
 router = APIRouter(prefix="/tryon", tags=["Virtual Try-On v2"])
@@ -54,6 +55,14 @@ class TryOnV2CapabilitiesResponse(BaseModel):
     supported_garment_categories: list[str] = Field(default_factory=list)
     modes: list[str] = Field(default_factory=list)
     thresholds: dict[str, float] = Field(default_factory=dict)
+
+
+class TryOnV2PreprocessItem(BaseModel):
+    tryon_category: str
+    raw_category: str
+    category_confidence: float
+    standardized_image_url: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 def _v2_thresholds(strict_mode: bool) -> dict[str, float]:
@@ -107,6 +116,127 @@ def _ensure_tryon_v2_enabled() -> None:
                 "action_hint": "请联系管理员开启 TRYON_V2_ENABLED。",
             },
         )
+
+
+def _maybe_auto_preprocess(
+    garment_image: Any,
+    garment_category: str | None,
+) -> tuple[Any, str | None, dict[str, Any]]:
+    """If garment_category is auto (or empty), preprocess and auto-detect tryon category."""
+    gc = (garment_category or "").strip().lower()
+    if not bool(getattr(settings, "TRYON_V2_AUTO_PREPROCESS", True)):
+        return garment_image, garment_category, {"auto_preprocess": False}
+    if gc not in {"", "auto", "unknown", "默认"}:
+        return garment_image, garment_category, {"auto_preprocess": False}
+
+    r = preprocess_garment_image(garment_image)
+    # If still unknown, keep original category and let input_gate return actionable error.
+    cat = r.tryon_category if r.tryon_category != "unknown" else garment_category
+    return (
+        r.image,
+        cat,
+        {
+            "auto_preprocess": True,
+            "recognized_tryon_category": r.tryon_category,
+            "recognized_raw_category": r.raw_category,
+            "recognized_confidence": r.confidence,
+        },
+    )
+
+
+@router.post("/preprocess", response_model=TryOnV2PreprocessItem)
+async def tryon_v2_preprocess(
+    garment_file: UploadFile = File(..., alias="garment_file", description="Any garment image"),
+    _current_user: User = Depends(get_current_user),
+):
+    _ensure_tryon_v2_enabled()
+    from io import BytesIO
+
+    from PIL import Image
+
+    b = await garment_file.read()
+    if not b:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty"
+        )
+    garment_image = Image.open(BytesIO(b)).convert("RGB")
+    if check_tryon_garment_has_face(garment_image):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": "衣服图检测到人像（模特/海报），预处理难以稳定抠图。",
+                "error_code": "TRYON_GARMENT_CONTAINS_MODEL",
+                "retryable": False,
+                "action_hint": "请优先使用无模特商品图；若只能用海报截图，建议裁剪到仅包含衣物主体。",
+            },
+        )
+
+    try:
+        r = preprocess_garment_image(garment_image)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": f"预处理失败：{str(e)}",
+                "error_code": "TRYON_V2_GARMENT_TOO_COMPLEX",
+                "retryable": False,
+                "action_hint": "请换成无模特、背景干净的商品图（不要用海报/截图/带商品列表的图）。",
+            },
+        )
+
+    import hashlib
+
+    image_bytes = _pil_image_to_jpeg_bytes(r.image, quality=92)
+    key = hashlib.sha1(image_bytes).hexdigest()[:20]
+    path = f"preprocess/garment_{key}.jpg"
+    _, url = get_storage_service()._save_bytes(image_bytes, path)
+
+    return TryOnV2PreprocessItem(
+        tryon_category=r.tryon_category,
+        raw_category=r.raw_category,
+        category_confidence=float(r.confidence),
+        standardized_image_url=url,
+        metadata=r.metadata,
+    )
+
+
+@router.post("/preprocess-batch", response_model=list[TryOnV2PreprocessItem])
+async def tryon_v2_preprocess_batch(
+    garment_files: list[UploadFile] = File(..., alias="garment_files"),
+    _current_user: User = Depends(get_current_user),
+):
+    _ensure_tryon_v2_enabled()
+    from io import BytesIO
+
+    from PIL import Image
+
+    out: list[TryOnV2PreprocessItem] = []
+    for f in garment_files:
+        b = await f.read()
+        if not b:
+            continue
+        img = Image.open(BytesIO(b)).convert("RGB")
+        try:
+            r = preprocess_garment_image(img)
+            import hashlib
+
+            image_bytes = _pil_image_to_jpeg_bytes(r.image, quality=92)
+            key = hashlib.sha1(image_bytes).hexdigest()[:20]
+            path = f"preprocess/garment_{key}.jpg"
+            _, url = get_storage_service()._save_bytes(image_bytes, path)
+            out.append(
+                TryOnV2PreprocessItem(
+                    tryon_category=r.tryon_category,
+                    raw_category=r.raw_category,
+                    category_confidence=float(r.confidence),
+                    standardized_image_url=url,
+                    metadata=r.metadata,
+                )
+            )
+        except Exception:
+            # Skip failed items to keep batch resilient.
+            continue
+    return out
 
 
 @router.post("/garment", response_model=TryOnV2Response)
@@ -222,6 +352,15 @@ async def tryon_garment_v2(
     thresholds = _v2_thresholds(strict_mode=(mode == "strict"))
     qc_threshold = float(getattr(settings, "TRYON_V2_QC_THRESHOLD", 0.6) or 0.6)
 
+    garment_image, garment_category, pre_meta = _maybe_auto_preprocess(
+        garment_image, garment_category
+    )
+    if garment_image_2 is not None:
+        garment_image_2, garment_category_2, pre_meta2 = _maybe_auto_preprocess(
+            garment_image_2, garment_category_2
+        )
+        pre_meta["auto_preprocess_2"] = pre_meta2
+
     result = run_pipeline_a(
         person_image=person_image,
         garment_image=garment_image,
@@ -282,7 +421,7 @@ async def tryon_garment_v2(
         retryable=False,
         action_hint=None,
         qc_scores=result.get("qc_scores") or {},
-        metadata=result.get("metadata") or {},
+        metadata={**(result.get("metadata") or {}), **pre_meta},
     )
 
 
@@ -392,6 +531,15 @@ async def tryon_v2_validate_input(
             thresholds=_v2_thresholds(strict_mode=(mode == "strict")),
         )
 
+    garment_image, garment_category, pre_meta = _maybe_auto_preprocess(
+        garment_image, garment_category
+    )
+    if garment_image_2 is not None:
+        garment_image_2, garment_category_2, pre_meta2 = _maybe_auto_preprocess(
+            garment_image_2, garment_category_2
+        )
+        pre_meta["auto_preprocess_2"] = pre_meta2
+
     thresholds = _v2_thresholds(strict_mode=(mode == "strict"))
     gate = evaluate_input_gate(
         person_image=person_image,
@@ -426,7 +574,10 @@ async def tryon_v2_validate_input(
         retryable=gate.retryable,
         action_hint=gate.action_hint,
         qc_scores=gate.scores,
-        thresholds=thresholds,
+        thresholds={
+            **thresholds,
+            **{k: v for k, v in pre_meta.items() if k.startswith("recognized_")},
+        },
     )
 
 
