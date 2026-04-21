@@ -1079,6 +1079,56 @@ class ApiClient {
     }
   }
 
+  /// v2 预处理：去背景白底 + 自动品类识别。
+  Future<Map<String, dynamic>> tryonV2Preprocess({
+    dynamic garmentImage,
+    Duration timeout = const Duration(seconds: 90),
+  }) async {
+    try {
+      final v2Base = _resolveV2BaseUrl();
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$v2Base/tryon/preprocess'),
+      );
+      request.headers.addAll(_authHeaders);
+
+      if (garmentImage != null) {
+        final part = await _multipartImage('garment_file', garmentImage);
+        if (part == null) return {'error': 'Unsupported garment image type'};
+        request.files.add(part);
+      }
+
+      final streamedResponse = await request.send().timeout(timeout);
+      final response =
+          await http.Response.fromStream(streamedResponse).timeout(timeout);
+
+      if (response.statusCode == 200) {
+        final decoded = json.decode(response.body);
+        final unwrapped = unwrapApiResponseEnvelope(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
+      }
+      if (response.statusCode == 401) {
+        return {'error': '未登录或登录已过期，请重新登录后再试'};
+      }
+      final body = _parseFastApiErrorBodyMap(response.body);
+      if (body != null) {
+        return {
+          'error': body['message']?.toString() ??
+              'Try-on preprocess failed with status: ${response.statusCode}',
+          if (body['error_code'] != null) 'error_code': body['error_code'],
+          if (body['retryable'] != null) 'retryable': body['retryable'],
+          if (body['action_hint'] != null) 'action_hint': body['action_hint'],
+        };
+      }
+      return {
+        'error': 'Try-on preprocess failed with status: ${response.statusCode}'
+      };
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
   // ─── 智能穿搭：天气 + 参考图 + 情绪 ─────────────────────────────
   // 后端: GET /smart-outfit/weather, GET /smart-outfit/weather-by-city
   // POST /smart-outfit/upload-reference, POST /smart-outfit/generate

@@ -64,6 +64,8 @@ class VirtualTryonScreen extends StatefulWidget {
 class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
   XFile? _garmentImage;
   XFile? _garmentImage2;
+  String? _standardizedGarmentUrl;
+  String? _standardizedGarmentUrl2;
   String? _garmentQualityHint;
   XFile? _personFront;
   _GarmentCategoryChoice _garmentCategory = _GarmentCategoryChoice.auto;
@@ -136,6 +138,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
       setState(() {
         _garmentImage = img;
         _garmentQualityHint = '正在评估衣服图是否适合试衣...';
+        _standardizedGarmentUrl = null;
         _resetPrecheckPanel();
       });
       final hint = await _evaluateGarmentQuality(img);
@@ -143,6 +146,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
       setState(() {
         _garmentQualityHint = hint;
       });
+      await _autoPreprocessGarment(primary: true);
     }
   }
 
@@ -154,8 +158,63 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
     if (img != null) {
       setState(() {
         _garmentImage2 = img;
+        _standardizedGarmentUrl2 = null;
       });
+      await _autoPreprocessGarment(primary: false);
     }
+  }
+
+  _GarmentCategoryChoice _choiceFromTryonCategory(String? c) {
+    final low = (c ?? '').trim().toLowerCase();
+    if (low == 'top' || low.contains('上')) return _GarmentCategoryChoice.top;
+    if (low == 'bottom' || low.contains('下') || low.contains('裤')) {
+      return _GarmentCategoryChoice.bottom;
+    }
+    if (low == 'skirt' || low.contains('裙') || low.contains('dress')) {
+      return _GarmentCategoryChoice.skirt;
+    }
+    return _GarmentCategoryChoice.auto;
+  }
+
+  Future<void> _autoPreprocessGarment({required bool primary}) async {
+    final auth = context.read<AuthProvider>();
+    if (!auth.isInitialized || !auth.isAuthenticated) {
+      return;
+    }
+    final file = primary ? _garmentImage : _garmentImage2;
+    if (file == null) return;
+
+    final res = await auth.apiClient.tryonV2Preprocess(garmentImage: file);
+    if (!mounted) return;
+    if (res['error'] != null) {
+      // Do not block user; surface hint softly via precheck panel.
+      setState(() {
+        _precheckPassed = false;
+        _precheckMessage = '预处理失败：${res['error']}';
+        _precheckHint = res['action_hint']?.toString();
+        _precheckErrorCode = res['error_code']?.toString();
+        _precheckSource = 'preprocess';
+      });
+      return;
+    }
+
+    final url = res['standardized_image_url']?.toString();
+    final cat = res['tryon_category']?.toString();
+    setState(() {
+      if (primary) {
+        _standardizedGarmentUrl = url;
+        if (_garmentCategory != _GarmentCategoryChoice.outfit) {
+          _garmentCategory = _choiceFromTryonCategory(cat);
+        }
+      } else {
+        _standardizedGarmentUrl2 = url;
+      }
+      _precheckPassed = true;
+      _precheckMessage = '预处理完成：已生成白底标准图并识别品类';
+      _precheckHint = cat != null ? '识别品类：$cat' : null;
+      _precheckErrorCode = null;
+      _precheckSource = 'preprocess';
+    });
   }
 
   Future<void> _pickPerson() async {
@@ -315,7 +374,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
       garmentImage: _garmentImage,
       garmentImage2: isOutfit ? _garmentImage2 : null,
       personImage: _personFront,
-      garmentCategory: isOutfit ? 'outfit' : cat,
+      garmentCategory: isOutfit ? 'outfit' : (cat.isEmpty ? 'auto' : cat),
       garmentCategory2: 'bottom',
       mode: mode,
     );
