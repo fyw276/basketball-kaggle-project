@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 from PIL import Image, ImageChops, ImageFilter
 
 from app.services.tryon_v2.garment_struct import cutout_garment_rgba, split_pants_parts
@@ -59,21 +60,78 @@ def _upper_protect_mask(size: tuple[int, int], protect_until_y: int) -> Image.Im
     return mask
 
 
-def _compute_target_boxes(person_size: tuple[int, int]) -> tuple[tuple[int, int, int, int], ...]:
-    """Heuristic target boxes (waist, left leg, right leg) in person coordinates."""
-    pw, ph = person_size
-    # Waist around 38% height, legs start around 44% height.
-    waist_y0 = int(ph * 0.34)
-    waist_y1 = int(ph * 0.46)
-    leg_y0 = int(ph * 0.44)
-    leg_y1 = int(ph * 0.96)
+def _estimate_lower_body_bounds(gray: np.ndarray) -> tuple[int, int, int, int]:
+    """Estimate (x0, x1, waist_y, ankle_y) for person image.
 
-    # Slightly inset x to avoid covering background/arms.
-    x0 = int(pw * 0.22)
-    x1 = int(pw * 0.78)
-    mid = (x0 + x1) // 2
+    Uses gradient energy distribution (model-free, fast) to reduce the
+    "floating pants" effect when the person is off-center or legs are long.
+    """
+    h, w = gray.shape[:2]
+    if h < 32 or w < 32:
+        return int(w * 0.22), int(w * 0.78), int(h * 0.40), int(h * 0.96)
 
-    waistband_box = (x0, waist_y0, x1, waist_y1)
+    gy, gx = np.gradient(gray)
+    grad = np.sqrt(gx * gx + gy * gy)
+
+    y_roi0 = int(h * 0.28)
+    y_roi1 = int(h * 0.98)
+    roi = grad[y_roi0:y_roi1, :]
+    if roi.size == 0:
+        return int(w * 0.22), int(w * 0.78), int(h * 0.40), int(h * 0.96)
+
+    col_energy = roi.mean(axis=0)
+    thr = float(np.quantile(col_energy, 0.80))
+    cols = np.where(col_energy >= thr)[0]
+    if cols.size >= max(8, int(w * 0.06)):
+        x0 = int(cols.min())
+        x1 = int(cols.max()) + 1
+        pad = int((x1 - x0) * 0.10)
+        x0 = _clamp_int(x0 - pad, 0, w - 2)
+        x1 = _clamp_int(x1 + pad, x0 + 2, w)
+    else:
+        x0 = int(w * 0.22)
+        x1 = int(w * 0.78)
+
+    row_energy = grad[:, x0:x1].mean(axis=1)
+    waist_search0 = int(h * 0.26)
+    waist_search1 = int(h * 0.60)
+    seg = row_energy[waist_search0:waist_search1]
+    rthr = float(np.quantile(seg, 0.70)) if seg.size else float(np.quantile(row_energy, 0.70))
+    candidates = np.where(row_energy >= rthr)[0]
+    candidates = candidates[(candidates >= waist_search0) & (candidates <= waist_search1)]
+    waist_y = int(candidates.min()) if candidates.size else int(h * 0.40)
+
+    ankle_search0 = int(h * 0.65)
+    ankle_search1 = int(h * 0.98)
+    seg2 = row_energy[ankle_search0:ankle_search1]
+    rthr2 = float(np.quantile(seg2, 0.55)) if seg2.size else rthr
+    candidates2 = np.where(row_energy >= rthr2)[0]
+    candidates2 = candidates2[(candidates2 >= ankle_search0) & (candidates2 <= ankle_search1)]
+    ankle_y = int(candidates2.max()) if candidates2.size else int(h * 0.96)
+
+    waist_y = _clamp_int(waist_y, int(h * 0.30), int(h * 0.55))
+    ankle_y = _clamp_int(ankle_y, int(h * 0.75), int(h * 0.98))
+    return x0, x1, waist_y, ankle_y
+
+
+def _compute_target_boxes(person_image: Image.Image) -> tuple[tuple[int, int, int, int], ...]:
+    """Adaptive target boxes (waist, left leg, right leg) in person coordinates."""
+    gray = np.asarray(person_image.convert("L"), dtype=np.float32)
+    ph, pw = gray.shape[:2]
+
+    x0, x1, waist_y, ankle_y = _estimate_lower_body_bounds(gray)
+    body_w = max(2, x1 - x0)
+    mid = x0 + body_w // 2
+
+    waist_h = _clamp_int(int(ph * 0.11), 24, int(ph * 0.18))
+    wy0 = _clamp_int(waist_y - waist_h // 2, 0, ph - 2)
+    wy1 = _clamp_int(waist_y + waist_h // 2, wy0 + 2, ph)
+    waistband_box = (x0, wy0, x1, wy1)
+
+    leg_y0 = _clamp_int(int(wy1 + ph * 0.01), 0, ph - 2)
+    leg_y1 = _clamp_int(ankle_y, leg_y0 + 2, ph)
+    mid = _clamp_int(mid, x0 + 2, x1 - 2)
+
     left_leg_box = (x0, leg_y0, mid, leg_y1)
     right_leg_box = (mid, leg_y0, x1, leg_y1)
     return waistband_box, left_leg_box, right_leg_box
@@ -92,7 +150,7 @@ def tryon_pants_warp(
     cutout = cutout_garment_rgba(garment_image)
     parts = split_pants_parts(cutout.cropped)
 
-    waistband_box, left_leg_box, right_leg_box = _compute_target_boxes((pw, ph))
+    waistband_box, left_leg_box, right_leg_box = _compute_target_boxes(person_image)
 
     def _warp_into_box(src: Image.Image, box: tuple[int, int, int, int]) -> Image.Image:
         x0, y0, x1, y1 = box
