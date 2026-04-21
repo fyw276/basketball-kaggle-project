@@ -226,16 +226,8 @@ def evaluate_input_gate(
             scores=scores,
         )
 
-    # If background is too "busy", fail fast: these inputs tend to paste as a big rectangle.
-    if scores["garment_bg_clean_score"] < (0.25 if strict else 0.12):
-        return GateResult(
-            passed=False,
-            error_code="TRYON_V2_GARMENT_TOO_COMPLEX",
-            message="商品图背景过于复杂（可能是海报/模特图/截图），无法稳定抠图贴合。",
-            action_hint="请换成无模特、背景干净的平铺商品图（不要带商品列表/水印）。",
-            retryable=False,
-            scores=scores,
-        )
+    # Background complexity is handled by auto-preprocess (crop + GrabCut + white background).
+    # Do NOT hard-fail here; keep as a score for UI hints.
 
     return GateResult(
         passed=True,

@@ -85,6 +85,35 @@ def _keep_largest_alpha_component(rgba: Image.Image, min_alpha: int = 20) -> Ima
         return im
 
 
+def _grabcut_refine_rgba(rgb: Image.Image) -> Image.Image | None:
+    """Best-effort foreground extraction for poster/screenshot-like inputs.
+
+    Requires OpenCV. Returns an RGBA image with alpha mask, or None if unavailable/fails.
+    """
+    try:
+        import cv2  # type: ignore
+
+        arr = np.asarray(rgb.convert("RGB"))
+        h, w = arr.shape[:2]
+        if h < 64 or w < 64:
+            return None
+
+        # Initialize with a loose rectangle (exclude borders).
+        rect = (int(w * 0.06), int(h * 0.06), int(w * 0.88), int(h * 0.88))
+        mask = np.zeros((h, w), np.uint8)
+        bgdModel = np.zeros((1, 65), np.float64)
+        fgdModel = np.zeros((1, 65), np.float64)
+        cv2.grabCut(arr, mask, rect, bgdModel, fgdModel, 3, cv2.GC_INIT_WITH_RECT)
+        # Foreground: GC_FGD or GC_PR_FGD
+        fg = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
+        pil_a = Image.fromarray(fg, mode="L").filter(ImageFilter.GaussianBlur(radius=1.0))
+        out = Image.fromarray(arr, mode="RGB").convert("RGBA")
+        out.putalpha(pil_a)
+        return out
+    except Exception:
+        return None
+
+
 def cutout_garment_rgba(garment_image: Image.Image) -> GarmentCutout:
     rgb = garment_image.convert("RGB")
     rgba: Image.Image | None = None
@@ -111,12 +140,14 @@ def cutout_garment_rgba(garment_image: Image.Image) -> GarmentCutout:
     # Keep only the main connected component to avoid pasting "product list panels"/watermarks.
     rgba = _keep_largest_alpha_component(rgba)
 
-    # Reject poster-like inputs: if alpha covers almost entire image,
-    # it's likely a model photo/screenshot.
+    # Poster/screenshot often yields near-full alpha. Instead of failing, try GrabCut refinement.
     a = np.asarray(rgba.split()[3], dtype=np.uint8)
     cover = float((a > 20).mean())
     if cover > 0.85:
-        raise ValueError("garment segmentation too broad (likely poster/screenshot)")
+        refined = _grabcut_refine_rgba(rgb)
+        if refined is not None:
+            refined = _keep_largest_alpha_component(refined)
+            rgba = refined
 
     bbox = _alpha_bbox(rgba)
     cropped = rgba.crop(bbox) if bbox else rgba

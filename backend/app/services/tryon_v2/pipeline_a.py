@@ -93,7 +93,7 @@ def run_pipeline_a(
         low = msg.lower()
         if "poster" in low or "screenshot" in low or "too broad" in low:
             err_code = "TRYON_V2_GARMENT_TOO_COMPLEX"
-            hint = "请换成无模特、背景干净的商品图（不要用海报/截图/含多件商品列表的图）。"
+            hint = "请换成无模特、背景干净的商品图；或先裁剪到仅包含衣物主体再上传。"
         return {
             "status": "error",
             "message": msg,

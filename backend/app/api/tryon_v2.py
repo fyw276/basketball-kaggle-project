@@ -160,16 +160,7 @@ async def tryon_v2_preprocess(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty"
         )
     garment_image = Image.open(BytesIO(b)).convert("RGB")
-    if check_tryon_garment_has_face(garment_image):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "message": "衣服图检测到人像（模特/海报），预处理难以稳定抠图。",
-                "error_code": "TRYON_GARMENT_CONTAINS_MODEL",
-                "retryable": False,
-                "action_hint": "请优先使用无模特商品图；若只能用海报截图，建议裁剪到仅包含衣物主体。",
-            },
-        )
+    # For preprocess we accept model/poster images and try best-effort extraction.
 
     try:
         r = preprocess_garment_image(garment_image)
