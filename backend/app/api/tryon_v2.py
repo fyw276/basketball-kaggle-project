@@ -109,14 +109,18 @@ def _ensure_tryon_v2_enabled() -> None:
         )
 
 
-@router.post("/pants", response_model=TryOnV2Response)
-async def tryon_pants_v2(
-    garment_file: UploadFile = File(
-        ..., alias="garment_file", description="Bottom garment product photo"
-    ),
+@router.post("/garment", response_model=TryOnV2Response)
+async def tryon_garment_v2(
+    garment_file: UploadFile = File(..., alias="garment_file", description="Garment product photo"),
     person_file: UploadFile = File(..., alias="person_file", description="Person full-body photo"),
     garment_category: str = Form(
-        "bottom", description="Expected bottom category, e.g. bottom/下装"
+        "auto", description="Expected category: top|bottom|skirt|outfit|auto"
+    ),
+    garment_file_2: UploadFile | None = File(
+        None, alias="garment_file_2", description="Optional second garment for outfit"
+    ),
+    garment_category_2: str = Form(
+        "bottom", description="Second garment category for outfit: bottom|skirt"
     ),
     prompt: str = Form("", description="Optional text prompt"),
     mode: str = Form("strict", description="strict|balanced"),
@@ -176,6 +180,7 @@ async def tryon_pants_v2(
 
     garment_bytes = await garment_file.read()
     person_bytes = await person_file.read()
+    garment2_bytes = await garment_file_2.read() if garment_file_2 is not None else b""
 
     if len(garment_bytes) == 0 or len(person_bytes) == 0:
         raise HTTPException(
@@ -185,12 +190,25 @@ async def tryon_pants_v2(
 
     garment_image = Image.open(BytesIO(garment_bytes)).convert("RGB")
     person_image = Image.open(BytesIO(person_bytes)).convert("RGB")
+    garment_image_2 = (
+        Image.open(BytesIO(garment2_bytes)).convert("RGB") if len(garment2_bytes) else None
+    )
 
     if check_tryon_garment_has_face(garment_image):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "message": "衣服图检测到人像，请上传无模特商品图。",
+                "error_code": "TRYON_GARMENT_CONTAINS_MODEL",
+                "retryable": False,
+                "action_hint": "请使用纯商品图，不要包含人物脸部。",
+            },
+        )
+    if garment_image_2 is not None and check_tryon_garment_has_face(garment_image_2):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": "第二件衣服图检测到人像，请上传无模特商品图。",
                 "error_code": "TRYON_GARMENT_CONTAINS_MODEL",
                 "retryable": False,
                 "action_hint": "请使用纯商品图，不要包含人物脸部。",
@@ -208,6 +226,8 @@ async def tryon_pants_v2(
         person_image=person_image,
         garment_image=garment_image,
         garment_category=garment_category,
+        garment_image_2=garment_image_2,
+        garment_category_2=garment_category_2,
         prompt=prompt,
         model_gender=model_gender,
         strict_identity=strict_identity,
@@ -266,8 +286,8 @@ async def tryon_pants_v2(
     )
 
 
-@router.post("/validate-input", response_model=TryOnV2ValidateResponse)
-async def tryon_v2_validate_input(
+@router.post("/pants", response_model=TryOnV2Response, deprecated=True)
+async def tryon_pants_v2(
     garment_file: UploadFile = File(
         ..., alias="garment_file", description="Bottom garment product photo"
     ),
@@ -275,6 +295,36 @@ async def tryon_v2_validate_input(
     garment_category: str = Form(
         "bottom", description="Expected bottom category, e.g. bottom/下装"
     ),
+    prompt: str = Form("", description="Optional text prompt"),
+    mode: str = Form("strict", description="strict|balanced"),
+    model_gender: str = Form("neutral", description="male|female|neutral"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # Backward compatible wrapper
+    return await tryon_garment_v2(
+        garment_file=garment_file,
+        person_file=person_file,
+        garment_category=garment_category,
+        garment_file_2=None,
+        garment_category_2="bottom",
+        prompt=prompt,
+        mode=mode,
+        model_gender=model_gender,
+        current_user=current_user,
+        db=db,
+    )
+
+
+@router.post("/validate-input", response_model=TryOnV2ValidateResponse)
+async def tryon_v2_validate_input(
+    garment_file: UploadFile = File(..., alias="garment_file", description="Garment product photo"),
+    person_file: UploadFile = File(..., alias="person_file", description="Person full-body photo"),
+    garment_category: str = Form(
+        "auto", description="Expected category: top|bottom|skirt|outfit|auto"
+    ),
+    garment_file_2: UploadFile | None = File(None, alias="garment_file_2"),
+    garment_category_2: str = Form("bottom", description="Second garment category for outfit"),
     mode: str = Form("strict", description="strict|balanced"),
     current_user: User = Depends(get_current_user),
 ):
@@ -304,6 +354,7 @@ async def tryon_v2_validate_input(
 
     garment_bytes = await garment_file.read()
     person_bytes = await person_file.read()
+    garment2_bytes = await garment_file_2.read() if garment_file_2 is not None else b""
     if len(garment_bytes) == 0 or len(person_bytes) == 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -312,6 +363,9 @@ async def tryon_v2_validate_input(
 
     garment_image = Image.open(BytesIO(garment_bytes)).convert("RGB")
     person_image = Image.open(BytesIO(person_bytes)).convert("RGB")
+    garment_image_2 = (
+        Image.open(BytesIO(garment2_bytes)).convert("RGB") if len(garment2_bytes) else None
+    )
 
     if check_tryon_garment_has_face(garment_image):
         return TryOnV2ValidateResponse(
@@ -320,6 +374,18 @@ async def tryon_v2_validate_input(
             passed=False,
             error_code="TRYON_GARMENT_CONTAINS_MODEL",
             message="衣服图检测到人像，请上传无模特商品图。",
+            retryable=False,
+            action_hint="请使用纯商品图，不要包含人物脸部。",
+            qc_scores={},
+            thresholds=_v2_thresholds(strict_mode=(mode == "strict")),
+        )
+    if garment_image_2 is not None and check_tryon_garment_has_face(garment_image_2):
+        return TryOnV2ValidateResponse(
+            status="fail",
+            pipeline="A",
+            passed=False,
+            error_code="TRYON_GARMENT_CONTAINS_MODEL",
+            message="第二件衣服图检测到人像，请上传无模特商品图。",
             retryable=False,
             action_hint="请使用纯商品图，不要包含人物脸部。",
             qc_scores={},
@@ -334,6 +400,22 @@ async def tryon_v2_validate_input(
         strict=(mode == "strict"),
         thresholds=thresholds,
     )
+    # outfit: also validate second garment if provided
+    if (
+        gate.passed
+        and garment_category
+        and "outfit" in garment_category.lower()
+        and garment_image_2 is not None
+    ):
+        gate2 = evaluate_input_gate(
+            person_image=person_image,
+            garment_image=garment_image_2,
+            garment_category=garment_category_2,
+            strict=(mode == "strict"),
+            thresholds=thresholds,
+        )
+        if not gate2.passed:
+            gate = gate2
 
     return TryOnV2ValidateResponse(
         status="pass" if gate.passed else "fail",
@@ -357,7 +439,16 @@ async def tryon_v2_capabilities(
         enabled=bool(getattr(settings, "TRYON_V2_ENABLED", True)),
         pipeline_default="A",
         strict_identity_default=strict_identity_default,
-        supported_garment_categories=["bottom", "pants", "skirt", "下装", "裤装", "裙装"],
+        supported_garment_categories=[
+            "top",
+            "bottom",
+            "skirt",
+            "outfit",
+            "上装",
+            "下装",
+            "裙装",
+            "套装",
+        ],
         modes=["strict", "balanced"],
         thresholds={
             **_v2_thresholds(strict_mode=True),

@@ -16,6 +16,7 @@ enum _GarmentCategoryChoice {
   top,
   bottom,
   skirt,
+  outfit,
 }
 
 extension _GarmentCategoryChoiceApi on _GarmentCategoryChoice {
@@ -30,6 +31,8 @@ extension _GarmentCategoryChoiceApi on _GarmentCategoryChoice {
         return '下装';
       case _GarmentCategoryChoice.skirt:
         return '裙装';
+      case _GarmentCategoryChoice.outfit:
+        return '套装';
     }
   }
 
@@ -43,6 +46,8 @@ extension _GarmentCategoryChoiceApi on _GarmentCategoryChoice {
         return '下装';
       case _GarmentCategoryChoice.skirt:
         return '裙装';
+      case _GarmentCategoryChoice.outfit:
+        return '上衣+下装';
     }
   }
 }
@@ -58,6 +63,7 @@ class VirtualTryonScreen extends StatefulWidget {
 
 class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
   XFile? _garmentImage;
+  XFile? _garmentImage2;
   String? _garmentQualityHint;
   XFile? _personFront;
   _GarmentCategoryChoice _garmentCategory = _GarmentCategoryChoice.auto;
@@ -140,6 +146,18 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
     }
   }
 
+  Future<void> _pickGarment2() async {
+    final source = await _pickSource();
+    if (source == null) return;
+    final picker = ImagePicker();
+    final img = await picker.pickImage(source: source);
+    if (img != null) {
+      setState(() {
+        _garmentImage2 = img;
+      });
+    }
+  }
+
   Future<void> _pickPerson() async {
     final source = await _pickSource();
     if (source == null) return;
@@ -177,6 +195,13 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
 
   Future<void> _generate() async {
     if (_garmentImage == null || _personFront == null) return;
+    if (_garmentCategory == _GarmentCategoryChoice.outfit &&
+        _garmentImage2 == null) {
+      if (mounted) {
+        showAppSnackBar(context, '已选择「上衣+下装」，请再上传第二件（下装/裙装）');
+      }
+      return;
+    }
 
     final auth = context.read<AuthProvider>();
     if (!auth.isInitialized) {
@@ -280,15 +305,18 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
   }
 
   Future<Map<String, dynamic>> _requestTryOn(AuthProvider auth) async {
-    final category = (_garmentCategory.apiValue ?? 'bottom').trim();
+    final cat = (_garmentCategory.apiValue ?? 'auto').trim();
     final mode = _garmentCategory == _GarmentCategoryChoice.bottom
         ? 'strict'
         : 'balanced';
+    final isOutfit = _garmentCategory == _GarmentCategoryChoice.outfit;
 
-    final v2 = await auth.apiClient.virtualTryonV2Pants(
+    final v2 = await auth.apiClient.virtualTryonV2Garment(
       garmentImage: _garmentImage,
+      garmentImage2: isOutfit ? _garmentImage2 : null,
       personImage: _personFront,
-      garmentCategory: category,
+      garmentCategory: isOutfit ? 'outfit' : cat,
+      garmentCategory2: 'bottom',
       mode: mode,
     );
 
@@ -315,6 +343,10 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
     final garment = _garmentImage;
     final person = _personFront;
     if (garment == null || person == null) return '请先上传衣服图和人物照';
+    if (_garmentCategory == _GarmentCategoryChoice.outfit &&
+        _garmentImage2 == null) {
+      return '已选择「上衣+下装」，请再上传第二件（下装/裙装）';
+    }
 
     final garmentCheck = await _inspectImage(garment);
     if (garmentCheck != null) {
@@ -348,14 +380,15 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
       return personCheck;
     }
 
-    final category = (_garmentCategory.apiValue ?? 'bottom').trim();
+    final category = (_garmentCategory.apiValue ?? 'auto').trim();
     final mode = _garmentCategory == _GarmentCategoryChoice.bottom
         ? 'strict'
         : 'balanced';
+    final isOutfit = _garmentCategory == _GarmentCategoryChoice.outfit;
     final remote = await apiClient.tryonV2ValidateInput(
       garmentImage: garment,
       personImage: person,
-      garmentCategory: category,
+      garmentCategory: isOutfit ? 'outfit' : category,
       mode: mode,
     );
 
@@ -835,6 +868,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                     onTap: _pickGarment,
                     onClear: () => setState(() {
                       _garmentImage = null;
+                      _garmentImage2 = null;
                       _garmentQualityHint = null;
                       _resetPrecheckPanel();
                     }),
@@ -856,6 +890,19 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                 ),
               ],
             ),
+            if (_garmentCategory == _GarmentCategoryChoice.outfit) ...[
+              const SizedBox(height: 12),
+              _PickBox(
+                label: '第二件（下装/裙装）',
+                image: _garmentImage2,
+                onTap: _pickGarment2,
+                onClear: () => setState(() {
+                  _garmentImage2 = null;
+                  _resetPrecheckPanel();
+                }),
+                palette: palette,
+              ),
+            ],
             if (_garmentQualityHint != null) ...[
               const SizedBox(height: 10),
               _QualityBadge(
@@ -897,6 +944,9 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                   selected: selected,
                   onSelected: (_) => setState(() {
                     _garmentCategory = c;
+                    if (_garmentCategory != _GarmentCategoryChoice.outfit) {
+                      _garmentImage2 = null;
+                    }
                     _resetPrecheckPanel();
                   }),
                   selectedColor: palette.primary.withValues(alpha: 0.22),

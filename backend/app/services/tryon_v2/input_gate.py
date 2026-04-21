@@ -13,13 +13,41 @@ _BOTTOM_KEYWORDS = (
     "裤装",
     "短裤",
     "牛仔",
-    "裙",
-    "裙装",
-    "dress",
-    "skirt",
     "bottom",
     "pants",
     "jeans",
+)
+
+_TOP_KEYWORDS = (
+    "上装",
+    "上衣",
+    "t恤",
+    "t-shirt",
+    "shirt",
+    "top",
+    "hoodie",
+    "sweater",
+    "外套",
+    "jacket",
+    "coat",
+)
+
+_SKIRT_KEYWORDS = (
+    "裙",
+    "裙装",
+    "半身裙",
+    "连衣裙",
+    "dress",
+    "skirt",
+)
+
+_OUTFIT_KEYWORDS = (
+    "outfit",
+    "set",
+    "套装",
+    "上下装",
+    "top+bottom",
+    "top_bottom",
 )
 
 
@@ -76,11 +104,29 @@ def _score_garment_front(garment_image: Image.Image) -> float:
     return _clamp01((fg_ratio - 0.1) / 0.45)
 
 
-def _is_bottom_category(garment_category: str | None) -> bool:
+def _has_any_keyword(garment_category: str | None, keywords: tuple[str, ...]) -> bool:
     gc = (garment_category or "").strip().lower()
     if not gc:
         return False
-    return any(k in gc for k in _BOTTOM_KEYWORDS)
+    return any(k in gc for k in keywords)
+
+
+def _category_kind(garment_category: str | None) -> str:
+    """Return one of: top|bottom|skirt|outfit|auto|unknown."""
+    gc = (garment_category or "").strip().lower()
+    if not gc:
+        return "auto"
+    if _has_any_keyword(gc, _OUTFIT_KEYWORDS):
+        return "outfit"
+    if _has_any_keyword(gc, _BOTTOM_KEYWORDS):
+        return "bottom"
+    if _has_any_keyword(gc, _SKIRT_KEYWORDS):
+        return "skirt"
+    if _has_any_keyword(gc, _TOP_KEYWORDS):
+        return "top"
+    if gc in {"auto", "unknown", "默认"}:
+        return "auto"
+    return "unknown"
 
 
 def evaluate_input_gate(
@@ -103,12 +149,13 @@ def evaluate_input_gate(
         "garment_front_score": _score_garment_front(garment_image),
     }
 
-    if not _is_bottom_category(garment_category):
+    kind = _category_kind(garment_category)
+    if kind in {"unknown", "auto"}:
         return GateResult(
             passed=False,
             error_code="TRYON_V2_UNSUPPORTED_CATEGORY",
-            message="当前仅支持下装试衣，请将 garment_category 设为 bottom/下装/裤装/裙装。",
-            action_hint="请上传下装商品图并设置 garment_category=bottom。",
+            message="当前仅支持上装/下装/裙装试衣。请将 garment_category 设为 top/bottom/skirt（或上传两件用 outfit）。",
+            action_hint="上装：top；下装：bottom；裙装：skirt；两件：outfit。",
             retryable=False,
             scores=scores,
         )
@@ -123,12 +170,16 @@ def evaluate_input_gate(
             scores=scores,
         )
 
-    if scores["leg_visibility_score"] < leg_visibility_min:
+    # Leg visibility is only required for bottom/skirt/outfit.
+    if (
+        kind in {"bottom", "skirt", "outfit"}
+        and scores["leg_visibility_score"] < leg_visibility_min
+    ):
         return GateResult(
             passed=False,
             error_code="TRYON_V2_PERSON_LEG_NOT_VISIBLE",
-            message="人物腿部可见度不足，无法稳定贴合下装。",
-            action_hint="请避免遮挡并保证腿部清晰可见。",
+            message="人物腿部可见度不足，无法稳定贴合下装/裙装。",
+            action_hint="请避免遮挡并保证腿部清晰可见（建议全身站姿）。",
             retryable=False,
             scores=scores,
         )
@@ -147,7 +198,7 @@ def evaluate_input_gate(
         return GateResult(
             passed=False,
             error_code="TRYON_V2_GARMENT_NOT_FRONT_VIEW",
-            message="下装商品图不够清晰或非正面，无法进行稳定贴合。",
+            message="商品图不够清晰或主体不完整，无法进行稳定贴合。",
             action_hint="请上传正面、主体完整、背景干净的商品图。",
             retryable=False,
             scores=scores,

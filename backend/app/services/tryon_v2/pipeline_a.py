@@ -8,7 +8,7 @@ from PIL import Image
 
 from app.services.tryon_v2.input_gate import evaluate_input_gate
 from app.services.tryon_v2.qc import evaluate_qc
-from app.services.tryon_v2.warp_engine import tryon_pants_warp
+from app.services.tryon_v2.warp_engine import tryon_pants_warp, tryon_skirt_warp, tryon_top_warp
 from app.services.virtual_tryon import sanitize_tryon_prompt
 
 
@@ -16,6 +16,8 @@ def run_pipeline_a(
     person_image: Image.Image,
     garment_image: Image.Image,
     garment_category: str,
+    garment_image_2: Image.Image | None = None,
+    garment_category_2: str | None = None,
     prompt: str | None = None,
     model_gender: str = "neutral",
     strict_identity: bool = True,
@@ -43,11 +45,45 @@ def run_pipeline_a(
     prompt_clean = sanitize_tryon_prompt(prompt or "")
 
     try:
-        # Pipeline A: deterministic bottom-garment warp (no diffusion)
-        # to preserve identity/background.
-        image, warp_meta = tryon_pants_warp(person_image=person_image, garment_image=garment_image)
+        # Pipeline A: deterministic warp (no diffusion) to preserve identity/background.
+        cat = (garment_category or "").strip().lower()
+        if any(k in cat for k in ("top", "上装", "上衣")):
+            image, warp_meta = tryon_top_warp(
+                person_image=person_image, garment_image=garment_image
+            )
+        elif any(k in cat for k in ("skirt", "dress", "裙", "裙装", "连衣裙")):
+            image, warp_meta = tryon_skirt_warp(
+                person_image=person_image, garment_image=garment_image
+            )
+        elif any(k in cat for k in ("outfit", "套装", "上下装")):
+            # outfit: apply top first then bottom/skirt if provided
+            img1, _m1 = tryon_top_warp(person_image=person_image, garment_image=garment_image)
+            if garment_image_2 is None:
+                raise ValueError("outfit requires garment_image_2 (bottom/skirt)")
+            cat2 = (garment_category_2 or "bottom").strip().lower()
+            if any(k in cat2 for k in ("skirt", "dress", "裙", "裙装", "连衣裙")):
+                image, warp_meta = tryon_skirt_warp(
+                    person_image=img1, garment_image=garment_image_2
+                )
+            else:
+                image, warp_meta = tryon_pants_warp(
+                    person_image=img1, garment_image=garment_image_2
+                )
+            upstream_metadata = {
+                "engine": "outfit_warp_v1",
+                "top_engine": _m1.engine,
+                "bottom_engine": warp_meta.engine,
+            }
+        else:
+            image, warp_meta = tryon_pants_warp(
+                person_image=person_image, garment_image=garment_image
+            )
         upstream_status = "success"
-        upstream_metadata: dict[str, Any] = {"engine": warp_meta.engine, **warp_meta.__dict__}
+        if "upstream_metadata" in locals():
+            # keep outfit metadata
+            upstream_metadata = {**upstream_metadata, "boxes": warp_meta.__dict__}
+        else:
+            upstream_metadata = {"engine": warp_meta.engine, **warp_meta.__dict__}
         if prompt_clean:
             upstream_metadata["prompt_used"] = True
     except Exception as e:

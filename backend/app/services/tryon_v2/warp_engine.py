@@ -214,3 +214,98 @@ def tryon_pants_warp(
         alpha_feather_px=feather_px,
     )
     return out, meta
+
+
+def tryon_top_warp(
+    person_image: Image.Image,
+    garment_image: Image.Image,
+    *,
+    alpha_feather_ratio: float = 0.012,
+) -> tuple[Image.Image, WarpMetadata]:
+    base = person_image.convert("RGBA")
+    pw, ph = base.size
+
+    cutout = cutout_garment_rgba(garment_image)
+    g = cutout.cropped.convert("RGBA")
+    gw, gh = g.size
+    if gw < 16 or gh < 16:
+        raise ValueError("garment too small for top warp")
+
+    # Torso box: a bit wider, centered; do not touch head region.
+    x0 = int(pw * 0.20)
+    x1 = int(pw * 0.80)
+    y0 = int(ph * 0.14)
+    y1 = int(ph * 0.62)
+    tw = max(2, x1 - x0)
+    th = max(2, y1 - y0)
+
+    g = g.resize((tw, th), Image.Resampling.LANCZOS)
+    layer = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
+    layer.paste(g, (x0, y0), g)
+
+    feather_px = _clamp_int(int(max(pw, ph) * float(alpha_feather_ratio)), 1, 12)
+    layer = _feather_alpha(layer, radius_px=feather_px)
+
+    # Protect head/upper face and lower legs area.
+    protect = _upper_protect_mask((pw, ph), protect_until_y=int(ph * 0.12))
+    r, gg, b, a = layer.split()
+    a = ImageChops.multiply(a, protect)
+    layer = Image.merge("RGBA", (r, gg, b, a))
+
+    out = Image.alpha_composite(base, layer).convert("RGB")
+    meta = WarpMetadata(
+        engine="top_warp_v1",
+        waistband_box=(x0, y0, x1, y0 + max(2, int((y1 - y0) * 0.18))),
+        left_leg_box=(x0, y0 + max(2, int((y1 - y0) * 0.18)), (x0 + x1) // 2, y1),
+        right_leg_box=((x0 + x1) // 2, y0 + max(2, int((y1 - y0) * 0.18)), x1, y1),
+        alpha_feather_px=feather_px,
+    )
+    return out, meta
+
+
+def tryon_skirt_warp(
+    person_image: Image.Image,
+    garment_image: Image.Image,
+    *,
+    alpha_feather_ratio: float = 0.012,
+) -> tuple[Image.Image, WarpMetadata]:
+    base = person_image.convert("RGBA")
+    pw, ph = base.size
+
+    cutout = cutout_garment_rgba(garment_image)
+    g = cutout.cropped.convert("RGBA")
+    gw, gh = g.size
+    if gw < 16 or gh < 16:
+        raise ValueError("garment too small for skirt warp")
+
+    # Reuse pants adaptive bounds, but warp a single piece (skirt/dress has no leg split).
+    gray = np.asarray(person_image.convert("L"), dtype=np.float32)
+    _x0, _x1, waist_y, ankle_y = _estimate_lower_body_bounds(gray)
+    x0 = _clamp_int(_x0 - int((_x1 - _x0) * 0.02), 0, pw - 2)
+    x1 = _clamp_int(_x1 + int((_x1 - _x0) * 0.02), x0 + 2, pw)
+    y0 = _clamp_int(int(waist_y - ph * 0.06), int(ph * 0.22), int(ph * 0.70))
+    y1 = _clamp_int(int(ankle_y), y0 + 2, ph)
+    tw = max(2, x1 - x0)
+    th = max(2, y1 - y0)
+
+    g = g.resize((tw, th), Image.Resampling.LANCZOS)
+    layer = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
+    layer.paste(g, (x0, y0), g)
+
+    feather_px = _clamp_int(int(max(pw, ph) * float(alpha_feather_ratio)), 1, 12)
+    layer = _feather_alpha(layer, radius_px=feather_px)
+
+    protect = _upper_protect_mask((pw, ph), protect_until_y=int(ph * 0.24))
+    r, gg, b, a = layer.split()
+    a = ImageChops.multiply(a, protect)
+    layer = Image.merge("RGBA", (r, gg, b, a))
+
+    out = Image.alpha_composite(base, layer).convert("RGB")
+    meta = WarpMetadata(
+        engine="skirt_warp_v1",
+        waistband_box=(x0, y0, x1, y0 + max(2, int((y1 - y0) * 0.15))),
+        left_leg_box=(x0, y0, (x0 + x1) // 2, y1),
+        right_leg_box=((x0 + x1) // 2, y0, x1, y1),
+        alpha_feather_px=feather_px,
+    )
+    return out, meta

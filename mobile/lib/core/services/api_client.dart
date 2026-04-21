@@ -996,6 +996,89 @@ class ApiClient {
     }
   }
 
+  /// v2 统一试衣：/api/v2/tryon/garment（支持 top/bottom/skirt/outfit）。
+  Future<Map<String, dynamic>> virtualTryonV2Garment({
+    dynamic garmentImage,
+    dynamic garmentImage2,
+    dynamic personImage,
+    String? prompt,
+    String modelGender = 'neutral',
+    String garmentCategory = 'auto',
+    String garmentCategory2 = 'bottom',
+    String mode = 'strict',
+    Duration timeout = const Duration(seconds: 2400),
+  }) async {
+    try {
+      final v2Base = _resolveV2BaseUrl();
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$v2Base/tryon/garment'),
+      );
+      request.headers.addAll(_authHeaders);
+
+      if (garmentImage != null) {
+        final part = await _multipartImage('garment_file', garmentImage);
+        if (part == null) return {'error': 'Unsupported garment image type'};
+        request.files.add(part);
+      }
+      if (garmentImage2 != null) {
+        final part = await _multipartImage('garment_file_2', garmentImage2);
+        if (part == null) return {'error': 'Unsupported garment image type'};
+        request.files.add(part);
+      }
+      if (personImage != null) {
+        final part = await _multipartImage('person_file', personImage);
+        if (part == null) return {'error': 'Unsupported person image type'};
+        request.files.add(part);
+      }
+
+      request.fields['model_gender'] = modelGender;
+      request.fields['mode'] = mode;
+      request.fields['garment_category'] = garmentCategory;
+      request.fields['garment_category_2'] = garmentCategory2;
+      if (prompt != null && prompt.trim().isNotEmpty) {
+        request.fields['prompt'] = prompt.trim();
+      }
+
+      final streamedResponse = await request.send().timeout(timeout);
+      final response =
+          await http.Response.fromStream(streamedResponse).timeout(timeout);
+
+      if (response.statusCode == 200) {
+        final decoded = json.decode(response.body);
+        final unwrapped = unwrapApiResponseEnvelope(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
+      }
+      if (response.statusCode == 401) {
+        return {'error': '未登录或登录已过期，请重新登录后再试'};
+      }
+      var errMsg =
+          'Virtual try-on v2 failed with status: ${response.statusCode}';
+      String? errCode;
+      bool? retryable;
+      String? actionHint;
+      try {
+        final body = _parseFastApiErrorBodyMap(response.body);
+        if (body != null) {
+          errMsg = body['message']?.toString() ?? errMsg;
+          errCode = body['error_code']?.toString();
+          final rb = body['retryable'];
+          if (rb is bool) retryable = rb;
+          actionHint = body['action_hint']?.toString();
+        }
+      } catch (_) {}
+      return {
+        'error': errMsg,
+        if (errCode != null) 'error_code': errCode,
+        if (retryable != null) 'retryable': retryable,
+        if (actionHint != null) 'action_hint': actionHint,
+      };
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
   // ─── 智能穿搭：天气 + 参考图 + 情绪 ─────────────────────────────
   // 后端: GET /smart-outfit/weather, GET /smart-outfit/weather-by-city
   // POST /smart-outfit/upload-reference, POST /smart-outfit/generate
