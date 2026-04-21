@@ -195,9 +195,17 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
       return;
     }
 
+    // Enter loading state early so "precheck" doesn't look like no-op.
+    setState(() {
+      _loading = true;
+    });
+
     final precheckError = await _precheckTryOnInputs(auth.apiClient);
     if (precheckError != null) {
       if (mounted) {
+        setState(() {
+          _loading = false;
+        });
         showAppSnackBar(context, precheckError);
       }
       return;
@@ -206,7 +214,6 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
     // 新生成时清空旧结果与本地缓存，避免“看起来没对应/还是旧图”的错觉
     FeatureLocalStore.saveJson(_cacheKey, {'results': []});
     setState(() {
-      _loading = true;
       _results = [];
       _usedFallback = false;
     });
