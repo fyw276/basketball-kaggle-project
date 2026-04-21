@@ -55,6 +55,36 @@ def _generate_garment_mask(rgb: Image.Image) -> Image.Image:
     return pil_mask
 
 
+def _keep_largest_alpha_component(rgba: Image.Image, min_alpha: int = 20) -> Image.Image:
+    """Remove small disconnected components in alpha (keep only largest blob).
+
+    Uses OpenCV if available, otherwise falls back to a simple bbox-only cleanup.
+    """
+    im = rgba.convert("RGBA")
+    a = np.asarray(im.split()[3], dtype=np.uint8)
+    mask = (a > int(min_alpha)).astype(np.uint8)
+    if mask.sum() < 64:
+        return im
+
+    try:
+        import cv2  # type: ignore
+
+        num, labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        if num <= 1:
+            return im
+        # stats: [label, x, y, w, h, area], label 0 is background
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        keep = int(1 + np.argmax(areas))
+        keep_mask = (labels == keep).astype(np.uint8)
+        a2 = (keep_mask * 255).astype(np.uint8)
+        out = im.copy()
+        out.putalpha(Image.fromarray(a2, mode="L"))
+        return out
+    except Exception:
+        # Fallback: do nothing (still better than crashing).
+        return im
+
+
 def cutout_garment_rgba(garment_image: Image.Image) -> GarmentCutout:
     rgb = garment_image.convert("RGB")
     rgba: Image.Image | None = None
@@ -77,6 +107,16 @@ def cutout_garment_rgba(garment_image: Image.Image) -> GarmentCutout:
         mask = _generate_garment_mask(rgb)
         rgba = rgb.convert("RGBA")
         rgba.putalpha(mask)
+
+    # Keep only the main connected component to avoid pasting "product list panels"/watermarks.
+    rgba = _keep_largest_alpha_component(rgba)
+
+    # Reject poster-like inputs: if alpha covers almost entire image,
+    # it's likely a model photo/screenshot.
+    a = np.asarray(rgba.split()[3], dtype=np.uint8)
+    cover = float((a > 20).mean())
+    if cover > 0.85:
+        raise ValueError("garment segmentation too broad (likely poster/screenshot)")
 
     bbox = _alpha_bbox(rgba)
     cropped = rgba.crop(bbox) if bbox else rgba

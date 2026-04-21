@@ -87,12 +87,19 @@ def run_pipeline_a(
         if prompt_clean:
             upstream_metadata["prompt_used"] = True
     except Exception as e:
+        msg = str(e or "下装贴合失败")
+        err_code = "TRYON_V2_INTERNAL_WARP_FAILED"
+        hint = "请稍后重试，或更换更清晰的人像与商品图。"
+        low = msg.lower()
+        if "poster" in low or "screenshot" in low or "too broad" in low:
+            err_code = "TRYON_V2_GARMENT_TOO_COMPLEX"
+            hint = "请换成无模特、背景干净的商品图（不要用海报/截图/含多件商品列表的图）。"
         return {
             "status": "error",
-            "message": str(e or "下装贴合失败"),
-            "error_code": "TRYON_V2_INTERNAL_WARP_FAILED",
-            "retryable": True,
-            "action_hint": "请稍后重试，或更换更清晰的人像与商品图。",
+            "message": msg,
+            "error_code": err_code,
+            "retryable": err_code == "TRYON_V2_INTERNAL_WARP_FAILED",
+            "action_hint": hint,
             "qc_scores": gate.scores,
             "metadata": {
                 "pipeline": "A",

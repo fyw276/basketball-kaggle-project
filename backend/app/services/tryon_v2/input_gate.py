@@ -104,6 +104,21 @@ def _score_garment_front(garment_image: Image.Image) -> float:
     return _clamp01((fg_ratio - 0.1) / 0.45)
 
 
+def _score_garment_background_cleanliness(garment_image: Image.Image) -> float:
+    """Heuristic: clean product photo tends to have noticeable bright background area."""
+    arr = np.asarray(garment_image.convert("RGB"), dtype=np.uint8)
+    gray = arr.mean(axis=2)
+    sat = arr.max(axis=2) - arr.min(axis=2)
+    bg_mask = (gray > 235) & (sat < 18)
+    bg_ratio = float(bg_mask.mean())
+    # >= 25% clean bg => good; <= 5% => likely poster/scene.
+    if bg_ratio >= 0.25:
+        return 1.0
+    if bg_ratio <= 0.05:
+        return 0.0
+    return _clamp01((bg_ratio - 0.05) / 0.20)
+
+
 def _has_any_keyword(garment_category: str | None, keywords: tuple[str, ...]) -> bool:
     gc = (garment_category or "").strip().lower()
     if not gc:
@@ -147,6 +162,7 @@ def evaluate_input_gate(
         "leg_visibility_score": _score_leg_visibility(person_image),
         "front_pose_score": _score_front_pose(person_image),
         "garment_front_score": _score_garment_front(garment_image),
+        "garment_bg_clean_score": _score_garment_background_cleanliness(garment_image),
     }
 
     kind = _category_kind(garment_category)
@@ -206,6 +222,17 @@ def evaluate_input_gate(
             error_code="TRYON_V2_GARMENT_NOT_FRONT_VIEW",
             message="商品图不够清晰或主体不完整，无法进行稳定贴合。",
             action_hint="请上传正面、主体完整、背景干净的商品图。",
+            retryable=False,
+            scores=scores,
+        )
+
+    # If background is too "busy", fail fast: these inputs tend to paste as a big rectangle.
+    if scores["garment_bg_clean_score"] < (0.25 if strict else 0.12):
+        return GateResult(
+            passed=False,
+            error_code="TRYON_V2_GARMENT_TOO_COMPLEX",
+            message="商品图背景过于复杂（可能是海报/模特图/截图），无法稳定抠图贴合。",
+            action_hint="请换成无模特、背景干净的平铺商品图（不要带商品列表/水印）。",
             retryable=False,
             scores=scores,
         )
