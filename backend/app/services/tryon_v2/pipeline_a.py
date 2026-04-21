@@ -8,7 +8,8 @@ from PIL import Image
 
 from app.services.tryon_v2.input_gate import evaluate_input_gate
 from app.services.tryon_v2.qc import evaluate_qc
-from app.services.virtual_tryon import get_tryon_service, sanitize_tryon_prompt
+from app.services.tryon_v2.warp_engine import tryon_pants_warp
+from app.services.virtual_tryon import sanitize_tryon_prompt
 
 
 def run_pipeline_a(
@@ -41,21 +42,18 @@ def run_pipeline_a(
 
     prompt_clean = sanitize_tryon_prompt(prompt or "")
 
-    service = get_tryon_service()
-    result = service.tryon_garment(
-        garment_image=garment_image,
-        person_image=person_image,
-        prompt=prompt_clean,
-        model_gender=model_gender,
-        garment_category=garment_category,
-        force_fallback=bool(strict_identity),
-    )
-
-    image = result.get("result_image") if isinstance(result, dict) else None
-    if image is None:
+    try:
+        # Pipeline A: deterministic bottom-garment warp (no diffusion)
+        # to preserve identity/background.
+        image, warp_meta = tryon_pants_warp(person_image=person_image, garment_image=garment_image)
+        upstream_status = "success"
+        upstream_metadata: dict[str, Any] = {"engine": warp_meta.engine, **warp_meta.__dict__}
+        if prompt_clean:
+            upstream_metadata["prompt_used"] = True
+    except Exception as e:
         return {
             "status": "error",
-            "message": str((result or {}).get("message") or "下装贴合失败"),
+            "message": str(e or "下装贴合失败"),
             "error_code": "TRYON_V2_INTERNAL_WARP_FAILED",
             "retryable": True,
             "action_hint": "请稍后重试，或更换更清晰的人像与商品图。",
@@ -63,9 +61,7 @@ def run_pipeline_a(
             "metadata": {
                 "pipeline": "A",
                 "stage": "warp",
-                "upstream_metadata": (
-                    (result or {}).get("metadata") if isinstance(result, dict) else {}
-                ),
+                "upstream_metadata": {"error": str(e)},
             },
         }
 
@@ -90,12 +86,8 @@ def run_pipeline_a(
                 "stage": "qc",
                 "qc_threshold": qc.threshold,
                 "strict_identity": bool(strict_identity),
-                "upstream_status": (
-                    (result or {}).get("status") if isinstance(result, dict) else None
-                ),
-                "upstream_metadata": (
-                    (result or {}).get("metadata") if isinstance(result, dict) else {}
-                ),
+                "upstream_status": upstream_status,
+                "upstream_metadata": upstream_metadata,
             },
         }
 
@@ -111,7 +103,7 @@ def run_pipeline_a(
             "pipeline": "A",
             "strict_identity": bool(strict_identity),
             "qc_threshold": qc.threshold,
-            "upstream_status": (result or {}).get("status") if isinstance(result, dict) else None,
-            "upstream_metadata": (result or {}).get("metadata") if isinstance(result, dict) else {},
+            "upstream_status": upstream_status,
+            "upstream_metadata": upstream_metadata,
         },
     }
