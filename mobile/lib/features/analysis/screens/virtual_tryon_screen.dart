@@ -376,6 +376,8 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
       personImage: _personFront,
       garmentCategory: isOutfit ? 'outfit' : (cat.isEmpty ? 'auto' : cat),
       garmentCategory2: 'bottom',
+      garmentImageUrl: _standardizedGarmentUrl,
+      garmentImageUrl2: isOutfit ? _standardizedGarmentUrl2 : null,
       mode: mode,
     );
 

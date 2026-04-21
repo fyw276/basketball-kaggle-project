@@ -1001,6 +1001,8 @@ class ApiClient {
     dynamic garmentImage,
     dynamic garmentImage2,
     dynamic personImage,
+    String? garmentImageUrl,
+    String? garmentImageUrl2,
     String? prompt,
     String modelGender = 'neutral',
     String garmentCategory = 'auto',
@@ -1036,6 +1038,12 @@ class ApiClient {
       request.fields['mode'] = mode;
       request.fields['garment_category'] = garmentCategory;
       request.fields['garment_category_2'] = garmentCategory2;
+      if (garmentImageUrl != null && garmentImageUrl.trim().isNotEmpty) {
+        request.fields['garment_image_url'] = garmentImageUrl.trim();
+      }
+      if (garmentImageUrl2 != null && garmentImageUrl2.trim().isNotEmpty) {
+        request.fields['garment_image_url_2'] = garmentImageUrl2.trim();
+      }
       if (prompt != null && prompt.trim().isNotEmpty) {
         request.fields['prompt'] = prompt.trim();
       }

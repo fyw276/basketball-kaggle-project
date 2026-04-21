@@ -234,11 +234,17 @@ async def tryon_v2_preprocess_batch(
 async def tryon_garment_v2(
     garment_file: UploadFile = File(..., alias="garment_file", description="Garment product photo"),
     person_file: UploadFile = File(..., alias="person_file", description="Person full-body photo"),
+    garment_image_url: str | None = Form(
+        None, description="Optional /uploads/... url of standardized garment image"
+    ),
     garment_category: str = Form(
         "auto", description="Expected category: top|bottom|skirt|outfit|auto"
     ),
     garment_file_2: UploadFile | None = File(
         None, alias="garment_file_2", description="Optional second garment for outfit"
+    ),
+    garment_image_url_2: str | None = Form(
+        None, description="Optional /uploads/... url of standardized second garment image"
     ),
     garment_category_2: str = Form(
         "bottom", description="Second garment category for outfit: bottom|skirt"
@@ -296,6 +302,7 @@ async def tryon_garment_v2(
             )
 
     from io import BytesIO
+    from pathlib import Path
 
     from PIL import Image
 
@@ -314,6 +321,39 @@ async def tryon_garment_v2(
     garment_image_2 = (
         Image.open(BytesIO(garment2_bytes)).convert("RGB") if len(garment2_bytes) else None
     )
+
+    def _load_uploads_url(url: str) -> Image.Image | None:
+        u = (url or "").strip()
+        low = u.lower()
+        if "/uploads/" not in low:
+            return None
+        idx = low.find("/uploads/")
+        tail = u[idx + len("/uploads/") :].lstrip("/").replace("\\", "/")
+        if not tail:
+            return None
+        full = Path(settings.UPLOAD_DIR) / tail
+        if not full.is_file():
+            return None
+        try:
+            return Image.open(full).convert("RGB")
+        except Exception:
+            return None
+
+    if garment_image_url:
+        img = _load_uploads_url(garment_image_url)
+        if img is not None:
+            garment_image = img
+            pre_meta = {"standardized_image_url": garment_image_url}
+        else:
+            pre_meta = {}
+    else:
+        pre_meta = {}
+
+    if garment_image_url_2:
+        img2 = _load_uploads_url(garment_image_url_2)
+        if img2 is not None:
+            garment_image_2 = img2
+            pre_meta["standardized_image_url_2"] = garment_image_url_2
 
     if check_tryon_garment_has_face(garment_image):
         raise HTTPException(
@@ -343,9 +383,10 @@ async def tryon_garment_v2(
     thresholds = _v2_thresholds(strict_mode=(mode == "strict"))
     qc_threshold = float(getattr(settings, "TRYON_V2_QC_THRESHOLD", 0.6) or 0.6)
 
-    garment_image, garment_category, pre_meta = _maybe_auto_preprocess(
+    garment_image, garment_category, auto_meta = _maybe_auto_preprocess(
         garment_image, garment_category
     )
+    pre_meta = {**pre_meta, **auto_meta}
     if garment_image_2 is not None:
         garment_image_2, garment_category_2, pre_meta2 = _maybe_auto_preprocess(
             garment_image_2, garment_category_2
@@ -435,8 +476,10 @@ async def tryon_pants_v2(
     return await tryon_garment_v2(
         garment_file=garment_file,
         person_file=person_file,
+        garment_image_url=None,
         garment_category=garment_category,
         garment_file_2=None,
+        garment_image_url_2=None,
         garment_category_2="bottom",
         prompt=prompt,
         mode=mode,
@@ -450,10 +493,12 @@ async def tryon_pants_v2(
 async def tryon_v2_validate_input(
     garment_file: UploadFile = File(..., alias="garment_file", description="Garment product photo"),
     person_file: UploadFile = File(..., alias="person_file", description="Person full-body photo"),
+    garment_image_url: str | None = Form(None),
     garment_category: str = Form(
         "auto", description="Expected category: top|bottom|skirt|outfit|auto"
     ),
     garment_file_2: UploadFile | None = File(None, alias="garment_file_2"),
+    garment_image_url_2: str | None = Form(None),
     garment_category_2: str = Form("bottom", description="Second garment category for outfit"),
     mode: str = Form("strict", description="strict|balanced"),
     current_user: User = Depends(get_current_user),
@@ -479,6 +524,7 @@ async def tryon_v2_validate_input(
         )
 
     from io import BytesIO
+    from pathlib import Path
 
     from PIL import Image
 
@@ -496,6 +542,32 @@ async def tryon_v2_validate_input(
     garment_image_2 = (
         Image.open(BytesIO(garment2_bytes)).convert("RGB") if len(garment2_bytes) else None
     )
+
+    def _load_uploads_url(url: str) -> Image.Image | None:
+        u = (url or "").strip()
+        low = u.lower()
+        if "/uploads/" not in low:
+            return None
+        idx = low.find("/uploads/")
+        tail = u[idx + len("/uploads/") :].lstrip("/").replace("\\", "/")
+        if not tail:
+            return None
+        full = Path(settings.UPLOAD_DIR) / tail
+        if not full.is_file():
+            return None
+        try:
+            return Image.open(full).convert("RGB")
+        except Exception:
+            return None
+
+    if garment_image_url:
+        img = _load_uploads_url(garment_image_url)
+        if img is not None:
+            garment_image = img
+    if garment_image_url_2:
+        img2 = _load_uploads_url(garment_image_url_2)
+        if img2 is not None:
+            garment_image_2 = img2
 
     if check_tryon_garment_has_face(garment_image):
         return TryOnV2ValidateResponse(
