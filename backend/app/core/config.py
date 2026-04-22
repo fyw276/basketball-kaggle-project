@@ -170,6 +170,13 @@ class Settings(BaseSettings):
         default=True,
         description="v2 试衣在 garment_category=auto 时自动预处理（去背景白底+自动品类）",
     )
+    TRYON_V2_REPLACE_ALLOW_LOCAL_DIFFUSION: bool = Field(
+        default=False,
+        description=(
+            "v2 mode=replace 是否允许在百炼/远程VTON都不可用或失败时回退到本机 diffusers inpainting。"
+            "默认关闭：本地权重不完整时容易生成无关图像（幻觉）。"
+        ),
+    )
 
     # Subscription & quota
     USAGE_QUOTA_ENABLED: bool = Field(default=False, description="启用后执行功能额度扣减")

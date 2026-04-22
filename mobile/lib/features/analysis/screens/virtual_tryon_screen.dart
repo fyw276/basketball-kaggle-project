@@ -19,6 +19,31 @@ enum _GarmentCategoryChoice {
   outfit,
 }
 
+enum _TryOnQualityMode {
+  stable,
+  realistic,
+}
+
+extension _TryOnQualityModeApi on _TryOnQualityMode {
+  String get apiValue {
+    switch (this) {
+      case _TryOnQualityMode.stable:
+        return 'balanced';
+      case _TryOnQualityMode.realistic:
+        return 'replace';
+    }
+  }
+
+  String get label {
+    switch (this) {
+      case _TryOnQualityMode.stable:
+        return '稳定';
+      case _TryOnQualityMode.realistic:
+        return '真实贴身';
+    }
+  }
+}
+
 extension _GarmentCategoryChoiceApi on _GarmentCategoryChoice {
   /// 为 null 时不传表单字段，由后端自动推断
   String? get apiValue {
@@ -69,6 +94,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
   String? _garmentQualityHint;
   XFile? _personFront;
   _GarmentCategoryChoice _garmentCategory = _GarmentCategoryChoice.auto;
+  _TryOnQualityMode _qualityMode = _TryOnQualityMode.realistic;
   bool _loading = false;
   bool _usedFallback = false;
   bool? _precheckPassed;
@@ -365,9 +391,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
 
   Future<Map<String, dynamic>> _requestTryOn(AuthProvider auth) async {
     final cat = (_garmentCategory.apiValue ?? 'auto').trim();
-    final mode = _garmentCategory == _GarmentCategoryChoice.bottom
-        ? 'strict'
-        : 'balanced';
+    final mode = _qualityMode.apiValue;
     final isOutfit = _garmentCategory == _GarmentCategoryChoice.outfit;
 
     final v2 = await auth.apiClient.virtualTryonV2Garment(
@@ -442,9 +466,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
     }
 
     final category = (_garmentCategory.apiValue ?? 'auto').trim();
-    final mode = _garmentCategory == _GarmentCategoryChoice.bottom
-        ? 'strict'
-        : 'balanced';
+    final mode = _qualityMode.apiValue;
     final isOutfit = _garmentCategory == _GarmentCategoryChoice.outfit;
     final remote = await apiClient.tryonV2ValidateInput(
       garmentImage: garment,
@@ -972,6 +994,16 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                 color: _garmentQualityColor(_garmentQualityHint, palette),
               ),
             ],
+            if (_standardizedGarmentUrl != null ||
+                (_garmentCategory == _GarmentCategoryChoice.outfit &&
+                    _standardizedGarmentUrl2 != null)) ...[
+              const SizedBox(height: 10),
+              _StandardizedPreviewCard(
+                primaryUrl: _standardizedGarmentUrl,
+                secondaryUrl: _standardizedGarmentUrl2,
+                palette: palette,
+              ),
+            ],
             if (_precheckMessage != null || _precheckScores.isNotEmpty) ...[
               const SizedBox(height: 10),
               _PrecheckResultCard(
@@ -1018,6 +1050,45 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                   ),
                 );
               }).toList(),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              '效果模式',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: palette.textTitle,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: _TryOnQualityMode.values.map((m) {
+                final selected = _qualityMode == m;
+                return ChoiceChip(
+                  label: Text(m.label),
+                  selected: selected,
+                  onSelected: (_) => setState(() {
+                    _qualityMode = m;
+                    _resetPrecheckPanel();
+                  }),
+                  selectedColor: palette.primary.withValues(alpha: 0.22),
+                  labelStyle: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: selected ? palette.primary : palette.textBody,
+                  ),
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _qualityMode == _TryOnQualityMode.realistic
+                  ? '已选「真实贴身」：将走替换试衣（百炼/远程VTON/本地diffusion），更真实但耗时更长。'
+                  : '已选「稳定」：走方案A几何贴图，速度快更稳定但更像叠图。',
+              style: TextStyle(
+                  fontSize: 12, height: 1.35, color: palette.textBody),
             ),
             const SizedBox(height: 12),
             Container(
@@ -1685,6 +1756,168 @@ class _PickBox extends StatelessWidget {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+class _StandardizedPreviewCard extends StatelessWidget {
+  const _StandardizedPreviewCard({
+    required this.primaryUrl,
+    required this.secondaryUrl,
+    required this.palette,
+  });
+
+  final String? primaryUrl;
+  final String? secondaryUrl;
+  final Palette palette;
+
+  void _open(BuildContext context, String url) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        final auth = ctx.read<AuthProvider>();
+        final base = auth.apiClient.baseUrl;
+        final resolved = resolveGarmentImageUrl(url, base) ?? url;
+        return Dialog(
+          insetPadding: const EdgeInsets.all(16),
+          child: AspectRatio(
+            aspectRatio: 1,
+            child: InteractiveViewer(
+              minScale: 0.6,
+              maxScale: 4,
+              child: PlatformImage(
+                networkUrl: resolved,
+                fit: BoxFit.contain,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final auth = context.read<AuthProvider>();
+    final base = auth.apiClient.baseUrl;
+    final p = primaryUrl;
+    final s = secondaryUrl;
+    final rp = p != null ? (resolveGarmentImageUrl(p, base) ?? p) : null;
+    final rs = s != null ? (resolveGarmentImageUrl(s, base) ?? s) : null;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: palette.primary.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: palette.primary.withValues(alpha: 0.20)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.auto_fix_high, size: 16, color: palette.primary),
+              const SizedBox(width: 8),
+              Text(
+                '白底标准图（预处理输出）',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: palette.textTitle,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              if (rp != null)
+                _StandardizedThumb(
+                  label: '衣服图',
+                  url: rp,
+                  palette: palette,
+                  onTap: () => _open(context, p!),
+                ),
+              if (rs != null)
+                _StandardizedThumb(
+                  label: '第二件',
+                  url: rs,
+                  palette: palette,
+                  onTap: () => _open(context, s!),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '用于确认接口实际收到的“无背景白底主体图”。若仍包含手/文字/大片背景，建议换图或裁剪。',
+            style:
+                TextStyle(fontSize: 11, height: 1.3, color: palette.textBody),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StandardizedThumb extends StatelessWidget {
+  const _StandardizedThumb({
+    required this.label,
+    required this.url,
+    required this.palette,
+    required this.onTap,
+  });
+
+  final String label;
+  final String url;
+  final Palette palette;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        width: 132,
+        height: 132,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: palette.divider),
+        ),
+        child: Column(
+          children: [
+            Expanded(
+              child: ClipRRect(
+                borderRadius:
+                    const BorderRadius.vertical(top: Radius.circular(12)),
+                child: PlatformImage(networkUrl: url, fit: BoxFit.cover),
+              ),
+            ),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: palette.surface,
+                borderRadius:
+                    const BorderRadius.vertical(bottom: Radius.circular(12)),
+              ),
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: palette.textBody,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

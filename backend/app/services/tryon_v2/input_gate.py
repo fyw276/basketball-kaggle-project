@@ -50,6 +50,21 @@ _OUTFIT_KEYWORDS = (
     "top_bottom",
 )
 
+_ACCESSORY_KEYWORDS = (
+    "accessory",
+    "围巾",
+    "披肩",
+    "scarf",
+    "shawl",
+    "帽",
+    "hat",
+    "鞋",
+    "shoe",
+    "shoes",
+    "包",
+    "bag",
+)
+
 
 @dataclass
 class GateResult:
@@ -127,10 +142,12 @@ def _has_any_keyword(garment_category: str | None, keywords: tuple[str, ...]) ->
 
 
 def _category_kind(garment_category: str | None) -> str:
-    """Return one of: top|bottom|skirt|outfit|auto|unknown."""
+    """Return one of: top|bottom|skirt|outfit|accessory|auto|unknown."""
     gc = (garment_category or "").strip().lower()
     if not gc:
         return "auto"
+    if _has_any_keyword(gc, _ACCESSORY_KEYWORDS):
+        return "accessory"
     if _has_any_keyword(gc, _OUTFIT_KEYWORDS):
         return "outfit"
     if _has_any_keyword(gc, _BOTTOM_KEYWORDS):
@@ -166,6 +183,15 @@ def evaluate_input_gate(
     }
 
     kind = _category_kind(garment_category)
+    if kind == "accessory":
+        return GateResult(
+            passed=False,
+            error_code="TRYON_V2_UNSUPPORTED_CATEGORY",
+            message="识别为配饰/围巾等非上装商品图：方案A无法做贴身替换试衣。",
+            action_hint="请换成真实上衣/下装/裙装商品图；围巾/包/鞋建议走「叠加展示」或衣橱入库，不做贴身替换。",
+            retryable=False,
+            scores=scores,
+        )
     if kind in {"unknown", "auto"}:
         return GateResult(
             passed=False,

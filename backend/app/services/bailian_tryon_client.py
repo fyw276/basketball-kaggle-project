@@ -1,17 +1,21 @@
 """
 Virtual try-on via Alibaba Cloud Model Studio (DashScope) — e.g. wanx2.1-imageedit.
 
-Uses reference image + base image (see DashScope ImageSynthesis docs). Not a dedicated
-VTON checkpoint; quality depends on the chosen model and function.
+Uses reference image + base image with clothing-region mask so the model only
+edits the garment area and preserves the person's face/background unchanged.
+
+Key fix vs. the original implementation:
+- Previously used `stylization_all` (style transfer) which ignores identity → generates new person
+- Now uses `description_edit_with_mask` with a MediaPipe-derived clothing mask so only the
+  clothing area is edited, keeping face/pose/background intact
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import logging
-import os
-import tempfile
 from typing import Any, Dict, Optional
 
 import httpx
@@ -59,10 +63,26 @@ def _resolve_model_id(bucket: str) -> str:
 
 def _build_prompt(bucket: str, user_prompt: str) -> str:
     hints = {
-        "top": "将参考图中的上装真实穿在人物上半身，保持脸部、发型与背景自然协调。",
-        "bottom": "将参考图中的下装真实穿在人物下半身，保持上半身与背景自然协调。",
-        "skirt": "将参考图中的裙装真实穿在人物身上，保持人物姿态与背景自然协调。",
-        "default": "将参考图中的服装真实穿在人物身上，保持人物姿态与背景自然协调。",
+        "top": (
+            "在保持底图人物的脸部身份、发型、表情、姿势、相机视角与背景完全不变的前提下，"
+            "将 mask 白色区域内的上装替换为参考图中的服装；"
+            "不要更换人物，不要更换场景，不要添加新道具，mask 区域以外保持原样。"
+        ),
+        "bottom": (
+            "在保持底图人物的脸部身份、发型、表情、姿势、相机视角与背景完全不变的前提下，"
+            "将 mask 白色区域内的下装替换为参考图中的服装；"
+            "不要更换人物，不要更换场景，不要添加新道具，mask 区域以外保持原样。"
+        ),
+        "skirt": (
+            "在保持底图人物的脸部身份、发型、表情、姿势、相机视角与背景完全不变的前提下，"
+            "将 mask 白色区域内的裙装替换为参考图中的服装；"
+            "不要更换人物，不要更换场景，不要添加新道具，mask 区域以外保持原样。"
+        ),
+        "default": (
+            "在保持底图人物的脸部身份、发型、表情、姿势、相机视角与背景完全不变的前提下，"
+            "将 mask 白色区域内的服装替换为参考图中的服装；"
+            "不要更换人物，不要更换场景，不要添加新道具，mask 区域以外保持原样。"
+        ),
     }
     base = hints.get(bucket, hints["default"])
     u = (user_prompt or "").strip()
@@ -97,35 +117,99 @@ def _call_bailian_tryon_sync(
     bucket = _category_bucket(garment_category)
     model_id = _resolve_model_id(bucket)
     prompt_text = _build_prompt(bucket, prompt)
-    function_name = (
-        getattr(settings, "DASHSCOPE_TRYON_FUNCTION", None) or ""
-    ).strip() or "stylization_all"
 
-    tmp_g: Optional[str] = None
-    tmp_p: Optional[str] = None
+    # 优先使用 description_edit_with_mask（基于 mask 的局部编辑，保留人物身份）
+    # 若配置强制覆盖，则使用配置值
+    configured_fn = (getattr(settings, "DASHSCOPE_TRYON_FUNCTION", None) or "").strip()
+    # description_edit_with_mask 支持 mask，保持人物身份；stylization_all 是风格迁移（会生成新人）
+    function_name = configured_fn if configured_fn else "description_edit_with_mask"
+
     try:
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as fg:
-            fg.write(garment_bytes)
-            tmp_g = fg.name
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as fp:
-            fp.write(person_bytes)
-            tmp_p = fp.name
+
+        def _jpeg_data_url(b: bytes) -> str:
+            b64 = base64.b64encode(b).decode("ascii")
+            return f"data:image/jpeg;base64,{b64}"
+
+        person_url = _jpeg_data_url(person_bytes)
+        garment_url = _jpeg_data_url(garment_bytes)
+
+        # ── 生成衣服区域 mask ────────────────────────────────────────────────
+        # 用 MediaPipe 骨架关键点（或 fallback 比例估算）生成白色=编辑区域的 mask。
+        # 这样 DashScope 只会修改衣服区域，不会改变脸部/背景，从根本上解决"生成新人"问题。
+        mask_url: Optional[str] = None
+        try:
+            from app.services.tryon_v2.pose_utils import detect_pose_keypoints, make_clothing_mask
+
+            person_img = Image.open(io.BytesIO(person_bytes)).convert("RGB")
+            kpts = detect_pose_keypoints(person_img)
+            # 对 outfit 同时覆盖上装+下装区域
+            mask_cat = bucket if bucket in {"top", "bottom", "skirt"} else "outfit"
+            mask_img = make_clothing_mask(person_img, kpts, mask_cat)
+
+            # 把 mask 转为 JPEG base64 data URL
+            mask_buf = io.BytesIO()
+            mask_img.convert("RGB").save(mask_buf, format="JPEG", quality=90)
+            mask_url = _jpeg_data_url(mask_buf.getvalue())
+            logger.info(
+                "Bailian try-on: generated clothing mask via %s (kpts=%s)",
+                "MediaPipe" if kpts else "fallback",
+                "yes" if kpts else "no",
+            )
+        except Exception as mask_err:
+            logger.warning("Clothing mask generation failed, proceeding without mask: %s", mask_err)
+            mask_url = None
 
         logger.info(
-            "Bailian try-on: model=%s function=%s category_bucket=%s",
+            "Bailian try-on: model=%s function=%s category_bucket=%s mask=%s",
             model_id,
             function_name,
             bucket,
+            "yes" if mask_url else "no",
         )
 
-        resp = ImageSynthesis.call(
-            model=model_id,
-            prompt=prompt_text,
+        # ── DashScope API 调用（优先 mask-edit，fallback 至 stylization_all）──
+        resp = _call_dashscope(
+            model_id=model_id,
+            function_name=function_name,
+            prompt_text=prompt_text,
             api_key=api_key,
-            base_image_url=tmp_p,
-            ref_img=tmp_g,
-            function=function_name,
+            person_url=person_url,
+            garment_url=garment_url,
+            mask_url=mask_url,
         )
+
+        # 若 description_edit_with_mask 返回参数错误（DashScope SDK 版本不支持 mask_image_url），
+        # 自动降级到 stylization_all（身份保真较差但仍可用）。
+        if (
+            resp is not None
+            and resp.status_code != 200
+            and function_name == "description_edit_with_mask"
+            and mask_url is not None
+        ):
+            fallback_fn = "stylization_all"
+            logger.warning(
+                "description_edit_with_mask failed (code=%s msg=%s), retrying with %s",
+                getattr(resp, "status_code", "?"),
+                getattr(resp, "message", ""),
+                fallback_fn,
+            )
+            resp = _call_dashscope(
+                model_id=model_id,
+                function_name=fallback_fn,
+                prompt_text=prompt_text,
+                api_key=api_key,
+                person_url=person_url,
+                garment_url=garment_url,
+                mask_url=None,  # stylization_all 不需要 mask
+            )
+
+        if resp is None:
+            return {
+                "result_image": None,
+                "status": "error",
+                "message": "百炼调用返回 None",
+                "metadata": {"reason": "dashscope_none_response"},
+            }
 
         if resp.status_code != 200:
             msg = (resp.message or resp.code or "DashScope error").strip()
@@ -201,6 +285,8 @@ def _call_bailian_tryon_sync(
                 "function": function_name,
                 "category_bucket": bucket,
                 "provider": "dashscope_bailian",
+                "inputs": "data_url_jpeg_base64",
+                "mask_used": mask_url is not None,
             },
         }
     except Exception as e:
@@ -211,13 +297,31 @@ def _call_bailian_tryon_sync(
             "message": str(e) or "百炼试衣异常",
             "metadata": {"reason": "dashscope_exception"},
         }
-    finally:
-        for path in (tmp_g, tmp_p):
-            if path and os.path.isfile(path):
-                try:
-                    os.unlink(path)
-                except OSError:
-                    pass
+
+
+def _call_dashscope(
+    *,
+    model_id: str,
+    function_name: str,
+    prompt_text: str,
+    api_key: str,
+    person_url: str,
+    garment_url: str,
+    mask_url: Optional[str],
+) -> Any:
+    """Thin wrapper around ImageSynthesis.call with optional mask_image_url support."""
+    kwargs: Dict[str, Any] = dict(
+        model=model_id,
+        prompt=prompt_text,
+        api_key=api_key,
+        base_image_url=person_url,
+        ref_img=garment_url,
+        images=[person_url, garment_url],
+        function=function_name,
+    )
+    if mask_url is not None:
+        kwargs["mask_image_url"] = mask_url
+    return ImageSynthesis.call(**kwargs)  # type: ignore[union-attr]
 
 
 async def call_bailian_tryon(

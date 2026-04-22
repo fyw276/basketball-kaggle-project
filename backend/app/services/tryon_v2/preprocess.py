@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from typing import Any
 
+import numpy as np
 from PIL import Image
 
 from app.services.tryon_v2.garment_struct import cutout_garment_rgba
@@ -71,6 +72,8 @@ def _map_to_tryon_category(raw_category: str) -> str:
     if not c:
         return "unknown"
     # Chinese labels from ImageRecognizer / CLIP candidates.
+    if any(k in c for k in ("鞋", "shoes", "shoe", "boot", "包", "bag", "handbag", "backpack")):
+        return "accessory"
     if any(
         k in c
         for k in (
@@ -94,6 +97,31 @@ def _map_to_tryon_category(raw_category: str) -> str:
     return "unknown"
 
 
+def _looks_like_scarf_or_accessory_shape(rgba: Image.Image) -> bool:
+    """Heuristic: long-narrow + low fill ratio often indicates scarf/shawl/accessory.
+
+    This prevents routing scarf-like items into "top" replacement which looks wrong.
+    """
+    im = rgba.convert("RGBA")
+    a = np.asarray(im.split()[3], dtype=np.uint8)
+    if a.size == 0:
+        return False
+    ys, xs = np.where(a > 10)
+    if xs.size < 50:
+        return False
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    bw = max(1, x1 - x0)
+    bh = max(1, y1 - y0)
+    box_area = float(bw * bh)
+    fg_area = float((a[y0:y1, x0:x1] > 10).sum())
+    fill = fg_area / max(box_area, 1.0)
+    aspect = max(bw, bh) / max(min(bw, bh), 1.0)
+
+    # Typical scarf: very long/narrow, and occupies small area within bbox due to fringes.
+    return (aspect >= 2.6 and fill <= 0.30) or (aspect >= 3.2 and fill <= 0.42)
+
+
 def preprocess_garment_image(
     garment_image: Image.Image,
     *,
@@ -105,11 +133,14 @@ def preprocess_garment_image(
 
     raw_cat, conf = _recognize_category(img_bytes)
     tryon_cat = _map_to_tryon_category(raw_cat)
+    accessory_shape = _looks_like_scarf_or_accessory_shape(cutout.cropped)
+    if accessory_shape and tryon_cat in {"top", "unknown"}:
+        tryon_cat = "accessory"
 
     return PreprocessResult(
         image=standardized,
         tryon_category=tryon_cat,
         confidence=float(conf),
         raw_category=raw_cat,
-        metadata={"canvas": int(canvas)},
+        metadata={"canvas": int(canvas), "accessory_shape": bool(accessory_shape)},
     )

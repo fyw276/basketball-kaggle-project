@@ -276,10 +276,10 @@ async def tryon_garment_v2(
             detail="model_gender must be one of: male, female, neutral",
         )
 
-    if mode not in {"strict", "balanced"}:
+    if mode not in {"strict", "balanced", "replace"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="mode must be one of: strict, balanced",
+            detail="mode must be one of: strict, balanced, replace",
         )
 
     if getattr(settings, "USAGE_QUOTA_ENABLED", False):
@@ -393,18 +393,170 @@ async def tryon_garment_v2(
         )
         pre_meta["auto_preprocess_2"] = pre_meta2
 
-    result = run_pipeline_a(
-        person_image=person_image,
-        garment_image=garment_image,
-        garment_category=garment_category,
-        garment_image_2=garment_image_2,
-        garment_category_2=garment_category_2,
-        prompt=prompt,
-        model_gender=model_gender,
-        strict_identity=strict_identity,
-        thresholds=thresholds,
-        qc_threshold=qc_threshold,
-    )
+    # "replace" mode: use photo-realistic try-on (Bailian -> remote VTON -> local diffusion)
+    if mode == "replace":
+        from app.services.bailian_tryon_client import _bailian_configured, call_bailian_tryon
+        from app.services.virtual_tryon import get_tryon_service, sanitize_tryon_prompt
+        from app.services.vton_remote_client import _remote_url_configured, call_remote_vton
+
+        prompt_clean = sanitize_tryon_prompt(prompt or None) or ""
+        # Use standardized garment/person bytes for upstreams.
+        garment_jpg = _pil_image_to_jpeg_bytes(garment_image, quality=92)
+        person_jpg = _pil_image_to_jpeg_bytes(person_image, quality=92)
+        gc = (garment_category or "").strip() or None
+
+        upstream = await call_bailian_tryon(
+            garment_bytes=garment_jpg,
+            person_bytes=person_jpg,
+            prompt=prompt_clean,
+            garment_category=gc,
+        )
+        bailian_ok = (
+            isinstance(upstream, dict)
+            and str(upstream.get("status") or "").lower() == "success"
+            and upstream.get("result_image") is not None
+        )
+
+        remote = None
+        if not bailian_ok:
+            remote = await call_remote_vton(
+                garment_bytes=garment_jpg,
+                person_bytes=person_jpg,
+                prompt=prompt_clean,
+                model_gender=model_gender,
+                garment_category=gc,
+            )
+        remote_ok = (
+            isinstance(remote, dict)
+            and str(remote.get("status") or "").lower() == "success"
+            and remote.get("result_image") is not None
+        )
+
+        if bailian_ok:
+            upstream = upstream
+        elif remote_ok:
+            upstream = remote
+        elif bool(getattr(settings, "TRYON_V2_REPLACE_ALLOW_LOCAL_DIFFUSION", False)):
+            # Local diffusion try-on (can hallucinate badly if weights/cache are incomplete).
+            service = get_tryon_service()
+            upstream = service.tryon_garment(
+                garment_image=garment_image,
+                person_image=person_image,
+                prompt=prompt_clean,
+                model_gender=model_gender,
+                garment_category=gc,
+                force_fallback=False,
+            )
+        else:
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            record_tryon_v2_failure("TRYON_V2_REPLACE_UPSTREAM_UNAVAILABLE", latency_ms)
+            hints = []
+            bailian_diag: dict[str, Any] = {}
+            remote_diag: dict[str, Any] = {}
+            if not _bailian_configured():
+                hints.append("启用百炼：DASHSCOPE_TRYON_ENABLED=true 且配置 DASHSCOPE_API_KEY")
+            else:
+                msg = ""
+                reason = ""
+                if isinstance(upstream, dict):
+                    msg = str(upstream.get("message") or "").strip()
+                    meta = (
+                        upstream.get("metadata")
+                        if isinstance(upstream.get("metadata"), dict)
+                        else {}
+                    )
+                    reason = str((meta or {}).get("reason") or "").strip()
+                    bailian_diag = {
+                        "configured": True,
+                        "status": str(upstream.get("status") or ""),
+                        "message": msg,
+                        "reason": reason,
+                    }
+                hints.append(
+                    f"百炼未成功：{msg or reason or '请检查 key/额度/模型权限/网络；查看 detail.replace_debug.bailian'}"
+                )
+            if not _remote_url_configured():
+                hints.append("或配置远程 VTON：VTON_INFERENCE_URL")
+            else:
+                rmsg = ""
+                rreason = ""
+                if isinstance(remote, dict):
+                    rmsg = str(remote.get("message") or "").strip()
+                    rmeta = (
+                        remote.get("metadata") if isinstance(remote.get("metadata"), dict) else {}
+                    )
+                    rreason = str((rmeta or {}).get("reason") or "").strip()
+                    remote_diag = {
+                        "configured": True,
+                        "status": str(remote.get("status") or ""),
+                        "message": rmsg,
+                        "reason": rreason,
+                    }
+                hints.append(
+                    f"远程 VTON 未成功：{rmsg or rreason or '请检查服务可用性与超时；查看 detail.replace_debug.remote'}"
+                )
+            hints.append(
+                (
+                    "（高级）如确需本机 diffusers 兜底："
+                    "TRYON_V2_REPLACE_ALLOW_LOCAL_DIFFUSION=true，"
+                    "并确保 SD inpainting 权重完整"
+                )
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "message": "替换试衣上游不可用或未成功（已禁止不稳定的本机 diffusion 兜底）",
+                    "error_code": "TRYON_V2_REPLACE_UPSTREAM_UNAVAILABLE",
+                    "retryable": True,
+                    "action_hint": "；".join(hints),
+                    "qc_scores": {},
+                    "replace_debug": {
+                        "bailian": bailian_diag,
+                        "remote": remote_diag,
+                        "bailian_configured": _bailian_configured(),
+                        "remote_configured": _remote_url_configured(),
+                    },
+                },
+            )
+
+        status_s = str((upstream or {}).get("status") or "error").lower()
+        if status_s != "success" or (upstream or {}).get("result_image") is None:
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            record_tryon_v2_failure("TRYON_V2_REPLACE_FAILED", latency_ms)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "message": str((upstream or {}).get("message") or "替换试衣失败"),
+                    "error_code": "TRYON_V2_REPLACE_FAILED",
+                    "retryable": True,
+                    "action_hint": "请稍后重试，或切换为 strict/balanced（方案A）获得更稳定结果。",
+                    "qc_scores": {},
+                },
+            )
+
+        result = {
+            "status": "success",
+            "message": str((upstream or {}).get("message") or "替换试衣完成"),
+            "result_image": (upstream or {}).get("result_image"),
+            "qc_scores": {},
+            "metadata": {
+                "pipeline": "REPLACE",
+                "upstream_metadata": (upstream or {}).get("metadata") or {},
+            },
+        }
+    else:
+        result = run_pipeline_a(
+            person_image=person_image,
+            garment_image=garment_image,
+            garment_category=garment_category,
+            garment_image_2=garment_image_2,
+            garment_category_2=garment_category_2,
+            prompt=prompt,
+            model_gender=model_gender,
+            strict_identity=strict_identity,
+            thresholds=thresholds,
+            qc_threshold=qc_threshold,
+        )
 
     if result.get("status") != "success":
         latency_ms = int((time.perf_counter() - started) * 1000)
@@ -447,7 +599,7 @@ async def tryon_garment_v2(
     return TryOnV2Response(
         status="success",
         message=str(result.get("message") or "方案A试衣成功"),
-        pipeline="A",
+        pipeline=str((result.get("metadata") or {}).get("pipeline") or "A"),
         result_image_url=result_url,
         error_code=None,
         retryable=False,
@@ -517,10 +669,10 @@ async def tryon_v2_validate_input(
             detail="person_file must be an image",
         )
 
-    if mode not in {"strict", "balanced"}:
+    if mode not in {"strict", "balanced", "replace"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="mode must be one of: strict, balanced",
+            detail="mode must be one of: strict, balanced, replace",
         )
 
     from io import BytesIO
@@ -568,6 +720,20 @@ async def tryon_v2_validate_input(
         img2 = _load_uploads_url(garment_image_url_2)
         if img2 is not None:
             garment_image_2 = img2
+
+    # Replace mode uses upstream photo-realistic try-on; skip pipeline A input gate precheck.
+    if mode == "replace":
+        return TryOnV2ValidateResponse(
+            status="pass",
+            pipeline="REPLACE",
+            passed=True,
+            error_code=None,
+            message="replace 模式：跳过方案A门禁（将走替换试衣上游）",
+            retryable=False,
+            action_hint=None,
+            qc_scores={},
+            thresholds={},
+        )
 
     if check_tryon_garment_has_face(garment_image):
         return TryOnV2ValidateResponse(
@@ -663,7 +829,7 @@ async def tryon_v2_capabilities(
             "裙装",
             "套装",
         ],
-        modes=["strict", "balanced"],
+        modes=["strict", "balanced", "replace"],
         thresholds={
             **_v2_thresholds(strict_mode=True),
             "qc_threshold": float(getattr(settings, "TRYON_V2_QC_THRESHOLD", 0.6) or 0.6),

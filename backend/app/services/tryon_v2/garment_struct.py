@@ -55,6 +55,42 @@ def _generate_garment_mask(rgb: Image.Image) -> Image.Image:
     return pil_mask
 
 
+def _looks_like_white_bg_product(rgb: Image.Image) -> bool:
+    """Detect standardized white-background product photos.
+
+    For those, a simpler threshold-based segmentation is often more stable than
+    rembg/GrabCut and avoids cutting the garment into tiny components.
+    """
+    arr = np.asarray(rgb.convert("RGB"), dtype=np.uint8)
+    if arr.size == 0:
+        return False
+    gray = arr.mean(axis=2).astype(np.float32)
+    sat = (arr.max(axis=2) - arr.min(axis=2)).astype(np.float32)
+    bg = (gray > 242.0) & (sat < 14.0)
+    # Standardized white-bg images should have large clean background area.
+    return float(bg.mean()) >= 0.45
+
+
+def _generate_white_bg_mask(rgb: Image.Image) -> Image.Image:
+    """More permissive foreground mask tuned for white-background product photos."""
+    arr = np.asarray(rgb.convert("RGB"), dtype=np.uint8)
+    h, w = arr.shape[:2]
+    gray = arr.mean(axis=2).astype(np.float32)
+    sat = (arr.max(axis=2) - arr.min(axis=2)).astype(np.float32)
+
+    # Background: very bright and low saturation.
+    bg = (gray > 244.0) & (sat < 16.0)
+    mask = np.ones((h, w), dtype=np.uint8) * 255
+    mask[bg] = 0
+
+    pil = Image.fromarray(mask, mode="L")
+    # Inflate foreground slightly to keep thin sleeves/edges.
+    for _ in range(3):
+        pil = pil.filter(ImageFilter.MaxFilter(3))
+    pil = pil.filter(ImageFilter.GaussianBlur(radius=0.8))
+    return pil
+
+
 def _keep_largest_alpha_component(rgba: Image.Image, min_alpha: int = 20) -> Image.Image:
     """Remove small disconnected components in alpha (keep only largest blob).
 
@@ -133,12 +169,18 @@ def cutout_garment_rgba(garment_image: Image.Image) -> GarmentCutout:
         rgba = None
 
     if rgba is None:
-        mask = _generate_garment_mask(rgb)
+        # If this is a white-bg product photo, use a more stable mask.
+        if _looks_like_white_bg_product(rgb):
+            mask = _generate_white_bg_mask(rgb)
+        else:
+            mask = _generate_garment_mask(rgb)
         rgba = rgb.convert("RGBA")
         rgba.putalpha(mask)
 
     # Keep only the main connected component to avoid pasting "product list panels"/watermarks.
-    rgba = _keep_largest_alpha_component(rgba)
+    # For white-bg product photos, avoid over-aggressive component filtering.
+    if not _looks_like_white_bg_product(rgb):
+        rgba = _keep_largest_alpha_component(rgba)
 
     # Poster/screenshot often yields near-full alpha. Instead of failing, try GrabCut refinement.
     a = np.asarray(rgba.split()[3], dtype=np.uint8)

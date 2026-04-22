@@ -403,13 +403,41 @@ class VirtualTryOnService:
     def _garment_has_face(self, garment_image: Image.Image) -> bool:
         """检测衣服图是否含正面人脸（含模特图）。"""
         try:
+            import shutil
+            import tempfile
+            from pathlib import Path
+
             import cv2
             import numpy as np
 
             arr = np.array(garment_image.convert("RGB"))
             gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
-            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-            cascade = cv2.CascadeClassifier(cascade_path)
+            # Windows + 非 ASCII 路径时，OpenCV 内置的 cv2.data.haarcascades 可能无法被 FileStorage 打开。
+            # 优先使用与 cv2 扩展模块同目录的 data 文件夹。
+            cascade_path = str(
+                Path(cv2.__file__).resolve().parent / "data" / "haarcascade_frontalface_default.xml"
+            )
+            if not Path(cascade_path).is_file():
+                cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+
+            def _load_cascade(p: str) -> "cv2.CascadeClassifier":
+                cc = cv2.CascadeClassifier(p)
+                if not cc.empty():
+                    return cc
+                # Last resort: copy XML to an ASCII-only temp path
+                # (OpenCV FileStorage quirk on some locales).
+                src = Path(p)
+                if not src.is_file():
+                    return cc
+                tmp_dir = Path(tempfile.gettempdir())
+                dst = tmp_dir / "haarcascade_frontalface_default.xml"
+                try:
+                    shutil.copyfile(src, dst)
+                except OSError:
+                    return cc
+                return cv2.CascadeClassifier(str(dst))
+
+            cascade = _load_cascade(cascade_path)
             if cascade.empty():
                 logger.warning("Haar cascade not loaded; skip garment face check")
                 return False
