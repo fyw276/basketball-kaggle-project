@@ -2,18 +2,28 @@
 
 主要接口:
 - detect_pose_keypoints(person_image) -> dict | None
+- detect_face_zone(person_image) -> tuple[int,int,int,int] | None  (x0,y0,x1,y1)
 - make_clothing_mask(person_image, keypoints, category) -> Image.Image (L mode, 255=编辑区域)
+  (内置：人脸椭圆保护 + Gaussian feathering 边缘羽化)
+
+MediaPipe 支持:
+- MediaPipe Tasks API (0.10+, 推荐)
+- Legacy mp.solutions.pose (降级兼容)
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+import cv2  # type: ignore[import-untyped]
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image
 
 # MediaPipe landmark 索引（PoseLandmark）
 _MP_NOSE = 0
+_MP_LEFT_EAR = 7
+_MP_RIGHT_EAR = 8
 _MP_LEFT_SHOULDER = 11
 _MP_RIGHT_SHOULDER = 12
 _MP_LEFT_ELBOW = 13
@@ -29,6 +39,8 @@ _MP_RIGHT_ANKLE = 28
 
 _KEY_INDICES: dict[str, int] = {
     "nose": _MP_NOSE,
+    "left_ear": _MP_LEFT_EAR,
+    "right_ear": _MP_RIGHT_EAR,
     "left_shoulder": _MP_LEFT_SHOULDER,
     "right_shoulder": _MP_RIGHT_SHOULDER,
     "left_elbow": _MP_LEFT_ELBOW,
@@ -46,23 +58,91 @@ _KEY_INDICES: dict[str, int] = {
 # 最小可见度阈值（低于此值的关键点视为不可靠）
 _MIN_VISIBILITY = 0.35
 
+# ─── MediaPipe Tasks model path ─────────────────────────────────────────────
+
+_MP_POSE_MODEL_PATH: str | None = None
+
+
+def _get_pose_landmarker_model_path() -> str | None:
+    """Find PoseLandmarker .task model file in common locations."""
+    global _MP_POSE_MODEL_PATH
+    if _MP_POSE_MODEL_PATH:
+        return _MP_POSE_MODEL_PATH
+    candidates = [
+        Path(__file__).parent.parent.parent / "models" / "pose_landmarker_heavy.task",
+        Path.home() / ".cache" / "mediapipe-assets" / "pose_landmarker_heavy.task",
+        Path.home() / "models" / "pose_landmarker_heavy.task",
+    ]
+    for p in candidates:
+        if p.exists():
+            _MP_POSE_MODEL_PATH = str(p.resolve())
+            return _MP_POSE_MODEL_PATH
+    return None
+
+
+# ─── Pose detection ────────────────────────────────────────────────────────────
+
 
 def detect_pose_keypoints(
     person_image: Image.Image,
     min_visibility: float = _MIN_VISIBILITY,
 ) -> dict[str, tuple[float, float]] | None:
-    """用 MediaPipe Pose 提取人体关键点（归一化坐标 0-1）。
+    """用 MediaPipe PoseLandmarker 提取人体关键点（归一化坐标 0-1）。
+
+    Supports both legacy MediaPipe (mp.solutions.pose) and MediaPipe Tasks API
+    (mp.tasks.python.vision.PoseLandmarker).
 
     Returns:
         dict {landmark_name: (x_norm, y_norm)} 或 None（检测失败 / 无足够可见点）。
         x_norm 和 y_norm 均为 [0, 1] 范围的归一化坐标。
     """
+    import mediapipe as mp  # type: ignore[import-untyped]
+
+    arr = np.asarray(person_image.convert("RGB"), dtype=np.uint8)
+
+    # Try MediaPipe Tasks API first (MediaPipe 0.10+)
     try:
-        import mediapipe as mp  # type: ignore[import-untyped]
+        import mediapipe.tasks
+        from mediapipe import Image as MPImage
+        from mediapipe.tasks.python.vision import PoseLandmarker, PoseLandmarkerOptions, RunningMode
 
+        model_path = _get_pose_landmarker_model_path()
+        if model_path:
+            options = PoseLandmarkerOptions(
+                base_options=mediapipe.tasks.BaseOptions(model_asset_path=model_path),
+                running_mode=RunningMode.IMAGE,
+                output_segmentation_masks=False,
+            )
+            landmarker = PoseLandmarker.create_from_options(options)
+            mp_img = MPImage.create_from_array(arr)
+            result = landmarker.detect(mp_img)
+            landmarker.close()
+
+            if not result.pose_landmarks:
+                return None
+
+            landmarks = result.pose_landmarks[0]
+            kpts: dict[str, tuple[float, float]] = {}
+            for name, idx in _KEY_INDICES.items():
+                if idx < len(landmarks):
+                    lm = landmarks[idx]
+                    vis = getattr(lm, "visibility", 1.0)
+                    if vis >= min_visibility:
+                        kpts[name] = (
+                            max(0.0, min(1.0, float(lm.x))),
+                            max(0.0, min(1.0, float(lm.y))),
+                        )
+
+            has_shoulders = "left_shoulder" in kpts or "right_shoulder" in kpts
+            has_hips = "left_hip" in kpts or "right_hip" in kpts
+            if has_shoulders or has_hips:
+                return kpts
+    except Exception:
+        pass
+
+    # Fallback: legacy mp.solutions.pose
+    try:
         mp_pose = mp.solutions.pose
-        arr = np.asarray(person_image.convert("RGB"), dtype=np.uint8)
-
         with mp_pose.Pose(
             static_image_mode=True,
             model_complexity=1,
@@ -74,22 +154,60 @@ def detect_pose_keypoints(
         if not results.pose_landmarks:
             return None
 
-        landmarks = results.pose_landmarks.landmark
+        landmarks = results.pose_landmarks[0]
         kpts: dict[str, tuple[float, float]] = {}
         for name, idx in _KEY_INDICES.items():
             lm = landmarks[idx]
             vis = getattr(lm, "visibility", 1.0)
             if vis >= min_visibility:
-                # 归一化坐标 clamp 到 [0, 1]
                 kpts[name] = (max(0.0, min(1.0, float(lm.x))), max(0.0, min(1.0, float(lm.y))))
 
-        # 必须至少检测到肩膀或髋部才认为有效
         has_shoulders = "left_shoulder" in kpts or "right_shoulder" in kpts
         has_hips = "left_hip" in kpts or "right_hip" in kpts
         if not (has_shoulders or has_hips):
             return None
 
         return kpts
+    except Exception:
+        return None
+
+
+def detect_face_zone(
+    person_image: Image.Image,
+) -> tuple[int, int, int, int] | None:
+    """用 MediaPipe Face Detection 检测人脸区域（像素坐标）。
+
+    Returns:
+        (x0, y0, x1, y1) 人脸 bounding box（相对于 person_image 尺寸），
+        或 None（未检测到人脸）。
+    """
+    try:
+        import mediapipe as mp  # type: ignore[import-untyped]
+
+        mp_face = mp.solutions.face_detection
+        arr = np.asarray(person_image.convert("RGB"), dtype=np.uint8)
+        h, w = arr.shape[:2]
+
+        with mp_face.FaceDetection(
+            model_selection=0,
+            min_detection_confidence=0.5,
+        ) as face_detector:
+            results = face_detector.process(arr)
+
+        if not results.detections:
+            return None
+
+        # 取置信度最高的人脸
+        best = max(results.detections, key=lambda d: d.score[0])
+        bb = best.location_data.relative_bounding_box
+        x0 = max(0, int(bb.xmin * w))
+        y0 = max(0, int(bb.ymin * h))
+        x1 = min(w, int((bb.xmin + bb.width) * w))
+        y1 = min(h, int((bb.ymin + bb.height) * h))
+
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return (x0, y0, x1, y1)
     except Exception:
         return None
 
@@ -110,17 +228,53 @@ def _clamp_int(v: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, int(v)))
 
 
+def _carve_face_ellipse(
+    mask: np.ndarray,
+    face_box: tuple[int, int, int, int],
+    pw: int,
+    ph: int,
+) -> np.ndarray:
+    """在 mask 上挖出人脸椭圆区域（设为 0），防止 diffusion 修改人脸。
+
+    人脸椭圆 = 水平占 face_box 的 ±25%，垂直占 ±35%，中心在 box 中心偏上。
+    这样即使 mask 矩形框靠近人脸，人脸椭圆也能确保面部区域不被编辑。
+    """
+    x0, y0, x1, y1 = face_box
+    cx = (x0 + x1) // 2
+    # 椭圆中心略微上移（约在脸的中间偏上位置）
+    cy = int(y0 * 0.3 + y1 * 0.7)
+
+    ew = (x1 - x0) // 2 + max(1, int(pw * 0.04))  # 水平半径 + padding
+    eh = int((y1 - y0) // 2 * 1.1) + max(1, int(ph * 0.03))  # 垂直半径 + padding
+
+    rows, cols = mask.shape
+    y_grid, x_grid = np.ogrid[:rows, :cols]
+    ellipse_mask = (
+        ((x_grid - cx) ** 2) // max(1, ew**2) + ((y_grid - cy) ** 2) // max(1, eh**2)
+    ) <= 1
+
+    mask = mask.copy()
+    mask[ellipse_mask] = 0
+    return mask
+
+
 def make_clothing_mask(
     person_image: Image.Image,
     keypoints: dict[str, tuple[float, float]] | None,
     category: str,
+    feather_radius: int = 5,
 ) -> Image.Image:
     """根据关键点生成衣服区域 mask（白色=需编辑，黑色=保留不动）。
+
+    改进版：
+    1. 若检测到人脸，额外挖出人脸椭圆保护区域（防止 diffusion 修改人脸）
+    2. 对 mask 边缘做 Gaussian feathering 减少边界伪影
 
     Args:
         person_image: 人物图（PIL RGB）。
         keypoints: detect_pose_keypoints 的返回值，可为 None。
         category: "top" | "bottom" | "skirt" | "outfit"，其余视为 "top"。
+        feather_radius: mask 边缘 Gaussian feathering 半径（像素），0=禁用。
 
     Returns:
         与 person_image 同尺寸的灰度 Image（mode="L"）。
@@ -128,7 +282,7 @@ def make_clothing_mask(
     """
     pw, ph = person_image.size
     cat = (category or "top").strip().lower()
-    mask = Image.new("L", (pw, ph), color=0)
+    mask_np = np.zeros((ph, pw), dtype=np.uint8)
 
     if keypoints:
         top_box = _top_region(keypoints, pw, ph) if cat in {"top", "outfit"} else None
@@ -139,13 +293,25 @@ def make_clothing_mask(
         top_box = _top_fallback(pw, ph) if cat in {"top", "outfit"} else None
         bottom_box = _bottom_fallback(pw, ph) if cat in {"bottom", "skirt", "outfit"} else None
 
-    draw = ImageDraw.Draw(mask)
+    # 填充矩形（255 = 编辑区域）
     if top_box:
-        draw.rectangle(top_box, fill=255)
+        x0, y0, x1, y1 = top_box
+        mask_np[y0:y1, x0:x1] = 255
     if bottom_box:
-        draw.rectangle(bottom_box, fill=255)
+        x0, y0, x1, y1 = bottom_box
+        mask_np[y0:y1, x0:x1] = 255
 
-    return mask
+    # 人脸保护：检测人脸并挖出椭圆
+    face_box = detect_face_zone(person_image)
+    if face_box is not None:
+        mask_np = _carve_face_ellipse(mask_np, face_box, pw, ph)
+
+    # 边缘羽化（Gaussian blur 过渡）
+    if feather_radius > 0:
+        mask_np = cv2.GaussianBlur(mask_np, (0, 0), sigmaX=feather_radius, sigmaY=feather_radius)
+        mask_np = np.clip(mask_np, 0, 255).astype(np.uint8)
+
+    return Image.fromarray(mask_np, mode="L")
 
 
 # ─── 上装区域 ───────────────────────────────────────────────────────────────
@@ -172,8 +338,8 @@ def _top_region(
     x0_n = max(0.0, min(x_pts) - 0.04)
     x1_n = min(1.0, max(x_pts) + 0.04)
 
-    # 垂直范围：肩膀往上留空防止遮脸，往下延伸到髋部
-    y0_n = max(0.0, shoulder_y - 0.06)
+    # 垂直范围：肩膀往上留空（增加头部空间，防止遮脸），往下延伸到髋部
+    y0_n = max(0.0, shoulder_y - 0.09)
     y1_n = min(1.0, hip_y + 0.04)
 
     if y1_n <= y0_n:
@@ -292,7 +458,6 @@ def get_body_bounds_from_keypoints(
         hip_width = shoulder_width * 0.90
         hip_cx = shoulder_cx
 
-    # 水平范围：取肩膀/肘部中最宽的
     x_candidates = [p[0] for p in [ls, rs, le, re, lh, rh] if p is not None]
     if x_candidates:
         x0_n = max(0.0, min(x_candidates) - 0.04)
@@ -318,7 +483,6 @@ def get_body_bounds_from_keypoints(
         shoulder_y = _avg_y(ls, rs)
         hip_y = _avg_y(lh, rh)
         if shoulder_y is not None:
-            # neck_y：脖子在鼻子到肩膀之间
             if nose:
                 neck_y = _clamp_int(
                     int((nose[1] * 0.35 + shoulder_y * 0.65) * ph), int(ph * 0.06), int(ph * 0.38)

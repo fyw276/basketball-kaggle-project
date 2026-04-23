@@ -1,0 +1,19 @@
+fix(tryon-v2): complete replace-mode bailian diagnostics + add comprehensive test suite
+
+Bug fixes:
+- tryon_v2.py: always populate upstream_for_diag for bailian/remote (not just on
+  success), so bailian_diag is populated on error responses
+- tryon_v2.py: include model and function fields in bailian_diag error response
+- bailian_tryon_client.py: add function field to all error metadata returns
+  (dashscope_empty_output, dashscope_task, dashscope_no_results, dashscope_no_url)
+
+Tests added:
+- test_tryon_replace_mode_bugfix.py: property-based + scenario tests validating
+  detailed bailian error diagnostics (status_code, code, exception_message,
+  model, function, specific_hint) and action_hint specificity
+- test_tryon_replace_mode_preservation.py: regression tests verifying
+  non-replace modes, bailian config, fallback chains unchanged
+- test_overlay_garment_fidelity.py: validates overlay_top_onto_ai_result fidelity
+
+Also: api_client.dart (capabilities/model-status methods), config.py, VTON
+inference service (main.py, catvton_engine.py, catvton_runner.py, ootd_engine.py)

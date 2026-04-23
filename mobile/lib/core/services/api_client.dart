@@ -1137,6 +1137,60 @@ class ApiClient {
     }
   }
 
+  /// v2 能力查询：获取后端支持的试衣模式、引擎和阈值。
+  Future<Map<String, dynamic>> getTryOnCapabilities({
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    try {
+      final v2Base = _resolveV2BaseUrl();
+      final response = await http
+          .get(
+            Uri.parse('$v2Base/tryon/capabilities'),
+            headers: _authHeaders,
+          )
+          .timeout(timeout);
+
+      if (response.statusCode == 200) {
+        final decoded = json.decode(response.body);
+        if (decoded is Map) return Map<String, dynamic>.from(decoded);
+        return {'data': decoded};
+      }
+      if (response.statusCode == 401) {
+        return {'error': 'Not authenticated'};
+      }
+      return {'error': 'Get capabilities failed: ${response.statusCode}'};
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
+  /// v2 模型状态：获取各引擎配置状态（Bailian/远程VTON/本地CatVTON）。
+  Future<Map<String, dynamic>> getTryOnModelStatus({
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    try {
+      final v2Base = _resolveV2BaseUrl();
+      final response = await http
+          .get(
+            Uri.parse('$v2Base/tryon/model-status'),
+            headers: _authHeaders,
+          )
+          .timeout(timeout);
+
+      if (response.statusCode == 200) {
+        final decoded = json.decode(response.body);
+        if (decoded is Map) return Map<String, dynamic>.from(decoded);
+        return {'data': decoded};
+      }
+      if (response.statusCode == 401) {
+        return {'error': 'Not authenticated'};
+      }
+      return {'error': 'Get model status failed: ${response.statusCode}'};
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
   // ─── 智能穿搭：天气 + 参考图 + 情绪 ─────────────────────────────
   // 后端: GET /smart-outfit/weather, GET /smart-outfit/weather-by-city
   // POST /smart-outfit/upload-reference, POST /smart-outfit/generate

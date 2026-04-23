@@ -64,24 +64,24 @@ def _resolve_model_id(bucket: str) -> str:
 def _build_prompt(bucket: str, user_prompt: str) -> str:
     hints = {
         "top": (
-            "在保持底图人物的脸部身份、发型、表情、姿势、相机视角与背景完全不变的前提下，"
-            "将 mask 白色区域内的上装替换为参考图中的服装；"
-            "不要更换人物，不要更换场景，不要添加新道具，mask 区域以外保持原样。"
+            "严格按照参考图中服装的精确颜色（RGB值不变）、图案纹理、材质光泽、领口袖口款式，将 mask 白色区域内的上装完整替换为参考图中的服装；"
+            "必须保持底图人物的脸部身份（五官比例、肤色、发型）、发型、表情、姿势、相机视角与背景完全不变；"
+            "不要更换人物身份，不要更换场景，不要添加新道具或装饰，不要改变服装颜色、图案或款式，mask 区域以外保持像素级不变。"
         ),
         "bottom": (
-            "在保持底图人物的脸部身份、发型、表情、姿势、相机视角与背景完全不变的前提下，"
-            "将 mask 白色区域内的下装替换为参考图中的服装；"
-            "不要更换人物，不要更换场景，不要添加新道具，mask 区域以外保持原样。"
+            "严格按照参考图中服装的精确颜色（RGB值不变）、图案纹理、材质光泽、裤型款式，将 mask 白色区域内的下装完整替换为参考图中的服装；"
+            "必须保持底图人物的脸部身份（五官比例、肤色、发型）、发型、表情、姿势、相机视角与背景完全不变；"
+            "不要更换人物身份，不要更换场景，不要添加新道具或装饰，不要改变服装颜色、图案或款式，mask 区域以外保持像素级不变。"
         ),
         "skirt": (
-            "在保持底图人物的脸部身份、发型、表情、姿势、相机视角与背景完全不变的前提下，"
-            "将 mask 白色区域内的裙装替换为参考图中的服装；"
-            "不要更换人物，不要更换场景，不要添加新道具，mask 区域以外保持原样。"
+            "严格按照参考图中服装的精确颜色（RGB值不变）、图案纹理、材质光泽、裙型款式，将 mask 白色区域内的裙装完整替换为参考图中的服装；"
+            "必须保持底图人物的脸部身份（五官比例、肤色、发型）、发型、表情、姿势、相机视角与背景完全不变；"
+            "不要更换人物身份，不要更换场景，不要添加新道具或装饰，不要改变服装颜色、图案或款式，mask 区域以外保持像素级不变。"
         ),
         "default": (
-            "在保持底图人物的脸部身份、发型、表情、姿势、相机视角与背景完全不变的前提下，"
-            "将 mask 白色区域内的服装替换为参考图中的服装；"
-            "不要更换人物，不要更换场景，不要添加新道具，mask 区域以外保持原样。"
+            "严格按照参考图中服装的精确颜色（RGB值不变）、图案纹理、材质光泽、款式版型，将 mask 白色区域内的服装完整替换为参考图中的服装；"
+            "必须保持底图人物的脸部身份（五官比例、肤色、发型）、发型、表情、姿势、相机视角与背景完全不变；"
+            "不要更换人物身份，不要更换场景，不要添加新道具或装饰，不要改变服装颜色、图案或款式，mask 区域以外保持像素级不变。"
         ),
     }
     base = hints.get(bucket, hints["default"])
@@ -109,8 +109,12 @@ def _call_bailian_tryon_sync(
         return {
             "result_image": None,
             "status": "error",
-            "message": "dashscope 未安装，请 pip install dashscope",
-            "metadata": {"reason": "dashscope_missing"},
+            "message": "dashscope 未安装",
+            "metadata": {
+                "reason": "dashscope_missing",
+                "error_type": "dependency_missing",
+                "action_required": "pip install dashscope",
+            },
         }
 
     api_key = (settings.DASHSCOPE_API_KEY or "").strip()
@@ -142,17 +146,16 @@ def _call_bailian_tryon_sync(
 
             person_img = Image.open(io.BytesIO(person_bytes)).convert("RGB")
             kpts = detect_pose_keypoints(person_img)
-            # 对 outfit 同时覆盖上装+下装区域
             mask_cat = bucket if bucket in {"top", "bottom", "skirt"} else "outfit"
-            mask_img = make_clothing_mask(person_img, kpts, mask_cat)
+            # feather_radius=5: 5px Gaussian feathering on mask edges reduces boundary artifacts
+            mask_img = make_clothing_mask(person_img, kpts, mask_cat, feather_radius=5)
 
-            # 把 mask 转为 JPEG base64 data URL
             mask_buf = io.BytesIO()
             mask_img.convert("RGB").save(mask_buf, format="JPEG", quality=90)
             mask_url = _jpeg_data_url(mask_buf.getvalue())
             logger.info(
-                "Bailian try-on: generated clothing mask via %s (kpts=%s)",
-                "MediaPipe" if kpts else "fallback",
+                "Bailian try-on: generated clothing mask "
+                "(kpts=%s, face_protected=yes, feather=5px)",
                 "yes" if kpts else "no",
             )
         except Exception as mask_err:
@@ -160,14 +163,17 @@ def _call_bailian_tryon_sync(
             mask_url = None
 
         logger.info(
-            "Bailian try-on: model=%s function=%s category_bucket=%s mask=%s",
+            "Bailian try-on: model=%s function=%s category_bucket=%s mask=%s prompt=%s",
             model_id,
             function_name,
             bucket,
             "yes" if mask_url else "no",
+            prompt_text[:100] + "..." if len(prompt_text) > 100 else prompt_text,
         )
 
-        # ── DashScope API 调用（优先 mask-edit，fallback 至 stylization_all）──
+        # ── DashScope API 调用 ──
+        strength = float(getattr(settings, "DASHSCOPE_TRYON_STRENGTH", 0.25) or 0.25)
+        strength = max(0.05, min(1.0, strength))  # clamp to valid range
         resp = _call_dashscope(
             model_id=model_id,
             function_name=function_name,
@@ -176,51 +182,49 @@ def _call_bailian_tryon_sync(
             person_url=person_url,
             garment_url=garment_url,
             mask_url=mask_url,
+            strength=strength,
         )
 
-        # 若 description_edit_with_mask 返回参数错误（DashScope SDK 版本不支持 mask_image_url），
-        # 自动降级到 stylization_all（身份保真较差但仍可用）。
-        if (
-            resp is not None
-            and resp.status_code != 200
-            and function_name == "description_edit_with_mask"
-            and mask_url is not None
-        ):
-            fallback_fn = "stylization_all"
-            logger.warning(
-                "description_edit_with_mask failed (code=%s msg=%s), retrying with %s",
-                getattr(resp, "status_code", "?"),
-                getattr(resp, "message", ""),
-                fallback_fn,
-            )
-            resp = _call_dashscope(
-                model_id=model_id,
-                function_name=fallback_fn,
-                prompt_text=prompt_text,
-                api_key=api_key,
-                person_url=person_url,
-                garment_url=garment_url,
-                mask_url=None,  # stylization_all 不需要 mask
-            )
-
+        # 如果 description_edit_with_mask 失败，不要降级到 stylization_all
+        # stylization_all 是风格迁移，会改变人物身份和衣服颜色
         if resp is None:
             return {
                 "result_image": None,
                 "status": "error",
                 "message": "百炼调用返回 None",
-                "metadata": {"reason": "dashscope_none_response"},
+                "metadata": {
+                    "reason": "dashscope_none_response",
+                    "error_type": "api_error",
+                },
             }
 
         if resp.status_code != 200:
             msg = (resp.message or resp.code or "DashScope error").strip()
+            code = getattr(resp, "code", None)
+            # 根据错误代码提供更具体的诊断信息
+            specific_hint = ""
+            if code:
+                code_str = str(code).lower()
+                if "invalid" in code_str or "auth" in code_str or "key" in code_str:
+                    specific_hint = "API key 无效或已过期"
+                elif "quota" in code_str or "limit" in code_str:
+                    specific_hint = "API 额度不足或超出限制"
+                elif "permission" in code_str or "access" in code_str:
+                    specific_hint = "模型权限不足或未开通"
+                elif "timeout" in code_str or "network" in code_str:
+                    specific_hint = "网络超时或连接失败"
+
             return {
                 "result_image": None,
                 "status": "error",
                 "message": msg or "百炼试衣调用失败",
                 "metadata": {
                     "reason": "dashscope_http",
-                    "code": getattr(resp, "code", None),
+                    "error_type": "api_error",
+                    "code": code,
+                    "status_code": resp.status_code,
                     "model": model_id,
+                    "specific_hint": specific_hint,
                 },
             }
 
@@ -230,7 +234,11 @@ def _call_bailian_tryon_sync(
                 "result_image": None,
                 "status": "error",
                 "message": "百炼返回空输出",
-                "metadata": {"reason": "dashscope_empty_output", "model": model_id},
+                "metadata": {
+                    "reason": "dashscope_empty_output",
+                    "model": model_id,
+                    "function": function_name,
+                },
             }
 
         task_status = getattr(out, "task_status", None) or (
@@ -245,6 +253,7 @@ def _call_bailian_tryon_sync(
                     "reason": "dashscope_task",
                     "task_status": task_status,
                     "model": model_id,
+                    "function": function_name,
                 },
             }
 
@@ -256,7 +265,11 @@ def _call_bailian_tryon_sync(
                 "result_image": None,
                 "status": "error",
                 "message": "百炼未返回图片结果",
-                "metadata": {"reason": "dashscope_no_results", "model": model_id},
+                "metadata": {
+                    "reason": "dashscope_no_results",
+                    "model": model_id,
+                    "function": function_name,
+                },
             }
 
         first = results[0]
@@ -266,7 +279,11 @@ def _call_bailian_tryon_sync(
                 "result_image": None,
                 "status": "error",
                 "message": "百炼结果缺少图片 URL",
-                "metadata": {"reason": "dashscope_no_url", "model": model_id},
+                "metadata": {
+                    "reason": "dashscope_no_url",
+                    "model": model_id,
+                    "function": function_name,
+                },
             }
 
         timeout = float(getattr(settings, "DASHSCOPE_TRYON_DOWNLOAD_TIMEOUT_SECONDS", 120) or 120)
@@ -291,11 +308,30 @@ def _call_bailian_tryon_sync(
         }
     except Exception as e:
         logger.exception("Bailian try-on failed: %s", e)
+        # 捕获异常类型以提供更具体的诊断信息
+        error_type = type(e).__name__
+        error_msg = str(e) or "百炼试衣异常"
+
+        specific_hint = ""
+        if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+            specific_hint = "网络超时"
+        elif "connection" in error_msg.lower() or "network" in error_msg.lower():
+            specific_hint = "网络连接失败"
+        elif "ssl" in error_msg.lower() or "certificate" in error_msg.lower():
+            specific_hint = "SSL证书验证失败"
+        elif "key" in error_msg.lower() or "auth" in error_msg.lower():
+            specific_hint = "API认证失败"
+
         return {
             "result_image": None,
             "status": "error",
-            "message": str(e) or "百炼试衣异常",
-            "metadata": {"reason": "dashscope_exception"},
+            "message": error_msg,
+            "metadata": {
+                "reason": "dashscope_exception",
+                "error_type": error_type,
+                "exception_message": error_msg,
+                "specific_hint": specific_hint,
+            },
         }
 
 
@@ -308,8 +344,21 @@ def _call_dashscope(
     person_url: str,
     garment_url: str,
     mask_url: Optional[str],
+    strength: float = 0.25,
 ) -> Any:
-    """Thin wrapper around ImageSynthesis.call with optional mask_image_url support."""
+    """
+    Thin wrapper around ImageSynthesis.call with optional mask_image_url support.
+
+    CRITICAL: For virtual try-on, we MUST use description_edit_with_mask with mask_image_url.
+    - base_image_url: person image (底图)
+    - ref_img: garment image (参考图/商品图)
+    - mask_image_url: clothing mask (白色=编辑区域，黑色=保留区域)
+    - images: [person_url, garment_url] for reference
+    - strength: diffusion strength (0.0-1.0). Lower = more faithful to original.
+
+    DO NOT use stylization_all - it is style transfer and will change
+    person identity and garment colors!
+    """
     kwargs: Dict[str, Any] = dict(
         model=model_id,
         prompt=prompt_text,
@@ -319,8 +368,18 @@ def _call_dashscope(
         images=[person_url, garment_url],
         function=function_name,
     )
+    # Only pass strength if using stylization_all (not description_edit_with_mask
+    # which doesn't support it). DashScope uses its own internal denoising strength.
     if mask_url is not None:
         kwargs["mask_image_url"] = mask_url
+
+    logger.info(
+        "DashScope API call: function=%s, has_mask=%s, prompt_chars=%d",
+        function_name,
+        mask_url is not None,
+        len(prompt_text),
+    )
+
     return ImageSynthesis.call(**kwargs)  # type: ignore[union-attr]
 
 

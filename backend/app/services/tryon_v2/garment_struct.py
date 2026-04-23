@@ -37,21 +37,22 @@ def _alpha_bbox(im: Image.Image) -> tuple[int, int, int, int] | None:
 
 
 def _generate_garment_mask(rgb: Image.Image) -> Image.Image:
-    """Same idea as v1 fallback: bright + low saturation treated as background."""
+    """Generate garment foreground mask using color/saturation thresholding."""
     img_array = np.asarray(rgb.convert("RGB"), dtype=np.uint8)
     h, w = img_array.shape[:2]
     gray = img_array.mean(axis=2).astype(np.float32)
     sat = (img_array.max(axis=2) - img_array.min(axis=2)).astype(np.float32)
+    # Background: very bright + low saturation
     bg_mask = (gray > 230.0) & (sat < 18.0)
     mask = np.ones((h, w), dtype=np.uint8) * 255
     mask[bg_mask] = 0
 
     pil_mask = Image.fromarray(mask, mode="L")
-    # Slightly inflate foreground.
-    for _ in range(2):
-        pil_mask = pil_mask.filter(ImageFilter.MaxFilter(3))
-    # Small blur to help feather later.
-    pil_mask = pil_mask.filter(ImageFilter.GaussianBlur(radius=0.6))
+    # Inflate foreground to preserve thin edges (sleeves, collar, etc.)
+    for _ in range(3):
+        pil_mask = pil_mask.filter(ImageFilter.MaxFilter(5))
+    # Light blur to smooth the mask edges
+    pil_mask = pil_mask.filter(ImageFilter.GaussianBlur(radius=0.8))
     return pil_mask
 
 
@@ -150,6 +151,32 @@ def _grabcut_refine_rgba(rgb: Image.Image) -> Image.Image | None:
         return None
 
 
+def _smooth_alpha_boundary(rgba: Image.Image) -> Image.Image:
+    """Reduce halo/feather artifacts at the alpha boundary using alpha morphology."""
+    im = rgba.convert("RGBA")
+    a = np.asarray(im.split()[3], dtype=np.uint8)
+    if a.max() == 0:
+        return im
+
+    boundary = (a > 10) & (a < 245)
+    if boundary.sum() < 100:
+        return im
+
+    try:
+        import cv2
+
+        kernel = np.ones((3, 3), np.uint8)
+        a_thin = cv2.erode(a, kernel, iterations=1)
+        a_thick = cv2.dilate(a_thin, kernel, iterations=1)
+        mask = boundary.astype(np.float32) / 255.0
+        a_clean = (a * (1 - mask * 0.5) + a_thick * mask * 0.5).astype(np.uint8)
+        out = im.copy()
+        out.putalpha(Image.fromarray(a_clean, mode="L"))
+        return out
+    except Exception:
+        return im
+
+
 def cutout_garment_rgba(garment_image: Image.Image) -> GarmentCutout:
     rgb = garment_image.convert("RGB")
     rgba: Image.Image | None = None
@@ -181,6 +208,10 @@ def cutout_garment_rgba(garment_image: Image.Image) -> GarmentCutout:
     # For white-bg product photos, avoid over-aggressive component filtering.
     if not _looks_like_white_bg_product(rgb):
         rgba = _keep_largest_alpha_component(rgba)
+
+    # Edge-preserving refinement: use bilateral-ish smoothing on alpha near boundary
+    # to reduce halo artifacts where garment meets background.
+    rgba = _smooth_alpha_boundary(rgba)
 
     # Poster/screenshot often yields near-full alpha. Instead of failing, try GrabCut refinement.
     a = np.asarray(rgba.split()[3], dtype=np.uint8)

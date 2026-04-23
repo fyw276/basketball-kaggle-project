@@ -177,6 +177,116 @@ class Settings(BaseSettings):
             "默认关闭：本地权重不完整时容易生成无关图像（幻觉）。"
         ),
     )
+    TRYON_V2_REPLACE_ENGINE_PRIORITY: str = Field(
+        default="warp,bailian,remote,catvton,diffusion",
+        description=(
+            "v2 replace 模式引擎优先级（逗号分隔）。可选项: "
+            "warp(几何贴合), bailian(百炼), remote(远程VTON), "
+            "catvton(本地CatVTON), diffusion(本地diffusion)"
+        ),
+    )
+    TRYON_V2_REPLACE_SKIP_WARP: bool = Field(
+        default=False,
+        description="v2 replace 模式跳过几何贴合，直接使用AI生成",
+    )
+
+    # DashScope / Bailian (阿里云百炼) for virtual try-on
+    DASHSCOPE_TRYON_ENABLED: bool = Field(
+        default=False,
+        description="启用阿里云百炼（DashScope）虚拟试衣服务",
+    )
+    DASHSCOPE_API_KEY: str = Field(
+        default="",
+        description="阿里云百炼 API Key",
+    )
+    DASHSCOPE_TRYON_MODEL: str = Field(
+        default="wanx2.1-imageedit",
+        description="百炼试衣默认模型",
+    )
+    DASHSCOPE_TRYON_MODEL_TOP: str = Field(
+        default="",
+        description="上装专用模型（空则使用 DASHSCOPE_TRYON_MODEL）",
+    )
+    DASHSCOPE_TRYON_MODEL_BOTTOM: str = Field(
+        default="",
+        description="下装专用模型（空则使用 DASHSCOPE_TRYON_MODEL）",
+    )
+    DASHSCOPE_TRYON_MODEL_SKIRT: str = Field(
+        default="",
+        description="裙装专用模型（空则使用 DASHSCOPE_TRYON_MODEL）",
+    )
+    DASHSCOPE_TRYON_FUNCTION: str = Field(
+        default="",
+        description="百炼试衣功能名（空则自动选择 description_edit_with_mask 或 stylization_all）",
+    )
+    DASHSCOPE_TRYON_DOWNLOAD_TIMEOUT_SECONDS: int = Field(
+        default=120,
+        description="百炼结果图下载超时（秒）",
+    )
+    DASHSCOPE_TRYON_FALLBACK_LOCAL: bool = Field(
+        default=True,
+        description="百炼失败时是否降级到远程VTON或本地试衣",
+    )
+    DASHSCOPE_TRYON_STRENGTH: float = Field(
+        default=0.25,
+        description=(
+            "百炼 diffusion 强度 0.0-1.0。值越低越忠实于原图（服装变形小，人脸不变），"
+            "值越高生成质量越好但变化越大。建议 0.2-0.35，真实贴身模式推荐 0.25"
+        ),
+    )
+
+    # Remote VTON service (专用虚拟试衣服务)
+    VTON_INFERENCE_URL: str = Field(
+        default="",
+        description="远程VTON服务URL（如 http://127.0.0.1:8011/v1/tryon）",
+    )
+    VTON_INFERENCE_TIMEOUT_SECONDS: int = Field(
+        default=2400,
+        description="远程VTON服务超时（秒）",
+    )
+    VTON_INFERENCE_API_KEY: str = Field(
+        default="",
+        description="远程VTON服务API Key（可选）",
+    )
+
+    # CatVTON (本地高质量试衣引擎)
+    # 推荐用于 product→person 场景，支持自动遮罩生成，8GB VRAM (bf16) 可运行
+    CATVTON_ENABLED: bool = Field(
+        default=False,
+        description="启用 CatVTON 作为本地试衣引擎（需安装 CatVTON 并配置 CATVTON_PATH）",
+    )
+    CATVTON_PATH: str = Field(
+        default="",
+        description="CatVTON 仓库路径，如 D:\\models\\CatVTON",
+    )
+    CATVTON_WIDTH: int = Field(
+        default=768,
+        description="CatVTON 输入图像宽度（768 标准和质量平衡）",
+    )
+    CATVTON_HEIGHT: int = Field(
+        default=1024,
+        description="CatVTON 输入图像高度（1024 标准和质量平衡）",
+    )
+    CATVTON_STEPS: int = Field(
+        default=50,
+        description="CatVTON 推理步数（30-80，推荐 50）",
+    )
+    CATVTON_GUIDANCE: float = Field(
+        default=2.5,
+        description="CatVTON CFG 强度（2.0-3.0，推荐 2.5。越高服装保真度越高）",
+    )
+    CATVTON_REPAINT: bool = Field(
+        default=True,
+        description="CatVTON 是否使用背景重绘（repaint 模式恢复原始背景）",
+    )
+    CATVTON_MIXED_PRECISION: str = Field(
+        default="bf16",
+        description="CatVTON 混合精度：bf16（推荐，~8GB VRAM）/ fp16 / no（fp32）",
+    )
+    CATVTON_TIMEOUT_SECONDS: int = Field(
+        default=600,
+        description="CatVTON 单次推理超时（秒，50步约需 30-60 秒）",
+    )
 
     # Subscription & quota
     USAGE_QUOTA_ENABLED: bool = Field(default=False, description="启用后执行功能额度扣减")

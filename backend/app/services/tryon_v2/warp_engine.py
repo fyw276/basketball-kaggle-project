@@ -444,55 +444,115 @@ def tryon_top_warp(
     tw = max(2, x1 - x0)
     th = max(2, y1 - y0)
 
-    # Fit garment into target box preserving aspect ratio.
-    max_w = max(2, int(tw * 0.88))
-    max_h = max(2, int(th * 0.94))
-    scale = min(max_w / float(gw), max_h / float(gh))
+    # Scale garment to COVER the target area (fill width, crop height if needed).
+    # This prevents the "garment is too small" issue.
+    scale = max(tw / float(gw), th / float(gh))
     itw = max(2, int(gw * scale))
     ith = max(2, int(gh * scale))
     g = g.resize((itw, ith), Image.Resampling.LANCZOS)
 
     # ── 透视梯形变形（肩宽 → 腰宽，模拟 3D 贴合感）──────────────────────
-    # 只在 MediaPipe 关键点可用且肩腰宽度差值明显时做梯形透视。
     if _used_pose and _shoulder_w_px and _hip_w_px and itw >= 16:
         top_half_w = _clamp_int(int(min(itw, _shoulder_w_px * scale)), 4, itw)
         bot_half_w = _clamp_int(int(min(itw, _hip_w_px * scale)), 4, itw)
-        # 只在差值 > 4px 时才做 QUAD 变换，避免微小差值引入不必要失真。
         if abs(top_half_w - bot_half_w) > 4:
             top_inset = (itw - top_half_w) // 2
             bot_inset = (itw - bot_half_w) // 2
             quad = (
                 top_inset,
-                0,  # 左上
+                0,
                 itw - top_inset,
-                0,  # 右上
+                0,
                 itw - bot_inset,
-                ith,  # 右下
+                ith,
                 bot_inset,
-                ith,  # 左下
+                ith,
             )
             g = _pil_quad_warp(g, (itw, ith), quad)
 
-    # Additional horizontal "slim" without shear.
-    if itw >= 16 and not (_used_pose and _shoulder_w_px):
-        slim = 0.92
-        itw2 = max(2, int(itw * slim))
-        if itw2 != itw:
-            g = g.resize((itw2, ith), Image.Resampling.LANCZOS)
-            itw = itw2
-
+    # ── Center the scaled garment on the target box ──────────────────────────
     layer = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
-    ox = x0 + (tw - itw) // 2
-    oy = y0 + (th - ith) // 2
-    layer.paste(g, (ox, oy), g)
+    ox = x0 + (tw - min(itw, tw)) // 2
+    oy = y0 + (th - min(ith, th)) // 2
+    g_crop = g.crop((0, 0, min(itw, tw), min(ith, th)))
+    layer.paste(g_crop, (ox, oy), g_crop)
 
+    # ── Feather edges for smoother boundary ────────────────────────────────
     feather_px = _clamp_int(int(max(pw, ph) * float(alpha_feather_ratio)), 1, 8)
     layer = _feather_alpha(layer, radius_px=feather_px)
 
+    # ── Protect face/neck area from being overwritten ───────────────────────
     protect = _upper_protect_mask((pw, ph), protect_until_y=int(ph * 0.18))
     r, gg, b, a = layer.split()
     a = ImageChops.multiply(a, protect)
     layer = Image.merge("RGBA", (r, gg, b, a))
+
+    # ── Realism pass: blend garment into scene lighting + add subtle volume ──
+    try:
+        import cv2  # noqa: F401  # reserved for future enhancement
+
+        layer_np = np.array(layer)
+        base_np = np.array(base)
+
+        # Blend garment brightness with base (person's body lighting)
+        # Get the body region under the garment for lighting reference
+        body_roi = base_np[y0:y1, x0:x1]
+        if body_roi.size > 0:
+            # Compute per-channel brightness of body region
+            body_lum = np.mean(body_roi.astype(float), axis=(0, 1))
+            # Compute garment brightness (solid foreground pixels)
+            fg_mask = layer_np[y0:y1, x0:x1, 3] > 200
+            if fg_mask.sum() > 0:
+                gar_lum = np.mean(layer_np[y0:y1, x0:x1][fg_mask].astype(float), axis=(0))
+                # Ratio-based brightness transfer: keep garment color, match scene brightness
+                blend_ratio = 0.72  # 72% garment original, 28% scene brightness
+                for c in range(3):
+                    if gar_lum[c] > 5:  # avoid division by near-zero
+                        adjusted = layer_np[y0:y1, x0:x1, c].astype(float)
+                        adjusted[fg_mask] = np.clip(
+                            adjusted[fg_mask] * (blend_ratio + 0.28 * body_lum[c] / gar_lum[c]),
+                            0,
+                            255,
+                        )
+                        layer_np[y0:y1, x0:x1, c] = adjusted.astype(np.uint8)
+
+        # Subtle vertical fold lines to suggest fabric draping/volume
+        # Add very faint dark lines at ~1/3 and 2/3 of garment width
+        fold_positions = [int(itw * 0.33), int(itw * 0.67)]
+        fold_strength = 0.06  # very subtle
+        for fx in fold_positions:
+            abs_x = ox + min(fx, tw - 1)
+            if 0 < abs_x < pw - 1:
+                fade = max(0, 1.0 - abs(fx - itw / 2) / (itw * 0.25)) * fold_strength
+                if fade > 0.005:
+                    region = layer_np[oy : oy + th, max(0, abs_x - 1) : abs_x + 1]
+                    if region.size > 0:
+                        alpha_aware = region[:, :, 3:4].astype(float) / 255.0
+                        darken = (1.0 - fade) * alpha_aware
+                        region[:, :, :3] = np.clip(
+                            region[:, :, :3].astype(float) * darken, 0, 255
+                        ).astype(np.uint8)
+
+        # Edge softening: slightly darken the border of the garment
+        # to simulate subtle cast shadow from garment onto body
+        edge_px = max(2, int(feather_px * 1.5))
+        for dx in range(-edge_px, edge_px + 1):
+            for dy in range(-edge_px, edge_px + 1):
+                abs_x = ox + dx
+                abs_y = oy + dy
+                if 0 <= abs_x < pw and 0 <= abs_y < ph:
+                    alpha_at = layer_np[abs_y, abs_x, 3]
+                    if 10 < alpha_at < 245:
+                        edge_dist = max(abs(dx), abs(dy))
+                        falloff = max(0, 1.0 - edge_dist / float(edge_px)) * 0.12
+                        if falloff > 0.005:
+                            layer_np[abs_y, abs_x, :3] = np.clip(
+                                layer_np[abs_y, abs_x, :3].astype(float) * (1.0 - falloff), 0, 255
+                            ).astype(np.uint8)
+
+        layer = Image.fromarray(layer_np, mode="RGBA")
+    except Exception:
+        pass  # If realism pass fails, fall back to basic composite
 
     out = Image.alpha_composite(base, layer).convert("RGB")
     engine_tag = "top_warp_v2_pose" if _used_pose else "top_warp_v1_gradient"
@@ -512,6 +572,14 @@ def tryon_skirt_warp(
     *,
     alpha_feather_ratio: float = 0.012,
 ) -> tuple[Image.Image, WarpMetadata]:
+    """
+    Warp skirt/dress onto person using MediaPipe keypoints when available.
+
+    When MediaPipe keypoints are available, uses hip landmarks for precise
+    skirt placement and applies a trapezoid warp (wider at hem, narrower at waist)
+    to simulate the skirt conforming to the body silhouette.
+    Falls back to gradient energy estimation if keypoints are unavailable.
+    """
     base = person_image.convert("RGBA")
     pw, ph = base.size
 
@@ -521,34 +589,268 @@ def tryon_skirt_warp(
     if gw < 16 or gh < 16:
         raise ValueError("garment too small for skirt warp")
 
-    # Reuse pants adaptive bounds, but warp a single piece (skirt/dress has no leg split).
-    gray = np.asarray(person_image.convert("L"), dtype=np.float32)
-    _x0, _x1, waist_y, ankle_y = _estimate_lower_body_bounds(gray)
-    x0 = _clamp_int(_x0 - int((_x1 - _x0) * 0.02), 0, pw - 2)
-    x1 = _clamp_int(_x1 + int((_x1 - _x0) * 0.02), x0 + 2, pw)
+    # ── MediaPipe 优先路径 ──────────────────────────────────────────────────
+    kpts = detect_pose_keypoints(person_image)
+    _used_pose = False
+
+    if kpts:
+        bounds = get_body_bounds_from_keypoints(kpts, pw, ph, "bottom")
+        if bounds.get("valid"):
+            x0 = bounds["x0"]
+            x1 = bounds["x1"]
+            waist_y = bounds.get("waist_y", int(ph * 0.40))
+            ankle_y = bounds.get("ankle_y", int(ph * 0.90))
+            _ = bounds.get("hip_width", x1 - x0)  # available for future use
+            _used_pose = True
+
+    if not _used_pose:
+        # ── 梯度能量 fallback ────────────────────────────────────────────────
+        gray = np.asarray(person_image.convert("L"), dtype=np.float32)
+        fg = _person_foreground_mask(person_image)
+        b = None
+        if fg is not None:
+            b = _bounds_from_mask(fg, y0=int(ph * 0.28), y1=int(ph * 0.98), col_q=0.70, row_q=0.55)
+        if b is not None:
+            x0, x1, y_top, y_bottom = b
+            waist_y = _clamp_int(
+                int(y_top + (y_bottom - y_top) * 0.15), int(ph * 0.32), int(ph * 0.58)
+            )
+            ankle_y = _clamp_int(y_bottom, int(ph * 0.75), int(ph * 0.98))
+        else:
+            x0, x1, waist_y, ankle_y = _estimate_lower_body_bounds(gray)
+
+        # Stabilize horizontal center
+        mid = (x0 + x1) // 2
+        center = pw // 2
+        drift = int(mid - center)
+        if abs(drift) > int(pw * 0.12):
+            shift = int(-0.65 * drift)
+            bw = x1 - x0
+            x0 = _clamp_int(x0 + shift, 0, pw - 2)
+            x1 = _clamp_int(x0 + bw, x0 + 2, pw)
+
+    # Add horizontal padding for skirt width (skirts typically wider than pants)
+    pad_x = int((x1 - x0) * 0.08)
+    x0 = _clamp_int(x0 - pad_x, 0, pw - 2)
+    x1 = _clamp_int(x1 + pad_x, x0 + 2, pw)
+
     y0 = _clamp_int(int(waist_y - ph * 0.06), int(ph * 0.22), int(ph * 0.70))
     y1 = _clamp_int(int(ankle_y), y0 + 2, ph)
     tw = max(2, x1 - x0)
     th = max(2, y1 - y0)
 
-    g = g.resize((tw, th), Image.Resampling.LANCZOS)
+    # Scale garment to fit target box
+    g_resized = g.resize((tw, th), Image.Resampling.LANCZOS)
+
+    # Apply trapezoid warp for A-line skirt effect (narrower at waist, wider at hem)
+    if _used_pose and tw >= 16 and th >= 16:
+        waist_half_w = _clamp_int(int(tw * 0.42), 4, tw // 2)
+        hem_half_w = _clamp_int(int(tw * 0.50), waist_half_w + 2, tw // 2)
+        if abs(hem_half_w - waist_half_w) > 4:
+            top_inset = tw // 2 - waist_half_w
+            bot_inset = tw // 2 - hem_half_w
+            quad = (
+                top_inset,
+                0,  # 左上
+                tw - top_inset,
+                0,  # 右上
+                tw - bot_inset,
+                th,  # 右下
+                bot_inset,
+                th,  # 左下
+            )
+            g_resized = _pil_quad_warp(g_resized, (tw, th), quad)
+
     layer = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
-    layer.paste(g, (x0, y0), g)
+    layer.paste(g_resized, (x0, y0), g_resized)
 
     feather_px = _clamp_int(int(max(pw, ph) * float(alpha_feather_ratio)), 1, 12)
     layer = _feather_alpha(layer, radius_px=feather_px)
 
-    protect = _upper_protect_mask((pw, ph), protect_until_y=int(ph * 0.24))
+    # Protect upper body (skirt starts at waist, protect above hip level)
+    protect = _upper_protect_mask((pw, ph), protect_until_y=int(waist_y - ph * 0.08))
     r, gg, b, a = layer.split()
     a = ImageChops.multiply(a, protect)
     layer = Image.merge("RGBA", (r, gg, b, a))
 
     out = Image.alpha_composite(base, layer).convert("RGB")
+    engine_tag = "skirt_warp_v2_pose" if _used_pose else "skirt_warp_v1_gradient"
     meta = WarpMetadata(
-        engine="skirt_warp_v1",
+        engine=engine_tag,
         waistband_box=(x0, y0, x1, y0 + max(2, int((y1 - y0) * 0.15))),
         left_leg_box=(x0, y0, (x0 + x1) // 2, y1),
         right_leg_box=((x0 + x1) // 2, y0, x1, y1),
         alpha_feather_px=feather_px,
     )
     return out, meta
+
+
+def overlay_top_onto_ai_result(
+    ai_result: Image.Image,
+    person_image: Image.Image,
+    garment_image: Image.Image,
+    *,
+    garment_alpha: float = 0.90,
+) -> tuple[Image.Image, dict]:
+    """Replace garment in AI try-on result with pixel-perfect original garment.
+
+    Strategy (all in AI result's coordinate system):
+    1. Detect pose on AI result to get accurate garment region coordinates.
+    2. Scale original garment to cover region, preserving aspect ratio.
+    3. Absolute alpha blend: garment * garment_alpha + ai * (1 - garment_alpha).
+    4. Face/neck protected.
+
+    Args:
+        ai_result: AI-generated try-on result (realistic fit but garment may differ)
+        person_image: Original person image (used for pose as fallback)
+        garment_image: Original garment product photo
+        garment_alpha: 0.0-1.0, how much original garment to use (0.90 = 90% original)
+
+    Returns:
+        (result_image, metadata_dict)
+    """
+    import logging as _log
+
+    _logger = _log.getLogger(__name__)
+
+    try:
+        # ── Step 1: ALL coordinates in AI result's coordinate system ──────────────
+        ai_w, ai_h = ai_result.size
+        ai_rgb = np.array(ai_result.convert("RGB"), dtype=np.float32)
+
+        # Try pose detection on AI result first (accurate garment location)
+        kpts = None
+        body_valid = False
+        try:
+            kpts = detect_pose_keypoints(ai_result)
+        except Exception:
+            pass
+
+        if kpts:
+            bounds = get_body_bounds_from_keypoints(kpts, ai_w, ai_h, "top")
+            if bounds.get("valid"):
+                bx0, bx1 = int(bounds["x0"]), int(bounds["x1"])
+                neck_y = int(bounds["neck_y"])
+                waist_y = int(bounds["waist_y"])
+                body_valid = True
+
+        # Fallback: foreground mask on AI result
+        if not body_valid:
+            fg = _person_foreground_mask(ai_result)
+            if fg is not None:
+                rows = np.any(fg, axis=1)
+                cols = np.any(fg, axis=0)
+                if rows.any() and cols.any():
+                    y_top = int(np.where(rows)[0][0])
+                    y_bot = int(np.where(rows)[0][-1])
+                    x_lft = int(np.where(cols)[0][0])
+                    x_rgt = int(np.where(cols)[0][-1])
+                    bx0 = max(0, int(x_lft - ai_w * 0.03))
+                    bx1 = min(ai_w, int(x_rgt + ai_w * 0.03))
+                    body_span = y_bot - y_top
+                    neck_y = y_top + int(body_span * 0.18)
+                    waist_y = y_top + int(body_span * 0.52)
+                    body_valid = True
+
+        # Absolute fallback: fraction of AI result
+        if not body_valid:
+            bx0, bx1 = int(ai_w * 0.20), int(ai_w * 0.80)
+            neck_y = int(ai_h * 0.15)
+            waist_y = int(ai_h * 0.50)
+
+        # Garment region: neck to waist on AI result
+        y0 = max(0, min(int(neck_y - ai_h * 0.02), int(ai_h * 0.40)))
+        y1 = max(y0 + 2, min(int(waist_y + ai_h * 0.06), int(ai_h * 0.72)))
+        region_w = bx1 - bx0
+        region_h = y1 - y0
+
+        # Garment natural aspect ratio
+        g_orig = cutout_garment_rgba(garment_image).cropped.convert("RGBA")
+        gw, gh = g_orig.size
+        if gw < 16 or gh < 16:
+            return ai_result, {"engine": "ai_only", "reason": "garment too small"}
+
+        _logger.info(
+            "overlay: ai_size=%dx%d garment=%dx%d region=[%d,%d,%d,%d] rw=%d rh=%d",
+            ai_w,
+            ai_h,
+            gw,
+            gh,
+            bx0,
+            y0,
+            bx1,
+            y1,
+            region_w,
+            region_h,
+        )
+
+        # ── Step 2: Scale garment to COVER region (preserve aspect ratio) ──────────
+        # Scale so garment fully covers the region (may overflow edges — we crop it)
+        scale = max(region_w / float(gw), region_h / float(gh))
+        scaled_w = max(2, int(gw * scale))
+        scaled_h = max(2, int(gh * scale))
+        g_scaled = g_orig.resize((scaled_w, scaled_h), Image.Resampling.LANCZOS)
+
+        # Center the scaled garment on the region
+        paste_x = bx0 + (region_w - scaled_w) // 2
+        paste_y = y0 + (region_h - scaled_h) // 2
+
+        # Clamp so it stays on canvas
+        paste_x = max(0, min(paste_x, ai_w - 2))
+        paste_y = max(0, min(paste_y, ai_h - 2))
+        fit_w = min(scaled_w, ai_w - paste_x)
+        fit_h = min(scaled_h, ai_h - paste_y)
+        if fit_w < 2 or fit_h < 2:
+            return ai_result, {"engine": "ai_only", "reason": "garment doesn't fit"}
+
+        g_fitted = g_scaled.crop((0, 0, fit_w, fit_h))
+
+        # ── Step 3: Feathered alpha layer ─────────────────────────────────────────
+        layer = Image.new("RGBA", (ai_w, ai_h), (0, 0, 0, 0))
+        layer.paste(g_fitted, (paste_x, paste_y), g_fitted)
+        feather_px = max(1, int(min(ai_w, ai_h) * 0.015))
+        layer = _feather_alpha(layer, radius_px=feather_px)
+
+        # Protect face/neck
+        protect = _upper_protect_mask((ai_w, ai_h), protect_until_y=int(ai_h * 0.22))
+        r_ch, g_ch, b_ch, a_ch = layer.split()
+        a_ch = ImageChops.multiply(a_ch, protect)
+        layer = Image.merge("RGBA", (r_ch, g_ch, b_ch, a_ch))
+
+        # ── Step 4: Absolute alpha blend ─────────────────────────────────────────
+        # result = garment * (alpha * garment_alpha) + ai * (1 - alpha * garment_alpha)
+        layer_arr = np.array(layer, dtype=np.float32)
+        layer_alpha = layer_arr[:, :, 3] / 255.0  # HxW
+        strength = layer_alpha * garment_alpha  # HxW
+
+        r = np.clip(
+            layer_arr[:, :, 0] * strength + ai_rgb[:, :, 0] * (1.0 - strength),
+            0,
+            255,
+        ).astype(np.uint8)
+        g_out = np.clip(
+            layer_arr[:, :, 1] * strength + ai_rgb[:, :, 1] * (1.0 - strength),
+            0,
+            255,
+        ).astype(np.uint8)
+        b_out = np.clip(
+            layer_arr[:, :, 2] * strength + ai_rgb[:, :, 2] * (1.0 - strength),
+            0,
+            255,
+        ).astype(np.uint8)
+
+        result = Image.fromarray(np.stack([r, g_out, b_out], axis=2), mode="RGB")
+
+        return result, {
+            "engine": "ai_warp_hybrid",
+            "overlay_region": {"x0": bx0, "y0": y0, "x1": bx1, "y1": y1},
+            "garment_original_size": (gw, gh),
+            "garment_scaled_size": (scaled_w, scaled_h),
+            "garment_alpha": garment_alpha,
+            "pose_detected": kpts is not None,
+        }
+    except Exception as e:
+        import traceback
+
+        _logger.warning("overlay_top_onto_ai_result failed: %s\n%s", e, traceback.format_exc())
+        return ai_result, {"engine": "ai_only", "reason": str(e)}

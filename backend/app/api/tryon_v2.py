@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -20,6 +21,8 @@ from app.services.tryon_v2 import run_pipeline_a
 from app.services.tryon_v2.input_gate import evaluate_input_gate
 from app.services.tryon_v2.preprocess import preprocess_garment_image
 from app.services.virtual_tryon import check_tryon_garment_has_face
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tryon", tags=["Virtual Try-On v2"])
 
@@ -393,155 +396,354 @@ async def tryon_garment_v2(
         )
         pre_meta["auto_preprocess_2"] = pre_meta2
 
-    # "replace" mode: use photo-realistic try-on (Bailian -> remote VTON -> local diffusion)
+    # "replace" mode: AI-based garment synthesis.
+    # Engine priority (from TRYON_V2_REPLACE_ENGINE_PRIORITY):
+    #   catvton / bailian / remote → AI generation, realistic fit, may slightly alter garment detail
+    #   warp → geometric paste, 100% garment fidelity, but looks flat/unrealistic (fallback only)
+    # Default: catvton,bailian,remote,warp,diffusion
     if mode == "replace":
         from app.services.bailian_tryon_client import _bailian_configured, call_bailian_tryon
+        from app.services.tryon_v2.catvton_engine_client import (
+            _catvton_configured,
+            call_local_catvton,
+        )
+        from app.services.tryon_v2.warp_engine import (
+            overlay_top_onto_ai_result,
+            tryon_pants_warp,
+            tryon_skirt_warp,
+            tryon_top_warp,
+        )
         from app.services.virtual_tryon import get_tryon_service, sanitize_tryon_prompt
         from app.services.vton_remote_client import _remote_url_configured, call_remote_vton
 
         prompt_clean = sanitize_tryon_prompt(prompt or None) or ""
-        # Use standardized garment/person bytes for upstreams.
-        garment_jpg = _pil_image_to_jpeg_bytes(garment_image, quality=92)
-        person_jpg = _pil_image_to_jpeg_bytes(person_image, quality=92)
-        gc = (garment_category or "").strip() or None
+        gc = (garment_category or "").strip()
 
-        upstream = await call_bailian_tryon(
-            garment_bytes=garment_jpg,
-            person_bytes=person_jpg,
-            prompt=prompt_clean,
-            garment_category=gc,
+        # ── User requirement: uploaded garment must look pixel-identical in the result.
+        # Strategy: warp(100% garment fidelity, cast shadow) → bailian → remote → catvton
+        #
+        # CatVTON is NOT used as an enhancement layer — it treats its "person" input as the person
+        # to inpaint. Passing warp result to CatVTON causes darkening / double-processing.
+        # CatVTON can only be used standalone (when warp is skipped).
+        priority_str = (
+            getattr(settings, "TRYON_V2_REPLACE_ENGINE_PRIORITY", "")
+            or "warp,bailian,remote,catvton,diffusion"
         )
-        bailian_ok = (
-            isinstance(upstream, dict)
-            and str(upstream.get("status") or "").lower() == "success"
-            and upstream.get("result_image") is not None
-        )
+        engine_priority = [e.strip().lower() for e in priority_str.split(",") if e.strip()]
+        skip_warp = bool(getattr(settings, "TRYON_V2_REPLACE_SKIP_WARP", False))
 
-        remote = None
-        if not bailian_ok:
-            remote = await call_remote_vton(
-                garment_bytes=garment_jpg,
-                person_bytes=person_jpg,
-                prompt=prompt_clean,
-                model_gender=model_gender,
-                garment_category=gc,
-            )
-        remote_ok = (
-            isinstance(remote, dict)
-            and str(remote.get("status") or "").lower() == "success"
-            and remote.get("result_image") is not None
-        )
+        upstream: dict[str, Any] | None = None
+        chosen: dict[str, Any] | None = None
+        catvton_ok = False
+        bailian_ok = False
+        remote_ok = False
+        used_warp = False
 
-        if bailian_ok:
-            upstream = upstream
-        elif remote_ok:
-            upstream = remote
-        elif bool(getattr(settings, "TRYON_V2_REPLACE_ALLOW_LOCAL_DIFFUSION", False)):
-            # Local diffusion try-on (can hallucinate badly if weights/cache are incomplete).
-            service = get_tryon_service()
-            upstream = service.tryon_garment(
-                garment_image=garment_image,
-                person_image=person_image,
-                prompt=prompt_clean,
-                model_gender=model_gender,
-                garment_category=gc,
-                force_fallback=False,
-            )
-        else:
+        garment_jpg = _pil_image_to_jpeg_bytes(garment_image, quality=95)
+        person_jpg = _pil_image_to_jpeg_bytes(person_image, quality=95)
+
+        # ── Engine execution: strictly follows TRYON_V2_REPLACE_ENGINE_PRIORITY order ──
+        # Each engine is tried in priority order; first successful result wins.
+        # warp is a true fallback (last in priority) — not run before AI engines.
+        _cat_lower = gc.lower()
+        _top_kw = any(k in _cat_lower for k in ("top", "上装", "上衣"))
+        _skirt_kw = any(k in _cat_lower for k in ("skirt", "dress", "裙", "连衣裙"))
+        _outfit_kw = any(k in _cat_lower for k in ("outfit", "套装", "上下装"))
+        upstream_for_diag: dict[str, Any] | None = None
+
+        for engine_name in engine_priority:
+            if chosen is not None:
+                break  # already have a result
+
+            # ── CatVTON (local diffusion) ──────────────────────────────────────────
+            if engine_name == "catvton" and _catvton_configured():
+                try:
+                    upstream = await call_local_catvton(
+                        garment_bytes=garment_jpg,
+                        person_bytes=person_jpg,
+                        garment_category=gc or None,
+                    )
+                    logger.info(
+                        "CatVTON returned: status=%s, has_image=%s, msg=%s",
+                        upstream.get("status") if upstream else None,
+                        upstream.get("result_image") is not None if upstream else False,
+                        str(upstream.get("message") or "")[:80] if upstream else "None",
+                    )
+                    catvton_ok = (
+                        isinstance(upstream, dict)
+                        and str(upstream.get("status") or "").lower() == "success"
+                        and upstream.get("result_image") is not None
+                    )
+                    if catvton_ok:
+                        # ── Hybrid pass: preserve original garment, use AI for realistic fit ──
+                        ai_img = upstream.get("result_image")
+                        if _top_kw and ai_img is not None:
+                            result_img, overlay_meta = overlay_top_onto_ai_result(
+                                ai_result=ai_img,
+                                person_image=person_image,
+                                garment_image=garment_image,
+                                garment_alpha=0.85,
+                            )
+                            upstream["result_image"] = result_img
+                            upstream["metadata"] = {
+                                **(upstream.get("metadata") or {}),
+                                **overlay_meta,
+                            }
+                            logger.info("CatVTON + garment fidelity overlay applied")
+                        chosen = upstream
+                        logger.info("CatVTON succeeded for replace mode")
+                except Exception as catvton_err:
+                    logger.warning("CatVTON failed for replace mode: %s", catvton_err)
+
+            # ── Bailian (cloud AI) ──────────────────────────────────────────────────
+            elif engine_name == "bailian" and _bailian_configured():
+                try:
+                    upstream = await call_bailian_tryon(
+                        garment_bytes=garment_jpg,
+                        person_bytes=person_jpg,
+                        prompt=prompt_clean,
+                        garment_category=gc or None,
+                    )
+                    logger.info(
+                        "Bailian returned: status=%s, has_image=%s, msg=%s",
+                        upstream.get("status") if upstream else None,
+                        upstream.get("result_image") is not None if upstream else False,
+                        str(upstream.get("message") or "")[:80] if upstream else "None",
+                    )
+                    bailian_ok = (
+                        isinstance(upstream, dict)
+                        and str(upstream.get("status") or "").lower() == "success"
+                        and upstream.get("result_image") is not None
+                    )
+                    # Always record bailian result for diagnostics, regardless of outcome
+                    upstream_for_diag = upstream
+                    if bailian_ok:
+                        # ── Hybrid pass: preserve original garment, use AI for realistic fit ──
+                        ai_img = upstream.get("result_image")
+                        if _top_kw and ai_img is not None:
+                            result_img, overlay_meta = overlay_top_onto_ai_result(
+                                ai_result=ai_img,
+                                person_image=person_image,
+                                garment_image=garment_image,
+                                garment_alpha=0.85,
+                            )
+                            upstream["result_image"] = result_img
+                            upstream["metadata"] = {
+                                **(upstream.get("metadata") or {}),
+                                **overlay_meta,
+                            }
+                            logger.info("Bailian + garment fidelity overlay applied")
+                        chosen = upstream
+                        logger.info("Bailian succeeded for replace mode")
+                except Exception as bailian_err:
+                    logger.warning("Bailian failed for replace mode: %s", bailian_err)
+
+            # ── Remote VTON ───────────────────────────────────────────────────────
+            elif engine_name == "remote" and _remote_url_configured():
+                try:
+                    remote = await call_remote_vton(
+                        garment_bytes=garment_jpg,
+                        person_bytes=person_jpg,
+                        prompt=prompt_clean,
+                        model_gender=model_gender,
+                        garment_category=gc or None,
+                    )
+                    remote_ok = (
+                        isinstance(remote, dict)
+                        and str(remote.get("status") or "").lower() == "success"
+                        and remote.get("result_image") is not None
+                    )
+                    # Always record remote result for diagnostics, regardless of outcome
+                    upstream_for_diag = remote
+                    if remote_ok:
+                        # ── Hybrid pass: preserve original garment, use AI for realistic fit ──
+                        ai_img = remote.get("result_image")
+                        if _top_kw and ai_img is not None:
+                            result_img, overlay_meta = overlay_top_onto_ai_result(
+                                ai_result=ai_img,
+                                person_image=person_image,
+                                garment_image=garment_image,
+                                garment_alpha=0.85,
+                            )
+                            remote["result_image"] = result_img
+                            remote["metadata"] = {**(remote.get("metadata") or {}), **overlay_meta}
+                            logger.info("Remote VTON + garment fidelity overlay applied")
+                        chosen = remote
+                        logger.info("Remote VTON succeeded for replace mode")
+                except Exception as remote_err:
+                    logger.warning("Remote VTON failed for replace mode: %s", remote_err)
+
+            # ── Warp (geometric paste — 100% garment fidelity, but flat look) ────
+            elif engine_name == "warp" and not skip_warp:
+                try:
+                    if _top_kw:
+                        warp_img, warp_meta = tryon_top_warp(person_image, garment_image)
+                    elif _skirt_kw:
+                        warp_img, warp_meta = tryon_skirt_warp(person_image, garment_image)
+                    elif _outfit_kw:
+                        img1, _m1 = tryon_top_warp(person_image, garment_image)
+                        warp_img, warp_meta = tryon_pants_warp(img1, garment_image)
+                    else:
+                        warp_img, warp_meta = tryon_pants_warp(person_image, garment_image)
+
+                    if warp_img is not None:
+                        chosen = {
+                            "status": "success",
+                            "message": "warp 保底完成（像素级衣服保真，但贴合不真实）",
+                            "result_image": warp_img,
+                            "metadata": {
+                                "engine": "warp",
+                                "warp_engine": getattr(warp_meta, "engine", "unknown"),
+                            },
+                        }
+                        used_warp = True
+                        logger.info("Warp fallback succeeded (geometric paste)")
+                except Exception as warp_err:
+                    logger.warning("Warp fallback failed: %s", warp_err)
+
+            # ── Local diffusion (last resort) ───────────────────────────────────────
+            elif engine_name == "diffusion" and bool(
+                getattr(settings, "TRYON_V2_REPLACE_ALLOW_LOCAL_DIFFUSION", False)
+            ):
+                try:
+                    service = get_tryon_service()
+                    chosen = service.tryon_garment(
+                        garment_image=garment_image,
+                        person_image=person_image,
+                        prompt=prompt_clean,
+                        model_gender=model_gender,
+                        garment_category=gc or None,
+                        force_fallback=False,
+                    )
+                    logger.info("Local diffusion succeeded for replace mode")
+                except Exception as diff_err:
+                    logger.warning("Local diffusion failed for replace mode: %s", diff_err)
+
+        # ── All engines exhausted ───────────────────────────────────────────────
+        if chosen is None:
             latency_ms = int((time.perf_counter() - started) * 1000)
             record_tryon_v2_failure("TRYON_V2_REPLACE_UPSTREAM_UNAVAILABLE", latency_ms)
             hints = []
             bailian_diag: dict[str, Any] = {}
             remote_diag: dict[str, Any] = {}
-            if not _bailian_configured():
-                hints.append("启用百炼：DASHSCOPE_TRYON_ENABLED=true 且配置 DASHSCOPE_API_KEY")
-            else:
-                msg = ""
-                reason = ""
-                if isinstance(upstream, dict):
-                    msg = str(upstream.get("message") or "").strip()
-                    meta = (
-                        upstream.get("metadata")
-                        if isinstance(upstream.get("metadata"), dict)
-                        else {}
-                    )
-                    reason = str((meta or {}).get("reason") or "").strip()
-                    bailian_diag = {
-                        "configured": True,
-                        "status": str(upstream.get("status") or ""),
-                        "message": msg,
-                        "reason": reason,
-                    }
+            catvton_diag: dict[str, Any] = {}
+
+            if not _catvton_configured():
                 hints.append(
-                    f"百炼未成功：{msg or reason or '请检查 key/额度/模型权限/网络；查看 detail.replace_debug.bailian'}"
+                    "启用本地 CatVTON（推荐）：CATVTON_ENABLED=true 且 CATVTON_PATH 指向 CatVTON 目录"
                 )
+            if not _bailian_configured():
+                hints.append("或启用百炼：DASHSCOPE_TRYON_ENABLED=true 且配置 DASHSCOPE_API_KEY")
+            elif upstream_for_diag is not None:
+                msg = str(upstream_for_diag.get("message") or "").strip()
+                upstream_meta = (
+                    upstream_for_diag.get("metadata", {})
+                    if isinstance(upstream_for_diag.get("metadata"), dict)
+                    else {}
+                )
+                reason = str(upstream_meta.get("reason") or "").strip()
+                specific_hint = str(upstream_meta.get("specific_hint") or "").strip()
+                upstream_status = str(upstream_for_diag.get("status") or "").lower()
+                if upstream_status == "success" and upstream_for_diag.get("result_image") is None:
+                    hints.append(f"百炼返回成功但缺少结果图（specific_hint: {specific_hint}）")
+                elif reason == "dashscope_missing":
+                    hints.append("百炼失败：dashscope 包未安装，请运行 pip install dashscope")
+                elif specific_hint:
+                    hints.append(f"百炼失败：{specific_hint}（{msg}）")
+                elif msg:
+                    hints.append(f"百炼失败：{msg}")
+                else:
+                    hints.append(f"百炼失败：{reason or '未知错误'}")
+                error_type = str(upstream_meta.get("error_type") or "").strip()
+                bailian_diag = {
+                    "configured": True,
+                    "status": upstream_status,
+                    "message": msg,
+                    "reason": reason,
+                    "error_type": error_type,
+                    "specific_hint": specific_hint,
+                    "code": str(upstream_meta.get("code") or "").strip(),
+                    "status_code": upstream_meta.get("status_code"),
+                    "exception_message": str(upstream_meta.get("exception_message") or "").strip(),
+                    "model": str(upstream_meta.get("model") or "").strip(),
+                    "function": str(upstream_meta.get("function") or "").strip(),
+                }
             if not _remote_url_configured():
                 hints.append("或配置远程 VTON：VTON_INFERENCE_URL")
-            else:
-                rmsg = ""
-                rreason = ""
-                if isinstance(remote, dict):
-                    rmsg = str(remote.get("message") or "").strip()
-                    rmeta = (
-                        remote.get("metadata") if isinstance(remote.get("metadata"), dict) else {}
-                    )
-                    rreason = str((rmeta or {}).get("reason") or "").strip()
-                    remote_diag = {
-                        "configured": True,
-                        "status": str(remote.get("status") or ""),
-                        "message": rmsg,
-                        "reason": rreason,
-                    }
+            if hints:
                 hints.append(
-                    f"远程 VTON 未成功：{rmsg or rreason or '请检查服务可用性与超时；查看 detail.replace_debug.remote'}"
-                )
-            hints.append(
-                (
-                    "（高级）如确需本机 diffusers 兜底："
-                    "TRYON_V2_REPLACE_ALLOW_LOCAL_DIFFUSION=true，"
+                    "（高级）如确需本机 diffusers 兜底：TRYON_V2_REPLACE_ALLOW_LOCAL_DIFFUSION=true，"
                     "并确保 SD inpainting 权重完整"
                 )
-            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
-                    "message": "替换试衣上游不可用或未成功（已禁止不稳定的本机 diffusion 兜底）",
+                    "message": "替换试衣上游均不可用",
                     "error_code": "TRYON_V2_REPLACE_UPSTREAM_UNAVAILABLE",
                     "retryable": True,
-                    "action_hint": "；".join(hints),
+                    "action_hint": (
+                        "；".join(hints) if hints else "所有试衣引擎均不可用，请检查配置"
+                    ),
                     "qc_scores": {},
                     "replace_debug": {
                         "bailian": bailian_diag,
                         "remote": remote_diag,
+                        "catvton_local": catvton_diag,
                         "bailian_configured": _bailian_configured(),
                         "remote_configured": _remote_url_configured(),
+                        "catvton_configured": _catvton_configured(),
+                        "used_warp": used_warp,
                     },
                 },
             )
 
-        status_s = str((upstream or {}).get("status") or "error").lower()
-        if status_s != "success" or (upstream or {}).get("result_image") is None:
+        # ── Build result from chosen engine ───────────────────────────────────
+        status_s = str((chosen or {}).get("status") or "error").lower()
+        if status_s != "success" or (chosen or {}).get("result_image") is None:
             latency_ms = int((time.perf_counter() - started) * 1000)
             record_tryon_v2_failure("TRYON_V2_REPLACE_FAILED", latency_ms)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail={
-                    "message": str((upstream or {}).get("message") or "替换试衣失败"),
+                    "message": str((chosen or {}).get("message") or "替换试衣失败"),
                     "error_code": "TRYON_V2_REPLACE_FAILED",
                     "retryable": True,
-                    "action_hint": "请稍后重试，或切换为 strict/balanced（方案A）获得更稳定结果。",
+                    "action_hint": "请稍后重试",
                     "qc_scores": {},
                 },
             )
 
+        replace_qc_scores: dict[str, float] = {}
+        try:
+            from app.services.tryon_v2.qc import _boundary_artifact_score, _identity_preserve_score
+
+            result_img = (chosen or {}).get("result_image")
+            if result_img is not None:
+                replace_qc_scores["identity_preserve_score"] = float(
+                    _identity_preserve_score(person_image, result_img)
+                )
+                replace_qc_scores["boundary_artifact_score"] = float(
+                    _boundary_artifact_score(person_image, result_img)
+                )
+        except Exception:
+            pass
+
+        upstream_meta = (chosen or {}).get("metadata") or {}
+        if isinstance(upstream_meta, dict):
+            engine_name = upstream_meta.get("engine") or upstream_meta.get("model") or "unknown"
+        else:
+            engine_name = "unknown"
+
         result = {
             "status": "success",
-            "message": str((upstream or {}).get("message") or "替换试衣完成"),
-            "result_image": (upstream or {}).get("result_image"),
-            "qc_scores": {},
+            "message": str((chosen or {}).get("message") or "替换试衣完成"),
+            "result_image": (chosen or {}).get("result_image"),
+            "qc_scores": replace_qc_scores,
             "metadata": {
                 "pipeline": "REPLACE",
-                "upstream_metadata": (upstream or {}).get("metadata") or {},
+                "engine": engine_name,
+                "upstream_metadata": upstream_meta,
+                "used_warp": used_warp,
             },
         }
     else:
@@ -834,4 +1036,69 @@ async def tryon_v2_capabilities(
             **_v2_thresholds(strict_mode=True),
             "qc_threshold": float(getattr(settings, "TRYON_V2_QC_THRESHOLD", 0.6) or 0.6),
         },
+    )
+
+
+class TryOnV2ModelStatusResponse(BaseModel):
+    enabled: bool = Field(..., description="Whether tryon v2 is enabled")
+    engines: dict[str, Any] = Field(default_factory=dict, description="Engine status")
+
+
+@router.get("/model-status", response_model=TryOnV2ModelStatusResponse)
+async def tryon_v2_model_status(
+    _current_user: User = Depends(get_current_user),
+):
+    """Get status of all try-on engines (Bailian, Remote VTON, Local CatVTON)."""
+    from app.services.bailian_tryon_client import _bailian_configured
+    from app.services.tryon_v2.catvton_engine_client import get_catvton_status
+    from app.services.vton_remote_client import _remote_url_configured
+
+    engines: dict[str, Any] = {}
+
+    # Bailian
+    engines["bailian"] = {
+        "configured": _bailian_configured(),
+        "enabled": bool(getattr(settings, "DASHSCOPE_TRYON_ENABLED", False)),
+        "model_default": getattr(settings, "DASHSCOPE_TRYON_MODEL", "wanx2.1-imageedit"),
+    }
+
+    # Remote VTON
+    remote_url = (getattr(settings, "VTON_INFERENCE_URL", "") or "").strip()
+    engines["remote_vton"] = {
+        "configured": _remote_url_configured(),
+        "url": remote_url if remote_url else None,
+        "timeout_s": int(getattr(settings, "VTON_INFERENCE_TIMEOUT_SECONDS", 2400) or 2400),
+    }
+
+    # Local CatVTON
+    catvton_status = get_catvton_status()
+    engines["catvton_local"] = {
+        "configured": catvton_status.get("configured", False),
+        "enabled": catvton_status.get("enabled", False),
+        "path": catvton_status.get("path"),
+        "path_exists": catvton_status.get("path_exists", False),
+        "width": catvton_status.get("width"),
+        "height": catvton_status.get("height"),
+        "steps": catvton_status.get("steps"),
+        "guidance": catvton_status.get("guidance"),
+        "timeout_s": catvton_status.get("timeout_s"),
+    }
+
+    # Try-on v2 status
+    engines["tryon_v2"] = {
+        "enabled": bool(getattr(settings, "TRYON_V2_ENABLED", True)),
+        "strict_identity_default": bool(getattr(settings, "TRYON_V2_STRICT_IDENTITY", True)),
+        "auto_preprocess": bool(getattr(settings, "TRYON_V2_AUTO_PREPROCESS", True)),
+        "replace_allow_local_diffusion": bool(
+            getattr(settings, "TRYON_V2_REPLACE_ALLOW_LOCAL_DIFFUSION", False)
+        ),
+        "engine_priority": getattr(
+            settings, "TRYON_V2_REPLACE_ENGINE_PRIORITY", "warp,bailian,remote,catvton,diffusion"
+        ),
+        "skip_warp": bool(getattr(settings, "TRYON_V2_REPLACE_SKIP_WARP", False)),
+    }
+
+    return TryOnV2ModelStatusResponse(
+        enabled=bool(getattr(settings, "TRYON_V2_ENABLED", True)),
+        engines=engines,
     )

@@ -1,0 +1,93 @@
+# Implementation Plan
+
+- [x] 1. Write bug condition exploration test
+  - **Property 1: Bug Condition** - Bailian Error Diagnostics Missing
+  - **CRITICAL**: This test MUST FAIL on unfixed code - failure confirms the bug exists
+  - **DO NOT attempt to fix the test or the code when it fails**
+  - **NOTE**: This test encodes the expected behavior - it will validate the fix when it passes after implementation
+  - **GOAL**: Surface counterexamples that demonstrate the bug exists (incomplete bailian_diag, generic error hints)
+  - **Scoped PBT Approach**: For deterministic bugs, scope the property to concrete failing cases (invalid API key, quota exceeded, network timeout, success with no image)
+  - Test implementation details from Bug Condition in design:
+    - Mock `call_bailian_tryon` to return various error responses (invalid API key, quota exceeded, network timeout, success with no image)
+    - Call `tryon_garment_v2` with mode="replace" and Bailian configured
+    - Assert HTTP 503 response contains `replace_debug.bailian` with ALL available diagnostic fields (status, message, reason, error_type, specific_hint, status_code, code, exception_message, model, function)
+    - Assert action_hint contains specific error message derived from specific_hint (not generic like "百炼失败：未知错误")
+  - The test assertions should match the Expected Behavior Properties from design (Property 1: detailed diagnostics for all error scenarios)
+  - Run test on UNFIXED code
+  - **EXPECTED OUTCOME**: Test FAILS (this is correct - it proves the bug exists: bailian_diag missing fields, generic error hints)
+  - Document counterexamples found to understand root cause:
+    - Example 1: Invalid API key - bailian_diag missing status_code, code, specific_hint; action_hint is generic
+    - Example 2: Quota exceeded - bailian_diag incomplete; action_hint is generic
+    - Example 3: Network timeout - bailian_diag missing exception_message, error_type; action_hint is generic
+    - Example 4: Success with no image - bailian_diag incomplete; action_hint is generic
+  - Mark task complete when test is written, run, and failure is documented
+  - _Requirements: 2.2, 2.3, 2.4, 2.5_
+
+- [x] 2. Write preservation property tests (BEFORE implementing fix)
+  - **Property 2: Preservation** - Non-Replace Mode and Bailian Success Behavior
+  - **IMPORTANT**: Follow observation-first methodology
+  - Observe behavior on UNFIXED code for non-buggy inputs:
+    - mode="strict" or mode="balanced" requests use pipeline A (run_pipeline_a)
+    - mode="replace" with Bailian not configured skips Bailian and tries remote VTON or local diffusion
+    - mode="replace" with Bailian success saves result image and returns success response
+    - Fallback logic to remote VTON when Bailian fails is invoked
+    - Fallback logic to local diffusion when both Bailian and remote VTON fail and TRYON_V2_REPLACE_ALLOW_LOCAL_DIFFUSION=true is invoked
+  - Write property-based tests capturing observed behavior patterns from Preservation Requirements:
+    - Property: For all mode="strict" or mode="balanced" requests, fixed code produces identical behavior as unfixed code (calls run_pipeline_a, returns same response structure)
+    - Property: For all mode="replace" requests with Bailian not configured, fixed code produces identical behavior as unfixed code (skips Bailian, calls call_remote_vton)
+    - Property: For all mode="replace" requests with Bailian success, fixed code produces identical behavior as unfixed code (saves image, returns same response structure with result_image_url)
+    - Property: For all mode="replace" requests with Bailian failure and remote VTON configured, fixed code produces identical behavior as unfixed code (calls call_remote_vton, checks remote_ok, falls back to local diffusion if configured)
+  - Property-based testing generates many test cases for stronger guarantees
+  - Run tests on UNFIXED code
+  - **EXPECTED OUTCOME**: Tests PASS (this confirms baseline behavior to preserve)
+  - Mark task complete when tests are written, run, and passing on unfixed code
+  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.6_
+
+- [x] 3. Fix for Bailian error diagnostics
+
+  - [x] 3.1 Implement the fix in backend/app/api/tryon_v2.py
+    - Extract all diagnostic fields from upstream.metadata when Bailian is configured but fails:
+      - Extract status_code (HTTP status code from DashScope API)
+      - Extract code (error code from DashScope API response)
+      - Extract exception_message (exception message if call_bailian_tryon caught an exception)
+      - Extract model (model ID used for the call)
+      - Extract function (function name used for the call)
+      - Include all extracted fields in bailian_diag dict
+    - Prioritize specific_hint in error message construction:
+      - Check if specific_hint is available and non-empty first
+      - Construct hint like "百炼失败：{specific_hint}（{msg}）" if specific_hint is available
+      - Only fall back to generic hints if specific_hint is empty
+    - Handle all error scenarios comprehensively:
+      - Bailian configured but returns error status (extract all metadata fields)
+      - Bailian configured but returns None (add diagnostic entry with reason="bailian_none_response")
+      - Bailian configured but raises exception (ensure metadata is extracted from call_bailian_tryon response)
+      - Bailian configured but returns success with no result_image (add specific check and diagnostic with reason="dashscope_no_url")
+    - Update bailian_diag construction to include all available metadata fields:
+      - configured: True
+      - status: upstream.get("status")
+      - message: upstream.get("message")
+      - reason: metadata.get("reason")
+      - error_type: metadata.get("error_type")
+      - specific_hint: metadata.get("specific_hint")
+      - status_code: metadata.get("status_code")
+      - code: metadata.get("code")
+      - exception_message: metadata.get("exception_message")
+      - model: metadata.get("model")
+      - function: metadata.get("function")
+    - _Bug_Condition: isBugCondition(input) where input.mode == "replace" AND _bailian_configured() == True AND (upstream.status != "success" OR upstream.result_image is None) AND bailian_diag is empty or missing detailed error fields_
+    - _Expected_Behavior: expectedBehavior(result) from design - HTTP 503 error response with replace_debug.bailian containing all available diagnostic fields (status, message, reason, error_type, specific_hint, status_code, code, exception_message, model, function) and action_hint containing specific error message derived from specific_hint_
+    - _Preservation: Preservation Requirements from design - strict/balanced modes use pipeline A unchanged; Bailian not configured skips Bailian unchanged; Bailian success saves image and returns success response unchanged; fallback logic to remote VTON and local diffusion unchanged_
+    - _Requirements: 2.2, 2.3, 2.4, 2.5, 3.1, 3.2, 3.3, 3.4, 3.6_
+
+  - [x] 3.2 Verify bug condition exploration test now passes
+  - [x] 3.3 Verify preservation tests still pass
+
+- [x] 4. Checkpoint - Ensure all tests pass
+  - All 10 tests pass (5 bug condition + 5 preservation)
+  - Bug condition tests: test_bug_condition_bailian_error_diagnostics_missing (PBT), test_bug_invalid_api_key_scenario, test_bug_quota_exceeded_scenario, test_bug_network_timeout_scenario, test_bug_success_no_image_scenario
+  - Preservation tests: test_preservation_non_replace_modes_use_pipeline_a, test_preservation_bailian_not_configured_skips_bailian, test_preservation_bailian_success_returns_result, test_preservation_fallback_to_remote_vton_when_bailian_fails, test_preservation_fallback_to_local_diffusion_when_all_fail
+  - ✅ Task 3.1 修复已完成：提取所有诊断字段（status_code, code, exception_message, model, function）到 bailian_diag
+  - ✅ Task 3.1 修复已完成：优先使用 specific_hint 构建 action_hint
+  - ✅ Task 3.1 修复已完成：检测 success-with-no-image 场景并提供特定提示
+  - ✅ Task 3.2 bug condition 测试全部通过（5/5）
+  - ✅ Task 3.3 preservation 测试全部通过（5/5）
