@@ -4,6 +4,23 @@
 
 **本轮实现摘要**（百炼、Stub 服务、Flutter 单次请求、Windows JPEG 编码修复等）见 [`VTON_DELIVERY_2026-04.md`](VTON_DELIVERY_2026-04.md)。
 
+### CatVTON 本地深度学习引擎
+
+除了百炼和远程服务，后端还内置了 **CatVTON 本地推理引擎**（直接调用，无需独立服务进程）：
+
+- **引擎入口**：[`backend/app/services/tryon_v2/catvton_engine_client.py`](../backend/app/services/tryon_v2/catvton_engine_client.py) — 调用同目录的 `catvton_runner.py` 子进程（subprocess），避免 Python 依赖冲突
+- **子进程脚本**：[`vton_inference_service/catvton_runner.py`](../vton_inference_service/catvton_runner.py) — 独立的 CatVTON 推理脚本，支持 MediaPipe PoseLandmarker 生成掩码（无需 SCHP / DensePose）
+- **CatVTON 核心**：[`vton_inference_service/catvion_engine.py`](../vton_inference_service/catvton_engine.py) — CatVTONPipeline 封装，支持 bf16 / fp16 / fp32，自动下载 HuggingFace 权重
+
+配置项（`backend/.env`）：
+- `CATVTON_ENABLED=true` — 启用本地 CatVTON
+- `CATVTON_PATH=/path/to/CatVTON` — CatVTON 仓库目录（需含 `zhengchong_CatVTON` 权重，或首次运行时自动从 HuggingFace 下载）
+- `CATVTON_WIDTH=768`、`CATVTON_HEIGHT=1024`、`CATVTON_STEPS=50`、`CATVTON_GUIDANCE=2.5` — 推理参数
+- `CATVTON_REPAINT=true` — 是否在生成后用原图 repaint 背景
+- `CATVTON_TIMEOUT_SECONDS=600` — 超时秒数
+
+CatVTON 在 `replace` / `realistic` / `professional` 三种模式中均会被尝试使用。
+
 ### 百炼（DashScope）试衣
 
 - **开关**：`DASHSCOPE_TRYON_ENABLED=true` 且配置 `DASHSCOPE_API_KEY`（与控制台 API Key 一致）。
@@ -45,18 +62,24 @@ flowchart LR
 
 ## 开源模型选型（PoC / 生产参考）
 
+> **2026-04 已更新**：CatVTON 现已直接集成到主应用中（subprocess 调用），是当前默认推荐选项，支持 MediaPipe PoseLandmarker 自动掩码，无需 SCHP/DensePose。
+
 | 方向 | 代表项目 | 说明 | RTX 4060 8GB 提示 |
 |------|----------|------|-------------------|
-| 扩散类 VTON | OOTDiffusion、IDM-VTON、CatVTON | 针对「人 + 衣」训练，单张输出，比通用 inpainting 稳 | 常需 **fp16**、batch=1；OOM 时降分辨率或换更小 checkpoint |
+| 扩散类 VTON | **CatVTON**（已集成）/ OOTDiffusion / IDM-VTON | 针对「人 + 衣」训练，单张输出 | CatVTON 推荐：`<8GB VRAM`（bf16），MediaPipe 自动掩码，无需 SCHP/DensePose |
 | 传统 U-Net / warping | ACGPN、VITON-HD（偏老） | 资源占用可能更低，质感因版本而异 | 可优先做效果对比 PoC |
 
 建议流程：**固定 2～3 组人物图 + 商品图** → 在同一 GPU 上对比延迟、显存峰值与主观观感 → 再定集成形态（进程内 vs 独立服务）。详细步骤与记录表见 [`scripts/vton_poc/POC_RUNBOOK.md`](../scripts/vton_poc/POC_RUNBOOK.md)。
 
-## 独立推理服务（推荐）
+## 独立推理服务（HTTP）
 
-- 主应用（FastAPI）只做鉴权、配额、**转发**、存图，避免与推荐/CLIP 等争显存。
-- 部署：第二进程或 Docker（`--gpus all`），仅挂载 VTON 权重与依赖。
-- **最小可运行 HTTP 示例**（契约对齐、默认 **Stub 演示**）：[`vton_inference_service/`](../vton_inference_service/) — 将 `VTON_INFERENCE_URL` 指向该服务的 `/v1/tryon` 即可与主 API 联调；接入真实 OOTDiffusion 推理见该目录 `README.md`。
+主应用（FastAPI）可调用独立 VTON HTTP 服务（`VTON_INFERENCE_URL`），避免与推荐/CLIP 等争显存：
+
+- **CatVTON 模式**（由 `VTON_ENGINE=catvton` 驱动）：调用 `catvton_runner.py` subprocess，无需独立服务进程
+- **HTTP 服务**（`VTON_INFERENCE_URL`）：另一进程或 Docker（`--gpus all`），仅挂载 VTON 权重与依赖
+- **Stub 演示模式**：`VTON_STUB_MODE=true`，返回轻量叠图（仅用于流水线演示）
+
+[`vton_inference_service/`](../vton_inference_service/) 目录提供完整 HTTP 服务实现，契约与主客户端兼容。
 
 ## 远程契约（主 API → VTON 服务）
 

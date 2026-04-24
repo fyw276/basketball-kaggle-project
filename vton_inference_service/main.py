@@ -52,10 +52,10 @@ VTON_FORCE_ENGINE = os.environ.get("VTON_ENGINE", "auto").strip().lower()
 VTON_SERVICE_API_KEY = (os.environ.get("VTON_SERVICE_API_KEY") or "").strip()
 
 CATVTON_PATH = os.environ.get("CATVTON_PATH", "").strip()
-CATVTON_STEPS = int(os.environ.get("CATVTON_STEPS", "50"))
+CATVTON_STEPS = int(os.environ.get("CATVTON_STEPS", "25"))
 CATVTON_GUIDANCE = float(os.environ.get("CATVTON_GUIDANCE", "2.5"))
-CATVTON_WIDTH = int(os.environ.get("CATVTON_WIDTH", "768"))
-CATVTON_HEIGHT = int(os.environ.get("CATVTON_HEIGHT", "1024"))
+CATVTON_WIDTH = int(os.environ.get("CATVTON_WIDTH", "512"))
+CATVTON_HEIGHT = int(os.environ.get("CATVTON_HEIGHT", "768"))
 CATVTON_REPAINT = os.environ.get("CATVTON_REPAINT", "true").strip().lower() in (
     "1", "true", "yes", "on",
 )

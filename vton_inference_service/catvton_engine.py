@@ -314,12 +314,15 @@ class CatVTONEngine:
             repo_path = snapshot_download(repo_id="zhengchong/CatVTON")
 
         self.pipeline = CatVTONPipeline(
-            base_ckpt="booksforcharlie/stable-diffusion-inpainting",
+            base_ckpt="runwayml/stable-diffusion-inpainting",
             attn_ckpt=repo_path,
             attn_ckpt_version="mix",
             weight_dtype=self.weight_dtype,
             use_tf32=(self.mixed_precision in ("fp16", "bf16")),
             device=self.device,
+            skip_safety_check=True,
+            attention_slicing="auto",
+            enable_xformers=True,
         )
 
         # Mask processor for post-processing (feathering)
@@ -373,6 +376,8 @@ class CatVTONEngine:
                     (self.width, self.height), Image.LANCZOS
                 )
                 mask_resized = self.mask_processor.blur(body_mask, blur_factor=9)
+                # Additional Gaussian feather on edges for smoother garment boundary
+                mask_resized = self._feather_mask(mask_resized, feather_radius=3)
 
             # Generator for reproducibility
             generator = None
@@ -407,17 +412,25 @@ class CatVTONEngine:
             logger.error(f"CatVTON inference failed: {e}", exc_info=True)
             raise RuntimeError(f"CatVTON inference failed: {e}") from e
 
+    def _feather_mask(self, mask: Image.Image, feather_radius: int = 3) -> Image.Image:
+        """Apply Gaussian blur to mask edges for smooth garment boundaries."""
+        import cv2
+        mask_np = np.asarray(mask.convert("L"))
+        blurred = cv2.GaussianBlur(mask_np, (0, 0), sigmaX=feather_radius, sigmaY=feather_radius)
+        return Image.fromarray(blurred, mode="L")
+
     def _repaint_result(
         self, result: Image.Image, person: Image.Image, mask: Image.Image
     ) -> Image.Image:
-        result_np = np.array(result)
-        person_np = np.array(person)
-        mask_np = np.array(mask)
-        if mask_np.max() > 1:
-            mask_np = mask_np / 255.0
+        import cv2
+        result_np = np.array(result).astype(np.float32)
+        person_np = np.array(person).astype(np.float32)
+        mask_np = np.asarray(mask.convert("L")).astype(np.float32) / 255.0
+        # Feather mask edges to eliminate ghosting at blend boundary
+        mask_np = cv2.GaussianBlur(mask_np, (0, 0), sigmaX=3, sigmaY=3)
         mask_3ch = np.stack([mask_np] * 3, axis=-1)
-        repainted = (result_np * mask_3ch + person_np * (1 - mask_3ch)).astype(np.uint8)
-        return Image.fromarray(repainted)
+        repainted = result_np * mask_3ch + person_np * (1 - mask_3ch)
+        return Image.fromarray(repainted.astype(np.uint8))
 
     def warmup(self, num_steps: int = 1):
         logger.info("Warming up CatVTONEngine...")

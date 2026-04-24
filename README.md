@@ -1,6 +1,6 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-04-19（虚拟试衣：百炼可选接入、`VTON_INFERENCE_URL` 远程链路与 Stub 服务、Flutter 单次试衣请求与品类选择；Windows 下试衣结果 JPEG 保存修复；文档见 [`docs/VTON_DELIVERY_2026-04.md`](docs/VTON_DELIVERY_2026-04.md)）
+**最后更新**: 2026-04-24（虚拟试衣 v2：四种模式 stable/replace/realistic/professional，CatVTON 本地深度学习引擎集成，MediaPipe PoseLandmarker 掩码，后处理流水线增强）
 **状态**: ✅ 可用于演示与迭代（后端 FastAPI + Flutter Web/移动端）
 
 ## 项目简介
@@ -228,28 +228,33 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\push_and_run_remot
 
 更完整的 curl 示例见 [`backend/API_EXAMPLES.md`](backend/API_EXAMPLES.md)。
 
-### 虚拟试衣 v2（方案 A）
+### 虚拟试衣 v2（多模式）
 
-虚拟试衣 v2 接口统一挂在 **`http://<host>/api/v2`** 下，建议移动端采用“先预检再生成”的双阶段流程：
+虚拟试衣 v2 接口统一挂在 **`http://<host>/api/v2`** 下，提供四种模式，适用于不同场景：
+
+| 模式 | 说明 | 推荐场景 |
+|------|------|---------|
+| `stable`（默认） | 方案 A 几何贴合 + AI 增强，平衡速度与质量 | 日常使用 |
+| `replace` | AI 生成式合成，融合 CatVTON / 百炼 / Warp / Diffusion 多引擎 | 需要真实感时 |
+| `realistic` | CatVTON 深度学习，100% 保留商品细节 + 真实褶丝和光照 | 商品展示 |
+| `professional` | 精确分割 + 姿态拟合 + 服装消除 + 光照融合 + 严格验证 | 专业摇摇空级 |
+
+`realistic` 和 `professional` 模式依赖本地 CatVTON（需 `CATVTON_PATH` 已配置）。移动端建议采用"先预检再生成"的双阶段流程。
 
 > 移动端 `ApiClient` 默认 `baseUrl` 为 `/api/v1`，但 v2 方法会自动切换到 `/api/v2`，无需手动改基址。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/v2/tryon/validate-input` | 仅做输入门禁评估，不生成图片；返回 `passed/error_code/action_hint/qc_scores/thresholds` |
-| `POST` | `/api/v2/tryon/pants` | 方案 A 下装试衣生成；`multipart/form-data` 字段 `person_file`、`garment_file`、`garment_category`，可选 `mode=strict\|balanced` |
+| `POST` | `/api/v2/tryon/validate-input` | 仅做输入门限评估，不生成图片；返回 `passed/error_code/action_hint/qc_scores/thresholds` |
+| `POST` | `/api/v2/tryon/garment` | 多模式下装/上装试衣；`multipart/form-data` 字段 `person_file`、`garment_file`、`garment_category`、`mode` |
 | `GET` | `/api/v2/tryon/capabilities` | 查询 v2 能力开关、默认模式、支持品类与当前阈值（需登录） |
+| `GET` | `/api/v2/tryon/model-status` | CatVTON 等引擎就绪状态诊断（需登录） |
 
 后端配置项（`backend/.env`）：
-- `TRYON_BOTTOM_FORCE_FALLBACK`
-- `TRYON_V2_ENABLED`
-- `TRYON_V2_STRICT_IDENTITY`
-- `TRYON_V2_MIN_FULL_BODY_SCORE`
-- `TRYON_V2_MIN_LEG_VISIBILITY_SCORE`
-- `TRYON_V2_MIN_FRONT_POSE_SCORE`
-- `TRYON_V2_MIN_GARMENT_FRONT_SCORE`
-- `TRYON_V2_QC_THRESHOLD`
-- `TRYON_V2_TIMEOUT_MS`
+- `TRYON_V2_ENABLED`、`TRYON_BOTTOM_FORCE_FALLBACK`
+- `CATVTON_ENABLED`、`CATVTON_PATH`、`CATVTON_WIDTH=768`、`CATVTON_HEIGHT=1024`、`CATVTON_STEPS=50`、`CATVTON_GUIDANCE=2.5`、`CATVTON_REPAINT=true`、`CATVTON_TIMEOUT_SECONDS=600`
+- `TRYON_V2_STRICT_IDENTITY`、`TRYON_V2_MIN_FULL_BODY_SCORE`、`TRYON_V2_MIN_LEG_VISIBILITY_SCORE`
+- `TRYON_V2_QC_THRESHOLD`、`TRYON_V2_TIMEOUT_MS`
 
 CLI 调用示例（`cli/outfit_cli.py`）：
 
@@ -261,19 +266,18 @@ python cli/outfit_cli.py tryon --v2 --precheck-only \
   --garment-category bottom \
   --mode strict
 
-# v2 预检通过后再生成
+# v2 realistic 模式（需 CatVTON）
 python cli/outfit_cli.py tryon --v2 \
   --garment ./samples/garment.jpg \
   --person ./samples/person.jpg \
-  --garment-category bottom \
-  --mode strict
+  --mode realistic
 
-# 如需跳过预检（不推荐）
-python cli/outfit_cli.py tryon --v2 --skip-precheck \
+# v2 professional 模式
+python cli/outfit_cli.py tryon --v2 \
   --garment ./samples/garment.jpg \
-  --person ./samples/person.jpg
+  --person ./samples/person.jpg \
+  --mode professional
 ```
-
 ### 适合度分析接口（原因说明）
 
 适合度分析接口位于：

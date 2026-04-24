@@ -1,26 +1,39 @@
-# 虚拟试衣技术蓝图（方案 A + 方案 B）
+# 虚拟试衣技术蓝图（方案 A + 方案 B + 扩展模式）
 
-最后更新：2026-04-21
+最后更新：2026-04-24
 适用范围：下装（裤子/裙装）优先，目标是“保留本人身份，只替换服饰”。
 
 ## 0. 实施现状（截至 2026-04-21）
 
-已落地（方案 A MVP + 客户端接入）：
-- 后端 v2 API：`POST /api/v2/tryon/validate-input`、`POST /api/v2/tryon/pants`、`GET /api/v2/tryon/capabilities`。
-- 输入门禁模块：`backend/app/services/tryon_v2/input_gate.py`（包含可解释失败码与分数）。
-- 流水线模块：`backend/app/services/tryon_v2/pipeline_a.py`（门禁 -> 身份保护试衣 -> 统一结果）。
-- 质量评估模块：`backend/app/services/tryon_v2/qc.py`（identity/boundary/occlusion + aggregate）。
-- 配置项：`TRYON_BOTTOM_FORCE_FALLBACK` 与 `TRYON_V2_*` 阈值/开关。
-- 移动端接入：预检面板、失败码可视化、action_hint 展示、v2 不可用自动回退 v1。
-- CLI 接入：`--v2 --precheck-only --skip-precheck --mode --garment-category`。
+已落地（方案 A MVP + 扩展模式 + 客户端接入）：
 
-当前验证状态：
-- `tests/test_tryon_v2_api.py` 与 `tests/test_tryon_guards.py` 已稳定通过。
-- `tests/test_tryon_v2_qc.py` 已覆盖方案 A 质量评分通过/失败分支。
-- 预检失败码与错误 envelope 字段已在客户端解析并展示。
+**基础管线（方案 A）**
+- 后端 v2 API：`POST /api/v2/tryon/validate-input`、`POST /api/v2/tryon/garment`、`GET /api/v2/tryon/capabilities`、`GET /api/v2/tryon/model-status`
+- 输入门障模块：`backend/app/services/tryon_v2/input_gate.py`（包含可解释失败码与分数）
+- 流水线模块：`backend/app/services/tryon_v2/pipeline_a.py`（门障 -> 身份保护试衣 -> 统一结果）
+- 质量评估模块：`backend/app/services/tryon_v2/qc.py`（identity/boundary/occlusion + aggregate）
+- Warp 引擎：`backend/app/services/tryon_v2/warp_engine.py`（分段仿射 + TPS，几何贴合保留身份）
 
-尚未落地：
-- 方案 B（2.5D 深度遮挡增强）仍处于蓝图阶段。
+**扩展模式**
+- `replace` 模式：融合 CatVTON / 百炼 / Warp / Diffusion 多引擎 AI 生成式合成（`tryon_engine_selector.py`）
+- `realistic` 模式：CatVTON 深度学习 + 边缘感知 + 光照匹配 + Poisson 融合（`realism_engine.py`）
+- `professional` 模式：多步管线（分割 + 姿态 + 消除 + 贴合 + 光照 + 验证）（`professional_tryon.py`）
+- CatVTON 本地引擎：subprocess 调用 `vton_inference_service/catvton_runner.py`，MediaPipe PoseLandmarker 替代 SCHP/DensePose（`catvton_engine_client.py`）
+- 后处理流水线：边缘融合、颜色匹配、细节增强、去噪、接缝消除（`postprocess.py`）
+
+**集成与客户端**
+- 移动端接入：预检面板、失败码可视化、action_hint 展示、多模式选择、v2 不可用自动回退 v1（`virtual_tryon_screen.dart`）
+- CLI 接入：`--v2 --precheck-only --skip-precheck --mode --garment-category`
+- 配置项：`TRYON_BOTTOM_FORCE_FALLBACK`、`TRYON_V2_*` 阈值/开关、`CATVTON_*` 引擎参数
+
+**验证状态**
+- `tests/test_tryon_v2_api.py` 与 `tests/test_tryon_guards.py` 已稳定通过
+- `tests/test_tryon_v2_qc.py` 已覆盖方案 A 质量评分通过/失败分支
+- `tests/test_tryon_v2_warp_engine.py` 已覆盖 Warp 引擎 identity 保护测试
+- 预检失败码与错误 envelope 字段已在客户端解析并展示
+
+**尚未落地**
+- 方案 B（2.5D 深度遮挡增强）仍处于蓝图阶段
 
 ## 1. 背景与目标
 
@@ -140,22 +153,23 @@
 API 层：
 - backend/app/api/tryon_v2.py
 
-建议路由：
-- POST /api/v2/tryon/pants
+实际路由：
+- POST /api/v2/tryon/garment（主无线）
+- POST /api/v2/tryon/pants（已废弃，向后兼容）
 - POST /api/v2/tryon/validate-input
 - GET /api/v2/tryon/capabilities
+- GET /api/v2/tryon/model-status
 
 ## 6. 配置项设计（Settings）
 
-建议新增：
+实际配置项：
 - TRYON_V2_ENABLED=true|false
-- TRYON_V2_PIPELINE=A|B
 - TRYON_V2_STRICT_IDENTITY=true|false
 - TRYON_V2_MIN_FULL_BODY_SCORE
-- TRYON_V2_MIN_LEG_VISIBILITY
-- TRYON_V2_MIN_GARMENT_FRONT_SCORE
+- TRYON_V2_MIN_LEG_VISIBILITY_SCORE
 - TRYON_V2_QC_THRESHOLD
 - TRYON_V2_TIMEOUT_MS
+- CATVTON_ENABLED/CATVTON_PATH/CATVTON_WIDTH/CATVTON_HEIGHT/CATVTON_STEPS/CATVTON_GUIDANCE/CATVTON_REPAINT/CATVTON_TIMEOUT_SECONDS
 
 ## 7. 接口字段设计
 

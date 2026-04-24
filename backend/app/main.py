@@ -179,6 +179,23 @@ async def _app_lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("External enhancement probe skipped due to error: %s", e)
 
+    # Log CatVTON status for debugging "realistic mode" issues
+    try:
+        from app.services.tryon_v2.catvton_engine_client import log_catvton_status
+
+        catvton_summary = log_catvton_status("[CATVTON]")
+        if "model=NOT_DOWNLOADED" in catvton_summary or "path=MISSING" in catvton_summary:
+            logger.warning(
+                "CatVTON realistic mode will NOT work: %s. "
+                "Details: set CATVTON_ENABLED=true, ensure CATVTON_PATH exists, "
+                "and run CatVTON once to download models from HuggingFace.",
+                catvton_summary,
+            )
+        else:
+            logger.info("CatVTON realistic mode is available: %s", catvton_summary)
+    except Exception as e:
+        logger.warning("Failed to check CatVTON status: %s", e)
+
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
     logger.info(f"Debug mode: {settings.DEBUG}")

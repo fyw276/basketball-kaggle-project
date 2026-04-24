@@ -685,6 +685,251 @@ def tryon_skirt_warp(
     return out, meta
 
 
+def tryon_top_warp_preserve(
+    person_image: Image.Image,
+    garment_image: Image.Image,
+) -> tuple[Image.Image, WarpMetadata]:
+    """Warp upper garment onto person WITHOUT the realism pass (pure pixel-preserving).
+
+    Use this when you need 100% garment pixel fidelity and will handle
+    background realism separately (e.g. via overlay_draping_from_ai).
+
+    Returns:
+        (result_rgb, metadata)
+    """
+    base = person_image.convert("RGBA")
+    pw, ph = base.size
+
+    cutout = cutout_garment_rgba(garment_image)
+    g = cutout.cropped.convert("RGBA")
+    gw, gh = g.size
+    if gw < 16 or gh < 16:
+        raise ValueError("garment too small for top warp preserve")
+
+    kpts = detect_pose_keypoints(person_image)
+    _used_pose = False
+
+    if kpts:
+        bounds = get_body_bounds_from_keypoints(kpts, pw, ph, "top")
+        if bounds.get("valid"):
+            x0 = bounds["x0"]
+            x1 = bounds["x1"]
+            neck_y = bounds["neck_y"]
+            waist_y = bounds["waist_y"]
+            _used_pose = True
+
+    if not _used_pose:
+        gray = np.asarray(person_image.convert("L"), dtype=np.float32)
+        fg = _person_foreground_mask(person_image)
+        b = None
+        if fg is not None:
+            b = _bounds_from_mask(fg, y0=int(ph * 0.06), y1=int(ph * 0.74), col_q=0.72, row_q=0.55)
+        if b is not None:
+            x0, x1, y_top, y_bottom = b
+            span = max(2, int(y_bottom - y_top))
+            neck_y = _clamp_int(int(y_top + span * 0.18), int(ph * 0.12), int(ph * 0.32))
+            waist_y = _clamp_int(int(y_top + span * 0.70), int(ph * 0.45), int(ph * 0.82))
+        else:
+            x0, x1, neck_y, waist_y = _estimate_upper_body_bounds(gray)
+        mid = (x0 + x1) // 2
+        center = pw // 2
+        drift = int(mid - center)
+        if abs(drift) > int(pw * 0.12):
+            shift = int(-0.65 * drift)
+            bw = x1 - x0
+            x0 = _clamp_int(x0 + shift, 0, pw - 2)
+            x1 = _clamp_int(x0 + bw, x0 + 2, pw)
+        pad_x = int((x1 - x0) * 0.03)
+        x0 = _clamp_int(x0 - pad_x, 0, pw - 2)
+        x1 = _clamp_int(x1 + pad_x, x0 + 2, pw)
+
+    y0 = _clamp_int(int(neck_y + ph * 0.02), int(ph * 0.12), int(ph * 0.42))
+    y1 = _clamp_int(int(waist_y + ph * 0.03), y0 + 2, int(ph * 0.86))
+    tw = max(2, x1 - x0)
+    th = max(2, y1 - y0)
+
+    scale = max(tw / float(gw), th / float(gh))
+    itw = max(2, int(gw * scale))
+    ith = max(2, int(gh * scale))
+    g = g.resize((itw, ith), Image.Resampling.LANCZOS)
+
+    if _used_pose:
+        from app.services.tryon_v2.pose_utils import get_body_bounds_from_keypoints
+
+        kpts2 = detect_pose_keypoints(person_image)
+        if kpts2:
+            bounds2 = get_body_bounds_from_keypoints(kpts2, pw, ph, "top")
+            if bounds2.get("valid"):
+                shoulder_w = max(2, int(bounds2.get("shoulder_width", tw)))
+                hip_w = max(2, int(bounds2.get("hip_width", tw * 0.85)))
+                if itw >= 16:
+                    top_half_w = _clamp_int(int(min(itw, shoulder_w * scale)), 4, itw)
+                    bot_half_w = _clamp_int(int(min(itw, hip_w * scale)), 4, itw)
+                    if abs(top_half_w - bot_half_w) > 4:
+                        top_inset = (itw - top_half_w) // 2
+                        bot_inset = (itw - bot_half_w) // 2
+                        quad = (
+                            top_inset,
+                            0,
+                            itw - top_inset,
+                            0,
+                            itw - bot_inset,
+                            ith,
+                            bot_inset,
+                            ith,
+                        )
+                        g = _pil_quad_warp(g, (itw, ith), quad)
+
+    layer = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
+    ox = x0 + (tw - min(itw, tw)) // 2
+    oy = y0 + (th - min(ith, th)) // 2
+    g_crop = g.crop((0, 0, min(itw, tw), min(ith, th)))
+    layer.paste(g_crop, (ox, oy), g_crop)
+
+    feather_px = _clamp_int(int(max(pw, ph) * 0.009), 1, 8)
+    layer = _feather_alpha(layer, radius_px=feather_px)
+
+    protect = _upper_protect_mask((pw, ph), protect_until_y=int(ph * 0.18))
+    r, gg, b, a = layer.split()
+    a = ImageChops.multiply(a, protect)
+    layer = Image.merge("RGBA", (r, gg, b, a))
+
+    out = Image.alpha_composite(base, layer).convert("RGB")
+    engine_tag = "top_warp_preserve_pose" if _used_pose else "top_warp_preserve_gradient"
+    meta = WarpMetadata(
+        engine=engine_tag,
+        waistband_box=(x0, y0, x1, y0 + max(2, int((y1 - y0) * 0.18))),
+        left_leg_box=(x0, y0 + max(2, int((y1 - y0) * 0.18)), (x0 + x1) // 2, y1),
+        right_leg_box=((x0 + x1) // 2, y0 + max(2, int((y1 - y0) * 0.18)), x1, y1),
+        alpha_feather_px=feather_px,
+    )
+    return out, meta
+
+
+def overlay_draping_from_ai(
+    warp_result: Image.Image,
+    ai_result: Image.Image,
+    *,
+    drape_alpha: float = 0.60,
+) -> tuple[Image.Image, dict]:
+    """Blend AI-generated drape/lighting onto a warp result, preserving exact garment pixels.
+
+    Strategy:
+    1. Detect garment region in warp_result via foreground mask.
+    2. For the body/background area OUTSIDE the garment, transfer realistic lighting
+       and texture from ai_result (e.g. shadow under garment, body form, ambient light).
+    3. Inside garment region: garment pixels are 100% preserved from warp_result.
+    4. Blend at garment boundary for smooth transitions.
+
+    This gives you:
+    - 100% garment pixel fidelity (colors, patterns, textures from original garment photo)
+    - Realistic drape/shadow/lighting from the AI-generated result
+
+    Args:
+        warp_result: Warp output (garment faithfully pasted onto person).
+        ai_result: AI-generated try-on result (realistic fit/shadow but garment may differ).
+        drape_alpha: 0.0-1.0 how much AI realism to blend in (0.60 = 60% AI, 40% warp bg).
+
+    Returns:
+        (result_image, metadata_dict)
+    """
+    import logging as _log
+
+    _logger = _log.getLogger(__name__)
+
+    try:
+        w, h = warp_result.size
+        warp_rgb = np.array(warp_result.convert("RGB"), dtype=np.float32)
+        # AI result may have different dimensions — resize to match warp result
+        ai_resized = ai_result.convert("RGB").resize((w, h), Image.LANCZOS)
+        ai_rgb = np.array(ai_resized, dtype=np.float32)
+
+        # ── Step 1: Find garment foreground region in warp result ──────────────────
+        # Use foreground mask to locate where the garment is pasted
+        fg_warp = _person_foreground_mask(warp_result)
+        if fg_warp is None:
+            # Fallback: garment occupies center body area
+            fg_warp = np.zeros((h, w), dtype=bool)
+            fg_warp[int(h * 0.08) : int(h * 0.85), int(w * 0.18) : int(w * 0.82)] = True
+
+        # Garment bounding box (from foreground)
+        rows = np.any(fg_warp, axis=1)
+        cols = np.any(fg_warp, axis=0)
+        if not rows.any() or not cols.any():
+            return warp_result, {"engine": "overlay_draping", "reason": "no_fg_mask"}
+
+        g_y0 = int(np.where(rows)[0][0])
+        g_y1 = int(np.where(rows)[0][-1])
+        g_x0 = int(np.where(cols)[0][0])
+        g_x1 = int(np.where(cols)[0][-1])
+
+        # Expand region for smooth blending (used below)
+        expand = max(4, int(min(w, h) * 0.015))
+
+        # ── Step 2: Build garment mask ─────────────────────────────────────────────
+        # Inside g_x0:g_x1, g_y0:g_y1 = garment pixels from warp
+        # Outside = background/body (can be blended with AI)
+        garment_mask = fg_warp.copy().astype(np.float32)
+
+        # Feather garment edge so blending is smooth
+        try:
+            import cv2
+
+            kernel = np.ones((expand * 2 + 1, expand * 2 + 1), np.uint8)
+            gar_mask_u8 = (garment_mask * 255).astype(np.uint8)
+            gar_mask_u8 = cv2.erode(gar_mask_u8, kernel, iterations=1)
+            gar_mask_f = gar_mask_u8.astype(np.float32) / 255.0
+            # Background blend weight: high far from garment, low near garment
+            blend_weight = (1.0 - gar_mask_f) * drape_alpha
+        except Exception:
+            blend_weight = np.zeros((h, w), dtype=np.float32)
+
+        # ── Step 3: Blend background/lighting from AI ───────────────────────────────
+        # result = warp * (1 - blend_weight) + ai * blend_weight
+        # But ONLY blend where AI is "more realistic" — body area, not garment interior
+        result = np.zeros_like(warp_rgb)
+        for c in range(3):
+            result[:, :, c] = (
+                warp_rgb[:, :, c] * (1.0 - blend_weight) + ai_rgb[:, :, c] * blend_weight
+            )
+        result = np.clip(result, 0, 255).astype(np.uint8)
+
+        # ── Step 4: Restore garment pixels 100% from warp ──────────────────────────
+        gar_region = fg_warp[g_y0:g_y1, g_x0:g_x1]
+        result[g_y0:g_y1, g_x0:g_x1][gar_region] = warp_rgb[g_y0:g_y1, g_x0:g_x1][gar_region]
+
+        out_img = Image.fromarray(result, mode="RGB")
+
+        _logger.info(
+            "overlay_draping: warp=%dx%d ai=%dx%d region=[%d,%d,%d,%d] alpha=%.2f",
+            w,
+            h,
+            ai_result.size[0],
+            ai_result.size[1],
+            g_x0,
+            g_y0,
+            g_x1,
+            g_y1,
+            drape_alpha,
+        )
+        return out_img, {
+            "engine": "overlay_draping",
+            "garment_region": {
+                "x0": g_x0,
+                "y0": g_y0,
+                "x1": g_x1,
+                "y1": g_y1,
+            },
+            "drape_alpha": drape_alpha,
+        }
+
+    except Exception as e:
+        import traceback
+
+        _logger.warning("overlay_draping_from_ai failed: %s\n%s", e, traceback.format_exc())
+        return warp_result, {"engine": "overlay_draping", "reason": str(e)}
+
+
 def overlay_top_onto_ai_result(
     ai_result: Image.Image,
     person_image: Image.Image,
@@ -714,7 +959,6 @@ def overlay_top_onto_ai_result(
     _logger = _log.getLogger(__name__)
 
     try:
-        # ── Step 1: ALL coordinates in AI result's coordinate system ──────────────
         ai_w, ai_h = ai_result.size
         ai_rgb = np.array(ai_result.convert("RGB"), dtype=np.float32)
 

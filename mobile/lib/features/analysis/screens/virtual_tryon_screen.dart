@@ -19,9 +19,12 @@ enum _GarmentCategoryChoice {
   outfit,
 }
 
+/// 试衣质量模式枚举
 enum _TryOnQualityMode {
-  stable,
-  realistic,
+  stable, // 方案A几何贴图，速度快但更像叠图
+  replace, // AI替换试衣，真实感强但衣服细节可能有变化
+  realistic, // 增强保真引擎：100%衣服细节 + 真实贴合
+  professional, // 专业模式：精准分割+姿态贴合+光影融合+强制校验
 }
 
 extension _TryOnQualityModeApi on _TryOnQualityMode {
@@ -29,17 +32,38 @@ extension _TryOnQualityModeApi on _TryOnQualityMode {
     switch (this) {
       case _TryOnQualityMode.stable:
         return 'balanced';
-      case _TryOnQualityMode.realistic:
+      case _TryOnQualityMode.replace:
         return 'replace';
+      case _TryOnQualityMode.realistic:
+        return 'realistic';
+      case _TryOnQualityMode.professional:
+        return 'professional';
     }
   }
 
   String get label {
     switch (this) {
       case _TryOnQualityMode.stable:
-        return '稳定';
-      case _TryOnQualityMode.realistic:
+        return '稳定快速';
+      case _TryOnQualityMode.replace:
         return '真实贴身';
+      case _TryOnQualityMode.realistic:
+        return '细节保真';
+      case _TryOnQualityMode.professional:
+        return '专业模式';
+    }
+  }
+
+  String get description {
+    switch (this) {
+      case _TryOnQualityMode.stable:
+        return '走方案A几何贴图，速度快更稳定但更像叠图';
+      case _TryOnQualityMode.replace:
+        return '走AI替换试衣（百炼/远程VTON），更真实但耗时更长';
+      case _TryOnQualityMode.realistic:
+        return '100%保留衣服细节（图案/纹理）+ 真实光影贴合';
+      case _TryOnQualityMode.professional:
+        return '【推荐】精准分割+姿态贴合+原有衣物擦除+光影融合，效果最佳';
     }
   }
 }
@@ -94,7 +118,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
   String? _garmentQualityHint;
   XFile? _personFront;
   _GarmentCategoryChoice _garmentCategory = _GarmentCategoryChoice.auto;
-  _TryOnQualityMode _qualityMode = _TryOnQualityMode.realistic;
+  _TryOnQualityMode _qualityMode = _TryOnQualityMode.professional;
   bool _loading = false;
   bool _usedFallback = false;
   bool? _precheckPassed;
@@ -1084,12 +1108,62 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              _qualityMode == _TryOnQualityMode.realistic
-                  ? '已选「真实贴身」：将走替换试衣（百炼/远程VTON/本地diffusion），更真实但耗时更长。'
-                  : '已选「稳定」：走方案A几何贴图，速度快更稳定但更像叠图。',
+              _qualityMode.description,
               style: TextStyle(
                   fontSize: 12, height: 1.35, color: palette.textBody),
             ),
+            // 专业模式特别提示
+            if (_qualityMode == _TryOnQualityMode.professional) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      Colors.purple.withValues(alpha: 0.15),
+                      Colors.blue.withValues(alpha: 0.10),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: Colors.purple.withValues(alpha: 0.3),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.auto_fix_high,
+                            size: 16, color: Colors.purple.shade700),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '专业模式流程：精准分割 → 姿态贴合 → 原有衣物擦除 → 光影融合',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.purple.shade700,
+                              height: 1.3,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '自动识别并去除手/背景/水印，确保衣服精准穿在身上',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.purple.shade600,
+                        height: 1.2,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 12),
             Container(
               width: double.infinity,

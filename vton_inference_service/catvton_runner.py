@@ -405,6 +405,61 @@ def _fallback_mask(person_img: "Image.Image", cloth_type: str) -> "Image.Image":
     return Image.fromarray(mask, mode="L")
 
 
+# ─── Mask & Repaint Post-processing ──────────────────────────────────────────
+
+def resize_and_crop_garment(image, size):
+    """Center-crop garment to target size, preserving aspect ratio."""
+    w, h = image.size
+    target_w, target_h = size
+    # Determine crop box to match target aspect ratio
+    target_ratio = target_w / target_h
+    img_ratio = w / h
+    if img_ratio > target_ratio:
+        # Image is wider than target: crop width
+        new_w = int(h * target_ratio)
+        new_h = h
+        x0 = (w - new_w) // 2
+        y0 = 0
+    else:
+        # Image is taller than target: crop height
+        new_w = w
+        new_h = int(w / target_ratio)
+        x0 = 0
+        y0 = (h - new_h) // 2
+    cropped = image.crop((x0, y0, x0 + new_w, y0 + new_h))
+    return cropped.resize(size, Image.LANCZOS)
+
+
+def _feather_mask(mask: "Image.Image", feather_radius: int = 4) -> "Image.Image":
+    """Apply Gaussian blur to mask edges for smooth garment transition."""
+    import cv2
+    mask_np = np.asarray(mask.convert("L"))
+    blurred = cv2.GaussianBlur(mask_np, (0, 0), sigmaX=feather_radius, sigmaY=feather_radius)
+    return Image.fromarray(blurred, mode="L")
+
+
+def _repaint_with_feather(
+    result: "Image.Image",
+    person: "Image.Image",
+    mask: "Image.Image",
+    feather_radius: int = 3,
+) -> "Image.Image":
+    """
+    Blend CatVTON result with original person using a feathered mask.
+    feather_radius controls edge softness: higher = softer edge (no ghosting).
+    """
+    import cv2
+    mask_np = np.asarray(mask.convert("L")).astype(np.float32) / 255.0
+    # Feather the edge
+    if feather_radius > 0:
+        mask_np = cv2.GaussianBlur(mask_np, (0, 0), sigmaX=feather_radius, sigmaY=feather_radius)
+    mask_3ch = np.stack([mask_np] * 3, axis=-1)
+    result_np = np.array(result).astype(np.float32)
+    person_np = np.array(person).astype(np.float32)
+    blended = result_np * mask_3ch + person_np * (1 - mask_3ch)
+    return Image.fromarray(blended.astype(np.uint8))
+
+
 # ─── Main inference ────────────────────────────────────────────────────────────
 
 def main():
@@ -416,9 +471,12 @@ def main():
         "--type", default="upper", choices=["upper", "lower", "overall"],
         help="Garment type"
     )
-    parser.add_argument("--width", type=int, default=768)
-    parser.add_argument("--height", type=int, default=1024)
-    parser.add_argument("--steps", type=int, default=50)
+    parser.add_argument("--width", type=int, default=512,
+                        help="Output width (default: 512, use 768 for high quality but needs more VRAM)")
+    parser.add_argument("--height", type=int, default=768,
+                        help="Output height (default: 768, use 1024 for high quality but needs more VRAM)")
+    parser.add_argument("--steps", type=int, default=25,
+                        help="Diffusion steps (default: 25, use 50 for high quality but slower)")
     parser.add_argument("--guidance", type=float, default=2.5)
     parser.add_argument("--seed", type=int, default=-1)
     parser.add_argument("--catvton-path", default=None, help="Path to CatVTON repo")
@@ -473,20 +531,26 @@ def main():
         weight_dtype = init_weight_dtype("bf16")
 
         pipeline = CatVTONPipeline(
-            base_ckpt="booksforcharlie/stable-diffusion-inpainting",
+            base_ckpt="runwayml/stable-diffusion-inpainting",
             attn_ckpt=repo_path,
             attn_ckpt_version="mix",
             weight_dtype=weight_dtype,
             use_tf32=True,
             device="cuda",
+            skip_safety_check=True,
+            attention_slicing="auto",
+            enable_xformers=True,
         )
 
         # ── Resize images ────────────────────────────────────────────────
         person_resized = resize_and_crop(person_img, (args.width, args.height))
-        garment_resized = resize_and_padding(garment_img, (args.width, args.height))
+        # Center-crop garment to match output aspect ratio (avoids padding distortion)
+        garment_resized = resize_and_crop_garment(garment_img, (args.width, args.height))
         mask_resized = cloth_mask.resize(
             (args.width, args.height), Image.LANCZOS
         )
+        # Light feather to smooth mask boundary (prevents harsh edge artifacts)
+        mask_resized = _feather_mask(mask_resized, feather_radius=3)
 
         # ── Run inference ─────────────────────────────────────────────────
         seed = args.seed if args.seed >= 0 else None
@@ -507,11 +571,10 @@ def main():
             generator=generator,
         )[0]
 
-        # ── Repaint with original background ───────────────────────────────
+        # ── Repaint with feathered blend (no ghosting) ───────────────────
         if not args.no_repaint:
-            logger.info("Repainting with original background...")
-            from utils import repaint_result
-            result = repaint_result(result, person_resized, mask_resized)
+            logger.info("Repainting with feathered blend...")
+            result = _repaint_with_feather(result, person_resized, mask_resized, feather_radius=3)
 
         # ── Save result ───────────────────────────────────────────────────
         _save_image(result, output_path)

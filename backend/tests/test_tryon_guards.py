@@ -34,23 +34,28 @@ def test_tryon_rejects_garment_with_face(
     """
     When garment image is detected as containing a face,
     the service should reject to prevent ghosting.
-    We simulate this by monkeypatching the singleton try-on service.
+    We stub check_tryon_garment_has_face to return True (synthetic test images
+    have no detectable face) and get_tryon_service so the error path is hit.
     """
 
-    class _StubService:
-        def tryon_garment(self, **kwargs):
-            return {
-                "result_image": None,
-                "status": "error",
-                "message": "衣服图检测到人像，请上传无模特的白底商品图，否则会出现重影。",
-                "metadata": {"reason": "garment_contains_face"},
-            }
+    def _stub_check_face(img):
+        return True  # Simulate face detected in garment
 
     def _stub_get_tryon_service():
+        class _StubService:
+            def tryon_garment(self, **kwargs):
+                return {
+                    "result_image": None,
+                    "status": "error",
+                    "message": "衣服图检测到人像，请上传无模特的白底商品图，否则会出现重影。",
+                    "metadata": {"reason": "garment_contains_face"},
+                }
+
         return _StubService()
 
-    import app.services.virtual_tryon as virtual_tryon  # local import for monkeypatch
+    import app.services.virtual_tryon as virtual_tryon
 
+    monkeypatch.setattr(virtual_tryon, "check_tryon_garment_has_face", _stub_check_face)
     monkeypatch.setattr(virtual_tryon, "get_tryon_service", _stub_get_tryon_service)
 
     garment_bytes = _jpeg_bytes(color=(250, 250, 250))
