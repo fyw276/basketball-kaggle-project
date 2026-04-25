@@ -1,6 +1,6 @@
 # 智能穿搭助手 - Flutter 移动端
 
-更新时间：2026-04-21
+更新时间：2026-04-25
 
 这是智能穿搭助手的 Flutter 移动端应用。
 
@@ -45,8 +45,7 @@ mobile/
 │   └── features/                    # 功能模块
 │       ├── auth/                   # 认证
 │       │   └── screens/
-│       │       ├── login_screen.dart
-│       │       └── register_screen.dart
+│       │       └── auth_screen.dart  # 登录/注册（TabBar 切换）
 │       ├── home/                   # 主页
 │       │   └── screens/
 │       │       └── home_screen.dart
@@ -158,6 +157,10 @@ flutter test
 # 运行集成测试
 flutter test integration_test
 ```
+
+## 近期关键变更（2026-04-25）
+
+- **Flutter Web 渲染修复**：修复了登录页标题 `Text` widget 在 Web 上的 `debugSize == size` 断言错误（通过添加 `maxLines: 1` 约束）。
 
 ## 近期关键变更（2026-04-10）
 

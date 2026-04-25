@@ -32,7 +32,8 @@
 
 ## 常见问题
 
-1. **天气失败 + 默认参数**：多为请求早于 token 恢复；确认已登录并热重载后重试。Network 中 `weather` 若 401，即为未带 Token。
+1. **Text 渲染断言错误（`debugSize == size is not true`）**：Flutter Web 上中文 Text widget 在 layout 和 paint 阶段因字体指标不一致触发断言。解决：在 `Text` widget 上添加 `maxLines: 1` 和 `overflow: TextOverflow.ellipsis`，强制单行渲染。
+2. **天气失败 + 默认参数**：多为请求早于 token 恢复；确认已登录并热重载后重试。Network 中 `weather` 若 401，即为未带 Token。
 2. **生成报「无法连接」**：后端是否监听、防火墙；CORS/PNA 是否生效（重启后端）。`OPTIONS` 与正式 `POST` 的响应头是否正常。
 3. **衣橱部分图不加载**：检查 Network 中图片 URL 是否 404；`resolveGarmentImageUrl` 是否将 `127.0.0.1` 与当前 API host 对齐。
 4. **Web 无法左右滑搭配卡**：确认已包含鼠标 `dragDevices` 的 `ScrollConfiguration`（见 `smart_outfit_screen.dart`）。

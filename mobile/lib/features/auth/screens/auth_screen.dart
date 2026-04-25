@@ -76,6 +76,8 @@ class _AuthScreenState extends State<AuthScreen>
                       Text(
                         'AI 穿搭，自由表达',
                         textAlign: TextAlign.center,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontSize: 22,
                           fontWeight: FontWeight.w800,

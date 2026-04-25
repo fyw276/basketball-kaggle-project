@@ -388,9 +388,7 @@ flutter analyze
 
 ## 📚 相关文档
 
-- `MOBILE_FEATURES_COMPLETE.md` - 功能实现详细说明
-- `FLUTTER_ROUTING_FIX.md` - 路由问题修复说明
-- `CORS_FIX_SUMMARY.md` - CORS 配置说明
+- `docs/SMART_OUTFIT_FLUTTER_WEB.md` - Flutter Web 与智能穿搭行为说明
 - `backend/API_DOCUMENTATION_COMPLETE.md` - API 完整文档
 
 ## 💡 提示

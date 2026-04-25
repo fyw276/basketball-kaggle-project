@@ -18,15 +18,7 @@ flutter pub get
 
 ## 第三步：配置后端地址
 
-编辑 `lib/core/services/api_client.dart`，修改第 6 行的 `baseUrl`：
-
-```dart
-static const String baseUrl = 'http://10.0.2.2:8010/api/v1';  // Android 模拟器
-// 或
-static const String baseUrl = 'http://127.0.0.1:8010/api/v1';  // iOS 模拟器
-// 或
-static const String baseUrl = 'http://192.168.1.100:8010/api/v1';  // 真机（替换为你的 IP）
-```
+编辑 `lib/core/services/api_port_config.dart`，修改 `kApiPort`（默认 **8010**），或启动时用 `--dart-define=API_PORT=xxxx` 覆盖。API 基址由 `api_base_resolver.dart` 按平台自动解析，一般无需手动指定。
 
 ## 第四步：启动后端服务
 
