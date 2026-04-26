@@ -102,10 +102,15 @@ def _run_mediapipe_pose(img: Image.Image):
             output_segmentation_masks=True,
         )
         landmarker = PoseLandmarker.create_from_options(options)
-        arr = np.asarray(img.convert("RGB"))
-        mp_img = MPImage.create_from_array(arr)
+        # MediaPipe 0.10.x Image has no create_from_array; save to temp file
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            tmp_path = f.name
+        img.convert("RGB").save(tmp_path, format="JPEG", quality=95)
+        mp_img = MPImage.create_from_file(tmp_path)
         result = landmarker.detect(mp_img)
         landmarker.close()
+        os.unlink(tmp_path)
         if not result.pose_landmarks:
             return None, None
         return result.pose_landmarks[0], result.segmentation_masks
@@ -321,8 +326,6 @@ class CatVTONEngine:
             use_tf32=(self.mixed_precision in ("fp16", "bf16")),
             device=self.device,
             skip_safety_check=True,
-            attention_slicing="auto",
-            enable_xformers=True,
         )
 
         # Mask processor for post-processing (feathering)

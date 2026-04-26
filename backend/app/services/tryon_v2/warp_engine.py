@@ -754,11 +754,11 @@ def tryon_top_warp_preserve(
     g = g.resize((itw, ith), Image.Resampling.LANCZOS)
 
     if _used_pose:
-        from app.services.tryon_v2.pose_utils import get_body_bounds_from_keypoints
+        from app.services.tryon_v2.pose_utils import get_body_bounds_from_keypoints as _gbk
 
         kpts2 = detect_pose_keypoints(person_image)
         if kpts2:
-            bounds2 = get_body_bounds_from_keypoints(kpts2, pw, ph, "top")
+            bounds2 = _gbk(kpts2, pw, ph, "top")
             if bounds2.get("valid"):
                 shoulder_w = max(2, int(bounds2.get("shoulder_width", tw)))
                 hip_w = max(2, int(bounds2.get("hip_width", tw * 0.85)))

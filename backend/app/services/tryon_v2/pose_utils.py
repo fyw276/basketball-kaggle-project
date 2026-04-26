@@ -114,9 +114,17 @@ def detect_pose_keypoints(
                 output_segmentation_masks=False,
             )
             landmarker = PoseLandmarker.create_from_options(options)
-            mp_img = MPImage.create_from_array(arr)
+            # MediaPipe 0.10.x Image has no create_from_array; use temp file
+            import os as _os
+            import tempfile
+
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+                tmp_path = f.name
+            person_image.convert("RGB").save(tmp_path, format="JPEG", quality=95)
+            mp_img = MPImage.create_from_file(tmp_path)
             result = landmarker.detect(mp_img)
             landmarker.close()
+            _os.unlink(tmp_path)
 
             if not result.pose_landmarks:
                 return None

@@ -44,9 +44,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+from PIL import Image
+import numpy as np
+import mediapipe
+
 
 def _load_image(path: str) -> "Image.Image":
-    from PIL import Image
     with open(path, "rb") as f:
         return Image.open(f).convert("RGB")
 
@@ -121,23 +124,20 @@ def _make_cloth_mask_mediapipe(
         from mediapipe import Image as MPImage
         from mediapipe.tasks.python.vision import PoseLandmarker, PoseLandmarkerOptions, RunningMode
 
-        mp_img = MPImage.create_from_array(np.asarray(person_img))
-        options = PoseLandmarkerOptions(
-            base_options=None,
-            running_mode=RunningMode.IMAGE,
-            output_segmentation_masks=True,
-        )
-        # Attach model path
-        import mediapipe.tasks
+        # MediaPipe 0.10.x Image has no create_from_array; save to temp file then load
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            tmp_path = f.name
+        person_img.save(tmp_path, format="JPEG", quality=95)
         options = PoseLandmarkerOptions(
             base_options=mediapipe.tasks.BaseOptions(model_asset_path=mp_pose_path),
             running_mode=RunningMode.IMAGE,
             output_segmentation_masks=True,
         )
-
         landmarker = PoseLandmarker.create_from_options(options)
+        mp_img = MPImage.create_from_file(tmp_path)
         result = landmarker.detect(mp_img)
         landmarker.close()
+        os.unlink(tmp_path)
 
         if not result.pose_landmarks:
             logger.warning("No pose detected — using fallback mask")
@@ -152,6 +152,8 @@ def _make_cloth_mask_mediapipe(
     if result.segmentation_masks and len(result.segmentation_masks) > 0:
         seg_mask = result.segmentation_masks[0]
         seg_np = (seg_mask.numpy_view() * 255).astype(np.uint8)
+        if seg_np.ndim == 3:
+            seg_np = seg_np[..., 0]
         seg_pil = Image.fromarray(seg_np, mode="L")
     else:
         # Fallback: create mask from keypoints convex hull
@@ -538,8 +540,6 @@ def main():
             use_tf32=True,
             device="cuda",
             skip_safety_check=True,
-            attention_slicing="auto",
-            enable_xformers=True,
         )
 
         # ── Resize images ────────────────────────────────────────────────
