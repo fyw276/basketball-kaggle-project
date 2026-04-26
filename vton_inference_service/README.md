@@ -48,6 +48,9 @@ VTON_INFERENCE_URL=http://127.0.0.1:8011/v1/tryon
 | `VTON_SERVICE_API_KEY` | 非空则要求 Bearer 与之一致 |
 | `PORT` | 监听端口（由 uvicorn 命令行指定即可） |
 | `CATVTON_WIDTH`、`CATVTON_HEIGHT`、`CATVTON_STEPS`、`CATVTON_GUIDANCE` | CatVTON 推理参数 |
+| `CATVTON_MIXED_PRECISION` | 精度：`bf16`（默认，约 8GB VRAM）/ `fp16`（约 6GB）/ `fp32`（约 10GB） |
+| `CATVTON_CPU_OFFLOAD` | `true` = 启用 CPU Offload（VRAM ~4GB，更慢但支持小显存） |
+| `CATVTON_DEBUG_DIR` | 保存调试中间产物（mask、骨架图等）的目录，为空则不保存 |
 
 ## CatVTON 子进程推理（推荐）
 

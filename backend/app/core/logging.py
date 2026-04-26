@@ -108,6 +108,12 @@ def setup_logging():
     loguru_logger.remove()
 
     # Add console handler
+    # colorize=True emits ANSI escape codes — disable in non-TTY (PowerShell)
+    # so they don't show up as garbled characters like [32m [1m [0m [36m
+    import os
+    import sys
+
+    colorize = sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
     loguru_logger.add(
         sys.stdout,
         format=(
@@ -117,7 +123,7 @@ def setup_logging():
             "<level>{message}</level>"
         ),
         level=settings.LOG_LEVEL,
-        colorize=True,
+        colorize=colorize,
     )
 
     # Add file handler

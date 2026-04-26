@@ -287,6 +287,14 @@ class Settings(BaseSettings):
         default=600,
         description="CatVTON 单次推理超时（秒，50步约需 30-60 秒）",
     )
+    CATVTON_DEBUG_DIR: str = Field(
+        default="",
+        description="保存 CatVTON 调试中间产物（mask、骨架图等）的目录，为空则不保存",
+    )
+    CATVTON_CPU_OFFLOAD: bool = Field(
+        default=False,
+        description="启用 CPU Offload 以减少 VRAM 占用（更慢但支持更小显存）",
+    )
 
     # Subscription & quota
     USAGE_QUOTA_ENABLED: bool = Field(default=False, description="启用后执行功能额度扣减")

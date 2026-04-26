@@ -76,6 +76,7 @@ def _run_catvton_sync(
     cloth_type: str,
     seed: int = -1,
     timeout: int = 600,
+    debug_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run CatVTON inference synchronously via subprocess.
@@ -179,7 +180,18 @@ def _run_catvton_sync(
         ]
         if not repaint:
             cmd.append("--no-repaint")
+
+        # Read precision and offload from settings
+        precision = getattr(settings, "CATVTON_MIXED_PRECISION", "bf16") or "bf16"
+        cmd.extend(["--precision", precision])
+        if getattr(settings, "CATVTON_CPU_OFFLOAD", False):
+            cmd.append("--cpu-offload")
+
         cmd.extend(["--catvton-path", catvton_path])
+
+        # Enable debug intermediate saves (useful for diagnosing mask/skeleton quality)
+        if debug_dir:
+            cmd.extend(["--debug-dir", str(debug_dir)])
 
         logger.info(
             f"Running local CatVTON: cloth_type={cloth_type}, "
@@ -296,6 +308,7 @@ async def call_local_catvton(
     person_bytes: bytes,
     garment_category: Optional[str] = None,
     seed: int = -1,
+    debug_dir: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Call local CatVTON for virtual try-on.
@@ -318,6 +331,11 @@ async def call_local_catvton(
     catvton_type = _catvton_category_hint(garment_category)
     timeout = int(getattr(settings, "CATVTON_TIMEOUT_SECONDS", 600) or 600)
 
+    # Read debug_dir from settings if not explicitly provided
+    debug_dir_setting = getattr(settings, "CATVTON_DEBUG_DIR", "") or ""
+    if debug_dir is None:
+        debug_dir = debug_dir_setting.strip() or None
+
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None,
@@ -327,6 +345,7 @@ async def call_local_catvton(
             cloth_type=catvton_type,
             seed=seed,
             timeout=timeout,
+            debug_dir=debug_dir,
         ),
     )
 

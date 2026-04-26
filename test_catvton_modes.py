@@ -16,7 +16,7 @@ import httpx
 from PIL import Image
 
 
-BACKEND_URL = "http://127.0.0.1:8012"
+BACKEND_URL = "http://127.0.0.1:8010"
 PERSON_IMG = Path(__file__).parent / "backend" / "preview_1.jpg"
 GARMENT_IMG = Path(__file__).parent / "backend" / "preview_2.jpg"
 

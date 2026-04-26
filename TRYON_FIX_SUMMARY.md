@@ -1,6 +1,28 @@
 # 虚拟试衣功能修复总结
 
-## 问题诊断
+## 2026-04-26 CatVTON 推理修复
+
+### 已修复
+
+1. **CatVTON 参数兼容性** ✓
+   - 移除了 `attention_slicing="auto"` 和 `enable_xformers=True`（CatVTONPipeline 不接受这些参数）
+   - 添加了 `--precision` 参数支持 `bf16/fp16/fp32` 精度控制
+
+2. **MediaPipe 0.10 API 适配** ✓
+   - `catvton_runner.py` 中 MediaPipe `Image.create_from_array` 在 0.10.x 中不存在，改为临时文件方式（`create_from_file`）
+   - 在 `.venv` 中安装了 `mediapipe 0.10.33`
+
+3. **CatVTON 配置增强** ✓
+   - 新增 `CATVTON_MIXED_PRECISION`、`CATVTON_CPU_OFFLOAD`、`CATVTON_DEBUG_DIR` 三个配置项
+   - `catvton_engine_client.py` 传递 precision/offload 参数到 subprocess
+
+4. **终端日志改进** ✓
+   - `logging.py` 检测 `sys.stdout.isatty()`，在 PowerShell 等非 TTY 环境中禁用 loguru `colorize`
+   - `.env` 和 `run_uvicorn_dev.ps1` 添加 `TF_ENABLE_ONEDNN_OPTS=0` 消除 TensorFlow 警告
+
+> **注意**：本项目使用 **MediaPipe PoseLandmarker** 生成人体掩码，**无需 detectron2 / DensePose / SCHP**。
+
+## 问题诊断（历史）
 
 通过诊断工具 `backend/test_dashscope_status.py` 发现：
 

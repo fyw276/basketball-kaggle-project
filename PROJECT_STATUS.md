@@ -1,25 +1,25 @@
 # 智能穿搭助手 - 项目状态文档
 
-**最后更新**: 2026-04-13
-**项目版本**: v1.3.0
-**状态**: ✅ 核心功能完成；智能穿搭 API 契约、AI 解释层与首页推荐闭环已落地，可用于演示和回归测试
+**最后更新**: 2026-04-26
+**项目版本**: v1.4.0
+**状态**: ✅ 核心功能完成；虚拟试衣 v2 四模式完成，CatVTON 本地推理已修复（参数兼容性 + MediaPipe 0.10 适配）；终端日志改进（无 ANSI 乱码）；新增精度/CPU Offload/调试配置；pre-push 测试全量通过
 
 ---
 
-## 🆕 本次更新（2026-04-13）
+## 🆕 本次更新（2026-04-26）
 
-- ✅ **CLI**（`cli/outfit_cli.py`）：与后端统一 Envelope 解包；新增天气、智能穿搭上传/生成、情绪列表/推荐、虚拟试衣、套装收藏列表等命令。
-- ✅ **MCP**（`mcp/server.py`）：同上解包；新增智能穿搭、天气、情绪、试衣、收藏等工具，便于 Agent 动态选工具。
-- ✅ **反馈与飞轮**：`FeedbackEvent` 表、`POST /api/v1/feedback/events`；`GET /api/v1/analytics/summary`；场景搭配推荐对历史 `like/adopt` 做 **简单重排**；`scripts/export_feedback_jsonl.py`。
-- ✅ **意图路由**：`POST /api/v1/agent/intent`（薄规则 → 建议 MCP 工具名）。
-- ✅ **轻量记忆 RAG**：`MemorySnippet` + `POST/GET/DELETE /api/v1/memory/snippets*`，关键词检索。
-- ✅ **生产就绪能力**：`GET /health/ready`（数据库探活）；可选 `ENABLE_RATE_LIMIT` + `RATE_LIMIT_PER_MINUTE` 进程内滑动窗口限流；生产弱 JWT 配置 `CRITICAL` 日志提示。文档见 [docs/PRODUCTION_DEPLOY.md](docs/PRODUCTION_DEPLOY.md)。
-- ✅ **ECS 部署纳入版本库**：`deploy/ecs/`（清单示例、发布后验收脚本、说明）；`deploy_full_to_ecs.ps1` 支持 **Tar / Git**、`-IdentityFile` 免密、`RELEASE_MANIFEST`、默认 **post_deploy_verify +远端审计**。
-- ✅ **Flutter**：`predictOutfitStyle` 与主服务 Envelope 对齐；`getList` 失败时写入 `lastGetListError`（仍返回 `[]`）；场景推荐 / 智能穿搭 **喜欢·采纳**、**保存到收藏** 与反馈提示等。
-- ✅ **回归测试与 Envelope 对齐**：`ApiEnvelopeMiddleware` 对 2xx JSON 统一包装；`backend/tests` 通过 `tests.api_json.unwrap_json` 解包后断言（全量 `pytest` 与生产行为一致）。Pre-push 仍跑 `tests_lite`（现 35 例，含限流）。
-- 📄 文档：`README.md`、`backend/API_EXAMPLES.md`；[docs/CLI_MCP_QUICKSTART.md](docs/CLI_MCP_QUICKSTART.md)、[docs/COMPETITION_EXTENSIONS.md](docs/COMPETITION_EXTENSIONS.md)。
+- ✅ **CatVTON 推理修复**：`catvton_runner.py` 移除 `attention_slicing="auto"` 和 `enable_xformers=True` 两个不兼容参数（CatVTONPipeline 不接受这些）；添加 `--precision` 参数支持 `bf16/fp16/fp32` 精度控制
+- ✅ **MediaPipe 0.10 API 适配**：`catvton_runner.py` 中 MediaPipe `Image.create_from_array` 在 0.10.x 中已不存在，改为临时文件方式（`create_from_file`）
+- ✅ **CatVTON 配置增强**：新增 `CATVTON_MIXED_PRECISION`（精度）、`CATVTON_CPU_OFFLOAD`（CPU Offload 支持小显存）、`CATVTON_DEBUG_DIR`（保存 mask/骨架图等调试中间产物）三个配置项
+- ✅ **CatVTON 引擎调用增强**：`catvton_engine_client.py` 传递 precision/offload 参数到 subprocess，支持 `CATVTON_CPU_OFFLOAD=true` 以在 8GB 显存下运行
+- ✅ **终端日志改进**：`logging.py` 检测 `sys.stdout.isatty()`，在 PowerShell 等非 TTY 环境中禁用 loguru `colorize`，消除 ANSI 颜色码乱码（如 `[32m` `[1m`）
+- ✅ **TensorFlow oneDNN 警告消除**：`.env` 和 `run_uvicorn_dev.ps1` 添加 `TF_ENABLE_ONEDNN_OPTS=0`，消除导入时的 oneDNN info 消息
+- ✅ **测试图片端口修复**：`test_catvton_modes.py` 端口从 `8012` 修正为 `8010`
+- ✅ **Pre-push 测试**：78 个测试全部通过
 
-## 🆕 上次更新（2026-04-10）
+
+
+## 🆕 上次更新（2026-04-13）
 
 - ✅ 后端新增统一响应 Envelope（`success/data/error/message`）与错误封装辅助。
 - ✅ 智能穿搭生成接口支持结构化地址 `address`，并返回 `address` 对象。

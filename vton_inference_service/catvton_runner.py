@@ -101,9 +101,84 @@ def _get_pose_landmarker_model_path() -> str | None:
         return None
 
 
+def _draw_pose_skeleton(
+    person_img: "Image.Image",
+    landmarks: list,
+) -> "Image.Image":
+    """Draw skeleton lines on the person image for debugging."""
+    import cv2
+    pw, ph = person_img.size
+    canvas = person_img.convert("RGB")
+    arr = np.array(canvas)
+    arr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+
+    # Skeleton connections: (from_idx, to_idx)
+    connections = [
+        (11, 12),  # shoulders
+        (11, 13), (13, 15),  # left arm
+        (12, 14), (14, 16),  # right arm
+        (11, 23), (12, 24),  # torso
+        (23, 24),  # hips
+        (23, 25), (25, 27),  # left leg
+        (24, 26), (26, 28),  # right leg
+    ]
+    for i, j in connections:
+        if i < len(landmarks) and j < len(landmarks):
+            lm_i = landmarks[i]
+            lm_j = landmarks[j]
+            x1, y1 = int(lm_i.x * pw), int(lm_i.y * ph)
+            x2, y2 = int(lm_j.x * pw), int(lm_j.y * ph)
+            cv2.line(arr, (x1, y1), (x2, y2), (0, 255, 0), 3)
+
+    # Draw keypoints
+    for lm in landmarks:
+        x, y = int(lm.x * pw), int(lm.y * ph)
+        cv2.circle(arr, (x, y), 5, (0, 0, 255), -1)
+
+    arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(arr, mode="RGB")
+
+
+def _debug_save_intermediates(
+    person_img: "Image.Image",
+    cloth_mask: "Image.Image",
+    landmarks: list | None,
+    output_dir: Path,
+    step: str,
+):
+    """Save intermediate debug images (pose skeleton, cloth mask, person+mask overlay)."""
+    try:
+        debug_dir = output_dir / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save person image
+        person_img.save(debug_dir / f"{step}_01_person.jpg", quality=95)
+
+        # Save cloth mask
+        cloth_mask.save(debug_dir / f"{step}_02_cloth_mask.jpg")
+
+        # Save skeleton overlay
+        if landmarks:
+            skeleton = _draw_pose_skeleton(person_img, landmarks)
+            skeleton.save(debug_dir / f"{step}_03_skeleton.jpg", quality=95)
+
+        # Save mask overlay on person
+        person_np = np.array(person_img.convert("RGB")).astype(np.float32)
+        mask_np = np.array(cloth_mask.convert("L")).astype(np.float32) / 255.0
+        mask_3ch = np.stack([mask_np] * 3, axis=-1)
+        overlay_np = person_np * mask_3ch + person_np * 0.3 * (1 - mask_3ch)
+        overlay = Image.fromarray(overlay_np.astype(np.uint8), mode="RGB")
+        overlay.save(debug_dir / f"{step}_04_mask_overlay.jpg", quality=95)
+
+        logger.info(f"Debug images saved to {debug_dir}/")
+    except Exception as e:
+        logger.warning(f"Failed to save debug images: {e}")
+
+
 def _make_cloth_mask_mediapipe(
     person_img: "Image.Image",
     cloth_type: str,
+    debug_output_dir: Path | None = None,
 ) -> "Image.Image":
     """
     Generate cloth-agnostic mask using MediaPipe PoseLandmarker.
@@ -167,6 +242,10 @@ def _make_cloth_mask_mediapipe(
 
     # ── Step 4: Protect face region ─────────────────────────────────────
     mask = _protect_face(mask, landmarks, pw, ph)
+
+    # ── Step 5: Save debug intermediates ───────────────────────────────
+    if debug_output_dir is not None:
+        _debug_save_intermediates(person_img, mask, landmarks, debug_output_dir, cloth_type)
 
     return mask
 
@@ -462,6 +541,49 @@ def _repaint_with_feather(
     return Image.fromarray(blended.astype(np.uint8))
 
 
+# ─── Memory optimization helpers ───────────────────────────────────────────────
+
+
+def _apply_memory_optimizations(pipeline, args):
+    """Apply VRAM optimization techniques to the CatVTON pipeline.
+
+    Strategies:
+    1. Sequential CPU Offload: moves UNet/VAE to CPU when not computing (saves ~4-6GB VRAM)
+    2. Force empty cache before inference
+    """
+    import gc
+    import torch
+
+    applied = []
+
+    # Sequential CPU Offload: moves each component to CPU after use
+    # This is the most effective for 8GB cards
+    if getattr(args, "cpu_offload", False):
+        try:
+            from diffusers import enable_sequential_cpu_offload
+
+            enable_sequential_cpu_offload(pipeline.unet)
+            enable_sequential_cpu_offload(pipeline.vae)
+            applied.append("sequential_cpu_offload")
+            logger.info("Applied sequential CPU offload to UNet and VAE")
+        except Exception as e:
+            logger.warning(f"Could not apply sequential CPU offload: {e}")
+
+    # Force garbage collection and empty cache
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+    # Report VRAM usage
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024**3
+        reserved = torch.cuda.memory_reserved() / 1024**3
+        logger.info(f"VRAM after optimizations: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+
+    return applied
+
+
 # ─── Main inference ────────────────────────────────────────────────────────────
 
 def main():
@@ -483,6 +605,19 @@ def main():
     parser.add_argument("--seed", type=int, default=-1)
     parser.add_argument("--catvton-path", default=None, help="Path to CatVTON repo")
     parser.add_argument("--no-repaint", action="store_true")
+    parser.add_argument(
+        "--precision", default="bf16",
+        choices=["bf16", "fp16", "fp32"],
+        help="Weight precision: bf16 (default, ~8GB VRAM), fp16 (~6GB VRAM), fp32 (~10GB VRAM)"
+    )
+    parser.add_argument(
+        "--cpu-offload", action="store_true",
+        help="Enable sequential CPU offload for UNet/VAE (reduces VRAM to ~4GB, slower)"
+    )
+    parser.add_argument(
+        "--debug-dir", default=None,
+        help="Directory to save debug intermediate images (mask, skeleton, overlays)"
+    )
     args = parser.parse_args()
 
     person_path = args.person
@@ -517,7 +652,8 @@ def main():
 
         # ── Generate cloth-agnostic mask via MediaPipe ────────────────────
         logger.info(f"Generating cloth mask (type={args.type}) via MediaPipe...")
-        cloth_mask = _make_cloth_mask_mediapipe(person_img, args.type)
+        debug_output_dir = Path(args.debug_dir) if args.debug_dir else None
+        cloth_mask = _make_cloth_mask_mediapipe(person_img, args.type, debug_output_dir=debug_output_dir)
         logger.info("Mask generated successfully")
 
         # ── Initialize CatVTON Pipeline ───────────────────────────────────
@@ -530,17 +666,22 @@ def main():
             logger.info("Downloading CatVTON checkpoints from HuggingFace (first run)...")
             repo_path = snapshot_download(repo_id="zhengchong/CatVTON")
 
-        weight_dtype = init_weight_dtype("bf16")
+        # Use user-specified precision (default bf16, fp16 for 8GB cards)
+        precision = getattr(args, "precision", "bf16")
+        weight_dtype = init_weight_dtype(precision)
 
         pipeline = CatVTONPipeline(
             base_ckpt="runwayml/stable-diffusion-inpainting",
             attn_ckpt=repo_path,
             attn_ckpt_version="mix",
             weight_dtype=weight_dtype,
-            use_tf32=True,
+            use_tf32=(precision in ("fp16", "bf16")),
             device="cuda",
             skip_safety_check=True,
         )
+
+        # Apply memory optimizations (CPU offload, cache cleanup)
+        _apply_memory_optimizations(pipeline, args)
 
         # ── Resize images ────────────────────────────────────────────────
         person_resized = resize_and_crop(person_img, (args.width, args.height))
@@ -551,6 +692,15 @@ def main():
         )
         # Light feather to smooth mask boundary (prevents harsh edge artifacts)
         mask_resized = _feather_mask(mask_resized, feather_radius=3)
+
+        # Save resized debug inputs
+        if debug_output_dir is not None:
+            debug_dir = debug_output_dir / "debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            person_resized.save(debug_dir / "05_person_resized.jpg", quality=95)
+            garment_resized.save(debug_dir / "06_garment_resized.jpg", quality=95)
+            mask_resized.save(debug_dir / "07_mask_resized.jpg")
+            logger.info(f"Resized debug images saved to {debug_dir}/")
 
         # ── Run inference ─────────────────────────────────────────────────
         seed = args.seed if args.seed >= 0 else None
