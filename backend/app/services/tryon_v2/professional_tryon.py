@@ -40,7 +40,7 @@ class PipelineStep(Enum):
     VALIDATE_GARMENT = "validate_garment"  # 衣物校验
     DETECT_POSE = "detect_pose"  # 人体姿态检测
     REMOVE_CLOTHING = "remove_clothing"  # 原有衣物擦除
-    WARP_GARMENT = "warp_arment"  # 衣物透视贴合
+    WARP_GARMENT = "warp_garment"  # 衣物透视贴合
     BLEND_LIGHTING = "blend_lighting"  # 光影融合
     VALIDATE_RESULT = "validate_result"  # 结果校验
 

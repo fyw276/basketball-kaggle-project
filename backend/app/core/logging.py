@@ -1,5 +1,5 @@
 """
-Logging configuration
+Logging configuration — Windows-safe, single-process-safe.
 """
 
 import logging
@@ -127,6 +127,15 @@ def setup_logging():
     )
 
     # Add file handler
+    # ─────────────────────────────────────────────────────────────────
+    # enqueue=True: 将日志消息序列化后通过独立进程写入文件。
+    #   对 Windows 至关重要：避免多进程/多线程同时打开 .log.rotate 文件
+    #   造成的 PermissionError: [WinError 32] 锁死崩溃。
+    #   Loguru 会在内部维护一个轻量级的队列 + 写入线程。
+    # retention="30 days": 保留最多 30 个历史日志文件（超出则删除最旧的）。
+    # compression="zip": 压缩旧日志文件以节省磁盘空间。
+    # rotation="10 MB": 单个日志文件超过 10MB 时自动轮转（创建新文件）。
+    # ─────────────────────────────────────────────────────────────────
     log_file = Path(settings.LOG_FILE)
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -137,6 +146,7 @@ def setup_logging():
         rotation="10 MB",
         retention="30 days",
         compression="zip",
+        enqueue=True,  # Windows-safe: 多进程/多线程写入不冲突
     )
 
     # Intercept standard logging

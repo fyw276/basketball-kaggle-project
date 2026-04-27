@@ -30,4 +30,6 @@ if ($KillExisting) {
 
 Write-Host "[run_uvicorn_dev] Starting uvicorn on 0.0.0.0:$Port (cwd: $backendRoot)"
 $env:TF_ENABLE_ONEDNN_OPTS = "0"
+$env:HF_HOME = "D:\hf-cache"
+$env:HF_ENDPOINT = "https://hf-mirror.com"
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port $Port

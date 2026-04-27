@@ -100,6 +100,50 @@ class ApiEnvelopeMiddleware(BaseHTTPMiddleware):
         )
 
 
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """Log every API request for debugging."""
+
+    async def dispatch(self, request: Request, call_next):
+        import time
+
+        path = request.url.path
+        method = request.method
+
+        # Skip logging for static files and docs
+        if (
+            path.startswith("/static")
+            or path.startswith("/docs")
+            or path.startswith("/redoc")
+            or path == "/openapi.json"
+        ):
+            return await call_next(request)
+
+        start_time = time.time()
+
+        # Log request start
+        logger.info(f"[REQUEST] {method} {path} - started")
+
+        try:
+            response = await call_next(request)
+            elapsed_ms = (time.time() - start_time) * 1000
+
+            # Log request completion
+            log_msg = (
+                f"[REQUEST] {method} {path} - completed {response.status_code} "
+                f"in {elapsed_ms:.1f}ms"
+            )
+            if response.status_code >= 400:
+                logger.warning(log_msg)
+            else:
+                logger.info(log_msg)
+
+            return response
+        except Exception as e:
+            elapsed_ms = (time.time() - start_time) * 1000
+            logger.error(f"[REQUEST] {method} {path} - failed after {elapsed_ms:.1f}ms: {e}")
+            raise
+
+
 @asynccontextmanager
 async def _app_lifespan(app: FastAPI):
     """应用启动/关闭：数据库补丁、日志（替代已弃用的 on_event）。"""
@@ -284,6 +328,9 @@ class PrivateNetworkAccessMiddleware(BaseHTTPMiddleware):
 
 # 最内层先统一包裹 JSON 响应，让外层 CORS / PNA 仍能补齐响应头
 app.add_middleware(ApiEnvelopeMiddleware)
+
+# 添加请求日志中间件（显示每个 API 请求）
+app.add_middleware(RequestLoggingMiddleware)
 
 # 再补充 PNA 头，供外层 CORS 最终返回给浏览器
 app.add_middleware(PrivateNetworkAccessMiddleware)
@@ -618,10 +665,19 @@ app.mount("/uploads", StaticFiles(directory=str(upload_dir)), name="uploads")
 if __name__ == "__main__":
     import uvicorn
 
+    # ─────────────────────────────────────────────────────────────────
+    # 强制单进程模式（调试阶段）。
+    # 多进程模式（workers > 1）在 Windows 上会与 Loguru 的 rotation 文件锁冲突，
+    # 导致 PermissionError: [WinError 32]，服务崩溃。
+    # 同样，单进程避免了 CatVTON GPU 模型被多进程重复加载的问题。
+    # 生产部署如需多进程，请使用 Gunicorn + uvicorn.workers 方案，
+    # 并确保 Loguru 的 enqueue=True 已开启（已在本文件 logging.py 中配置）。
+    # ─────────────────────────────────────────────────────────────────
     uvicorn.run(
         "app.main:app",
         host=settings.HOST,
         port=settings.PORT,
         reload=settings.DEBUG,
         log_level=settings.LOG_LEVEL.lower(),
+        workers=1,  # 强制单进程，避免 Windows 日志文件锁死 + CatVTON GPU 冲突
     )

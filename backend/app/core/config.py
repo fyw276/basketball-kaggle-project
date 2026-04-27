@@ -295,6 +295,27 @@ class Settings(BaseSettings):
         default=False,
         description="启用 CPU Offload 以减少 VRAM 占用（更慢但支持更小显存）",
     )
+    # ─── 极限 VRAM 优化配置（8GB 及以下显存推荐全部开启）─────────────────
+    CATVTON_FORCE_FP16: bool = Field(
+        default=False,
+        description="强制使用 fp16 替代 bf16（8GB VRAM 建议开启，节省约 2GB）",
+    )
+    CATVTON_ENABLE_VAE_SLICING: bool = Field(
+        default=True,
+        description="启用 VAE 分片推理（将 VAE 的编码/解码切分为小块，显著降低峰值显存）",
+    )
+    CATVTON_ENABLE_XFORMERS: bool = Field(
+        default=True,
+        description="启用 xformers 高效注意力（需要 xformers 库；若无则自动降级到 PyTorch 2.0 FlashAttention）",
+    )
+    CATVTON_LOW_VRAM_MODE: bool = Field(
+        default=False,
+        description="一键开启低显存模式（等于 force_fp16 + vae_slicing + cpu_offload，推理速度最慢但兼容性最好）",
+    )
+    CATVTON_ENABLE_GC_AFTER_INFER: bool = Field(
+        default=True,
+        description="每次推理后强制调用 torch.cuda.empty_cache() 和 gc.collect() 释放显存",
+    )
 
     # Subscription & quota
     USAGE_QUOTA_ENABLED: bool = Field(default=False, description="启用后执行功能额度扣减")

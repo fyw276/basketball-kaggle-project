@@ -39,6 +39,13 @@ class TryOnV2Response(BaseModel):
     action_hint: str | None = Field(None, description="Action guidance for UI")
     qc_scores: dict[str, float] = Field(default_factory=dict, description="Input/QC scores")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Processing metadata")
+    # ─── 白盒调试字段 ───────────────────────────────────────────────
+    debug_session_dir: str | None = Field(
+        None,
+        description="白盒调试会话目录（debug_mode != 'off' 时返回）。"
+        "包含: 01_input_person.jpg, 02_input_garment.jpg, "
+        "03_mask.png, 04_pose_keypoints.jpg, 09_mask_overlay.png 等中间产物。",
+    )
 
 
 class TryOnV2ValidateResponse(BaseModel):
@@ -283,6 +290,17 @@ async def tryon_garment_v2(
     prompt: str = Form("", description="Optional text prompt"),
     mode: str = Form("strict", description="strict|balanced"),
     model_gender: str = Form("neutral", description="male|female|neutral"),
+    # ─── 白盒调试参数 ───────────────────────────────────────────────
+    debug_mode: str = Form(
+        "off",
+        description=(
+            "白盒调试模式: "
+            "off=关闭调试（默认）; "
+            "preprocess_only=仅运行前处理（mask+pose），跳过扩散模型，极快返回用于调 mask; "
+            "full=完整管线运行并保存所有中间产物（含扩散输出，耗时最长）。"
+            "推荐先用 preprocess_only 确认 mask 质量，再用 full 验证最终效果。"
+        ),
+    ),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -312,6 +330,38 @@ async def tryon_garment_v2(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="mode must be one of: strict, balanced, replace, realistic, professional",
         )
+
+    if debug_mode not in {"off", "preprocess_only", "full"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="debug_mode must be one of: off, preprocess_only, full",
+        )
+
+    # ─── 白盒调试目录分配 ───────────────────────────────────────────
+    # 每个请求分配一个独立的时间戳会话目录，避免文件互相覆盖。
+    # 从 CATVTON_DEBUG_DIR 配置读取根目录；未配置则不保存任何中间产物。
+    debug_session_dir: str | None = None
+    if debug_mode != "off":
+        import datetime
+        import uuid
+        from pathlib import Path
+
+        debug_root = (getattr(settings, "CATVTON_DEBUG_DIR", "") or "").strip()
+        if debug_root:
+            ts = (
+                datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                + f"_{int(datetime.datetime.now().timestamp() * 1000) % 1000:03d}"
+            )
+            session_id = f"tryon_{ts}_{uuid.uuid4().hex[:6]}"
+            session_dir = Path(debug_root) / session_id
+            session_dir.mkdir(parents=True, exist_ok=True)
+            debug_session_dir = str(session_dir)
+            logger.info(f"[DEBUG] 白盒调试已开启，输出目录: {debug_session_dir}")
+        else:
+            logger.warning(
+                "[DEBUG] debug_mode 已设置但 CATVTON_DEBUG_DIR 未配置。"
+                "请在 .env 中设置 CATVTON_DEBUG_DIR=/path/to/debug/output"
+            )
 
     if getattr(settings, "USAGE_QUOTA_ENABLED", False):
         quota = consume_usage(
@@ -519,6 +569,8 @@ async def tryon_garment_v2(
                         garment_bytes=garment_jpg,
                         person_bytes=person_jpg,
                         garment_category=gc or None,
+                        debug_dir=debug_session_dir,
+                        preprocess_only=(debug_mode == "preprocess_only"),
                     )
                     logger.info(
                         "CatVTON returned: status=%s, has_image=%s, msg=%s",
@@ -553,6 +605,31 @@ async def tryon_garment_v2(
                             }
                         chosen = upstream
                         logger.info("CatVTON succeeded for replace mode")
+
+                        # ─── 预处理模式：直接返回中间产物 ─────────────────────────
+                        if debug_mode == "preprocess_only":
+                            record_tryon_v2_success(int((time.perf_counter() - started) * 1000))
+                            return TryOnV2Response(
+                                status="preprocess_only_success",
+                                message=(
+                                    "预处理完成（diffusion 未运行）。"
+                                    "请查看 debug_session_dir 中的 03_mask.png "
+                                    "和 04_pose_keypoints.jpg 验证质量。"
+                                ),
+                                pipeline="REPLACE",
+                                result_image_url=None,
+                                error_code=None,
+                                retryable=False,
+                                action_hint="检查 03_mask.png 是否覆盖了正确的衣服区域。"
+                                "检查 04_pose_keypoints.jpg 关键点是否准确。",
+                                qc_scores={},
+                                metadata={
+                                    **upstream.get("metadata", {}),
+                                    "mode": "preprocess_only",
+                                    "engine": "catvton",
+                                },
+                                debug_session_dir=debug_session_dir,
+                            )
                 except Exception as catvton_err:
                     logger.warning("CatVTON failed for replace mode: %s", catvton_err)
 
@@ -858,7 +935,33 @@ async def tryon_garment_v2(
                     garment_bytes=garment_jpg,
                     person_bytes=person_jpg,
                     garment_category=cloth_type,
+                    debug_dir=debug_session_dir,
+                    preprocess_only=(debug_mode == "preprocess_only"),
                 )
+
+                # ─── 预处理模式：直接返回中间产物 ─────────────────────────
+                if debug_mode == "preprocess_only" and isinstance(upstream, dict):
+                    upstream_meta = upstream.get("metadata") or {}
+                    record_tryon_v2_success(int((time.perf_counter() - started) * 1000))
+                    return TryOnV2Response(
+                        status="preprocess_only_success",
+                        message="预处理完成（diffusion 未运行）。"
+                        "请查看 debug_session_dir 中的 03_mask.png 和 04_pose_keypoints.jpg 验证质量。",
+                        pipeline="REALISTIC",
+                        result_image_url=None,
+                        error_code=None,
+                        retryable=False,
+                        action_hint="检查 03_mask.png 是否覆盖了正确的衣服区域。"
+                        "检查 04_pose_keypoints.jpg 关键点是否准确。",
+                        qc_scores=upstream.get("qc_scores") or {},
+                        metadata={
+                            **upstream_meta,
+                            "mode": "preprocess_only",
+                            "engine": "catvton",
+                            "catvton_category": cloth_type,
+                        },
+                        debug_session_dir=debug_session_dir,
+                    )
 
                 if (
                     isinstance(upstream, dict)
@@ -953,7 +1056,33 @@ async def tryon_garment_v2(
                 garment_bytes=garment_jpg,
                 person_bytes=person_jpg,
                 garment_category=cloth_type,
+                debug_dir=debug_session_dir,
+                preprocess_only=(debug_mode == "preprocess_only"),
             )
+
+            # ─── 预处理模式：直接返回中间产物 ─────────────────────────
+            if debug_mode == "preprocess_only" and isinstance(upstream, dict):
+                upstream_meta = upstream.get("metadata") or {}
+                record_tryon_v2_success(int((time.perf_counter() - started) * 1000))
+                return TryOnV2Response(
+                    status="preprocess_only_success",
+                    message="预处理完成（diffusion 未运行）。"
+                    "请查看 debug_session_dir 中的 03_mask.png 和 04_pose_keypoints.jpg 验证质量。",
+                    pipeline="PROFESSIONAL",
+                    result_image_url=None,
+                    error_code=None,
+                    retryable=False,
+                    action_hint="检查 03_mask.png 是否覆盖了正确的衣服区域。"
+                    "检查 04_pose_keypoints.jpg 关键点是否准确。",
+                    qc_scores=upstream.get("qc_scores") or {},
+                    metadata={
+                        **upstream_meta,
+                        "mode": "preprocess_only",
+                        "engine": "catvton",
+                        "catvton_category": cloth_type,
+                    },
+                    debug_session_dir=debug_session_dir,
+                )
 
             if (
                 isinstance(upstream, dict)
@@ -1166,6 +1295,7 @@ async def tryon_garment_v2(
         action_hint=None,
         qc_scores=result.get("qc_scores") or {},
         metadata={**(result.get("metadata") or {}), **pre_meta},
+        debug_session_dir=debug_session_dir,
     )
 
 

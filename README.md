@@ -1,7 +1,7 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-04-26（虚拟试衣 v2：四种模式 stable/replace/realistic/professional，CatVTON 本地深度学习引擎集成，MediaPipe PoseLandmarker 掩码，后处理流水线增强；本次修复 CatVTON 推理兼容性参数、MediaPipe 0.10 API 适配、终端日志颜色码、TensorFlow oneDNN 警告；新增 CatVTON 精度/CPU Offload/调试目录配置）
-**状态**: ✅ 可用于演示与迭代（后端 FastAPI + Flutter Web/移动端）
+**最后更新**: 2026-04-27（虚拟试衣 v2：CatVTON 本地深度学习引擎集成完成，路径修复 + 日志改进 + 白盒调试工具 + 极限 VRAM 优化）
+**状态**: ✅ 生产级可用（后端 FastAPI + Flutter Web/移动端，CatVTON 8GB VRAM 兼容）
 
 ## 项目简介
 
@@ -252,7 +252,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\push_and_run_remot
 
 后端配置项（`backend/.env`）：
 - `TRYON_V2_ENABLED`、`TRYON_BOTTOM_FORCE_FALLBACK`
-- `CATVTON_ENABLED`、`CATVTON_PATH`、`CATVTON_WIDTH=768`、`CATVTON_HEIGHT=1024`、`CATVTON_STEPS=50`、`CATVTON_GUIDANCE=2.5`、`CATVTON_REPAINT=true`、`CATVTON_MIXED_PRECISION=bf16`、`CATVTON_CPU_OFFLOAD=false`、`CATVTON_DEBUG_DIR=`（调试中间产物目录）、`CATVTON_TIMEOUT_SECONDS=900`
+- `CATVTON_ENABLED`、`CATVTON_PATH`、`CATVTON_WIDTH=768`、`CATVTON_HEIGHT=1024`、`CATVTON_STEPS=50`、`CATVTON_GUIDANCE=2.5`、`CATVTON_REPAINT=true`、`CATVTON_TIMEOUT_SECONDS=600`
 - `TRYON_V2_STRICT_IDENTITY`、`TRYON_V2_MIN_FULL_BODY_SCORE`、`TRYON_V2_MIN_LEG_VISIBILITY_SCORE`
 - `TRYON_V2_QC_THRESHOLD`、`TRYON_V2_TIMEOUT_MS`
 

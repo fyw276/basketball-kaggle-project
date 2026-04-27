@@ -57,8 +57,9 @@ pip install -r requirements.txt
 # 额外依赖（CatVTON 需要）
 pip install accelerate transformers diffusers opencv-python pillow
 
-# MediaPipe（用于 MediaPipe PoseLandmarker 生成人体掩码，无需 detectron2）
-pip install mediapipe
+# detectron2（用于 DensePose，自动遮罩生成必需）
+# 注意：detectron2 在 Windows 上安装复杂，如果遇到问题，看下方"Windows 兼容说明"
+pip install 'git+https://github.com/facebookresearch/detectron2.git'
 ```
 
 ### 第五步：下载预训练权重
@@ -68,9 +69,8 @@ CatVTON 权重会在**首次运行时自动从 HuggingFace 下载**，无需手�
 下载的内容包括：
 - `runwayml/stable-diffusion-inpainting`（SD v1.5 基础模型）
 - `zhengchong/CatVTON`（CatVTON 注意力权重）
-- MediaPipe PoseLandmarker 模型（首次自动下载，用于生成人体掩码，替代原 DensePose/SCHP）
-
-> **注意**：本项目使用 **MediaPipe PoseLandmarker** 生成人体掩码，**无需安装 detectron2 / DensePose / SCHP**。
+- `DensePose` 权重（用于自动遮罩生成）
+- `SCHP` 权重（用于人像分割）
 
 **首次运行大约需要下载 5-10GB 文件，请保持网络连接。**
 
@@ -101,18 +101,8 @@ CATVTON_ENABLED=true
 CATVTON_PATH=D:\models\CatVTON
 VTON_INFERENCE_URL=http://127.0.0.1:8011/v1/tryon
 VTON_INFERENCE_TIMEOUT_SECONDS=600
-CATVTON_WIDTH=768
-CATVTON_HEIGHT=1024
 CATVTON_STEPS=50
-CATVTON_GUIDANCE=3.5
-CATVTON_REPAINT=true
-# bf16（默认，约 8GB VRAM）/ fp16（约 6GB）/ fp32（约 10GB）
-CATVTON_MIXED_PRECISION=bf16
-# true = 启用 CPU Offload，VRAM 降至 ~4GB（更慢但支持小显存）
-CATVTON_CPU_OFFLOAD=false
-# 保存调试中间产物（mask、骨架图等）的目录，为空则不保存
-CATVTON_DEBUG_DIR=
-CATVTON_TIMEOUT_SECONDS=900
+CATVTON_GUIDANCE=2.5
 ```
 
 **2. 启动 CatVTON 推理服务（端口 8011）：**
@@ -166,22 +156,19 @@ python catvton_engine.py \
 
 ## Windows 兼容说明
 
-### MediaPipe 安装
+### detectron2 安装问题
 
-本项目使用 MediaPipe 替代 detectron2 来生成人体掩码，Windows 兼容性更好：
+detectron2 在 Windows 上有时安装困难。如果遇到：
 
 ```bash
-pip install mediapipe
-```
+# 方法1：使用预编译 wheel
+pip install detectron2 -f https://dl.fbaipublicfiles.com/detectron2/wheels/cpu/index.html
 
-如果遇到 cv2 DLL 锁定问题（Windows 上安装 opencv 时常见），请先确保没有其他 Python 进程正在运行：
-```powershell
-taskkill /F /FI "IMAGENAME eq python.exe"
-```
-
-然后再安装：
-```bash
-pip install opencv-contrib-python mediapipe
+# 方法2：从源码编译（需要 Visual Studio Build Tools）
+git clone https://github.com/facebookresearch/detectron2.git
+cd detectron2
+python setup.py build
+pip install .
 ```
 
 ### CUDA 版本问题
@@ -250,14 +237,14 @@ CATVTON_HEIGHT=768
 
 # 或使用 fp16 精度（更省显存但质量稍低）
 CATVTON_MIXED_PRECISION=fp16
-
-# 或启用 CPU Offload，VRAM 降至 ~4GB
-CATVTON_CPU_OFFLOAD=true
 ```
 
 ### 错误：detectron2 导入失败
 
-> **本项目已不使用 detectron2**：使用 MediaPipe PoseLandmarker 替代，无需此依赖。
+```bash
+# 在 CatVTON 环境中
+pip install 'git+https://github.com/facebookprofi.github.com/detectron2.git'
+```
 
 ### 错误：超时（timeout）
 
