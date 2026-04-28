@@ -284,8 +284,8 @@ class Settings(BaseSettings):
         description="CatVTON 混合精度：bf16（推荐，~8GB VRAM）/ fp16 / no（fp32）",
     )
     CATVTON_TIMEOUT_SECONDS: int = Field(
-        default=600,
-        description="CatVTON 单次推理超时（秒，50步约需 30-60 秒）",
+        default=2400,
+        description="CatVTON 单次推理超时（秒，50步约需 25-30 分钟，100步约需 50-60 分钟）",
     )
     CATVTON_DEBUG_DIR: str = Field(
         default="",

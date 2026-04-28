@@ -169,6 +169,11 @@ models/clip_finetuned/*.pt
 temp_test_shirt.png
 mobile/devtools_options.yaml
 
+# CatVTON / try-on test fixtures (sample images, not committed)
+backend/scripts/test_person.jpg
+backend/scripts/test_garment.jpg
+backend/scripts/test_garment.jpg.jpg
+
 # Flutter: always track app Dart sources. Keep this block LAST so it wins if anyone re-adds a broad `lib/` rule.
 !mobile/lib/
 !mobile/lib/**

@@ -1,6 +1,6 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-04-27（虚拟试衣 v2：CatVTON 本地深度学习引擎集成完成，路径修复 + 日志改进 + 白盒调试工具 + 极限 VRAM 优化）
+**最后更新**: 2026-04-28（极限 VRAM 优化、实时日志、白盒调试工具、极限低显存一键模式、CatVTON 预处理调试）
 **状态**: ✅ 生产级可用（后端 FastAPI + Flutter Web/移动端，CatVTON 8GB VRAM 兼容）
 
 ## 项目简介
@@ -239,7 +239,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\push_and_run_remot
 | `realistic` | CatVTON 深度学习，100% 保留商品细节 + 真实褶丝和光照 | 商品展示 |
 | `professional` | 精确分割 + 姿态拟合 + 服装消除 + 光照融合 + 严格验证 | 专业摇摇空级 |
 
-`realistic` 和 `professional` 模式依赖本地 CatVTON（需 `CATVTON_PATH` 已配置）。移动端建议采用"先预检再生成"的双阶段流程。
+`realistic` 和 `professional` 模式依赖本地 CatVTON（需 `CATVTON_ENABLED=true` 且 `CATVTON_PATH` 已配置）。CatVTON 在 8GB VRAM 环境下通过 **bf16 + VAE slicing + xformers** 可正常运行；RTX 4060 Laptop 推荐开启 `CATVTON_FORCE_FP16=true` 节省约 2GB；极端情况使用 `CATVTON_LOW_VRAM_MODE=true` 一键开启低显存模式。移动端建议采用"先预检再生成"的双阶段流程。
 
 > 移动端 `ApiClient` 默认 `baseUrl` 为 `/api/v1`，但 v2 方法会自动切换到 `/api/v2`，无需手动改基址。
 
@@ -252,9 +252,27 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\push_and_run_remot
 
 后端配置项（`backend/.env`）：
 - `TRYON_V2_ENABLED`、`TRYON_BOTTOM_FORCE_FALLBACK`
-- `CATVTON_ENABLED`、`CATVTON_PATH`、`CATVTON_WIDTH=768`、`CATVTON_HEIGHT=1024`、`CATVTON_STEPS=50`、`CATVTON_GUIDANCE=2.5`、`CATVTON_REPAINT=true`、`CATVTON_TIMEOUT_SECONDS=600`
+- `CATVTON_ENABLED=true`、`CATVTON_PATH=D:\models\CatVTON_full`、`CATVTON_WIDTH=768`、`CATVTON_HEIGHT=1024`、`CATVTON_STEPS=50`、`CATVTON_GUIDANCE=2.5`、`CATVTON_REPAINT=true`、`CATVTON_TIMEOUT_SECONDS=2400`
+- **极限 VRAM 优化**（8GB 及以下显存推荐全部开启）：`CATVTON_FORCE_FP16=true`、`CATVTON_ENABLE_VAE_SLICING=true`、`CATVTON_ENABLE_XFORMERS=true`、`CATVTON_LOW_VRAM_MODE=true`（一键开启低显存模式）
 - `TRYON_V2_STRICT_IDENTITY`、`TRYON_V2_MIN_FULL_BODY_SCORE`、`TRYON_V2_MIN_LEG_VISIBILITY_SCORE`
 - `TRYON_V2_QC_THRESHOLD`、`TRYON_V2_TIMEOUT_MS`
+
+CatVTON 配置文档（详细说明）：[`docs/VTON_INTEGRATION.md`](docs/VTON_INTEGRATION.md)、[`docs/TRYON_TECH_BLUEPRINT_AB.md`](docs/TRYON_TECH_BLUEPRINT_AB.md)。
+
+CatVTON 诊断与测试脚本：
+```bash
+# 诊断 CatVTON 状态
+python backend/scripts/diagnose_catvton.py
+
+# 端到端测试
+python backend/scripts/test_catvton_e2e.py
+
+# 直接测试（跳过 API 层）
+cd backend && python scripts/test_catvton_direct.py
+
+# 调试：仅运行预处理（生成 mask + pose，不跑扩散，极快）
+# 在 catvton_engine_client.py 中设置 preprocess_only=True，或查看 vton_inference_service/catvton_runner.py --preprocess-only
+```
 
 CLI 调用示例（`cli/outfit_cli.py`）：
 

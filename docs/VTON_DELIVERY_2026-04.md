@@ -30,10 +30,21 @@
 - **单次 HTTP 请求**生成一张结果图（轮播组件仍兼容单张展示）。
 - **品类**：可选 `上装` / `下装` / `裙装` / 自动，对应表单 `garment_category`，用于百炼与专用 VTON 路由；页面文案提示全身图、连衣裙与下装互斥等，降低错配。
 
-## 相关文档索引
+## CatVTON VRAM 优化（2026-04 补充）
 
-| 主题 | 文档 |
-|------|------|
-| OOTDiffusion vs IDM-VTON、契约、Docker 示例 | [`VTON_INTEGRATION.md`](VTON_INTEGRATION.md) |
-| `/predict`、Vite、试衣 API 细节 | [`AI_OUTFIT_PREDICT_AND_TRYON.md`](AI_OUTFIT_PREDICT_AND_TRYON.md) |
-| PyTorch CUDA（Windows） | [`PYTORCH_CUDA_WINDOWS.md`](PYTORCH_CUDA_WINDOWS.md) |
+本地 CatVTON 支持以下极限 VRAM 优化，适合 8GB 及以下显存（RTX 4060 Laptop 等）：
+
+| 开关 | 说明 | 推荐值 |
+|------|------|--------|
+| `CATVTON_LOW_VRAM_MODE=true` | 一键低显存模式（等于 force_fp16 + vae_slicing + xformers） | RTX 4060 Laptop |
+| `CATVTON_FORCE_FP16=true` | 强制 fp16（节省约 2GB 显存） | RTX 4060 Laptop |
+| `CATVTON_ENABLE_VAE_SLICING=true` | VAE 分片推理（峰值显存 -40%） | 全系列 |
+| `CATVTON_ENABLE_XFORMERS=true` | xformers 高效注意力 | 全系列 |
+
+详细说明与快速测试命令见 [`VTON_INTEGRATION.md`](VTON_INTEGRATION.md)。
+
+快速测试（无需后端，先验证 mask）：
+```bash
+cd backend && python scripts/test_catvton_direct.py --preprocess-only
+cd backend && python scripts/test_catvton_direct.py --low-vram
+```

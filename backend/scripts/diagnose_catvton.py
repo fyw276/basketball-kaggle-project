@@ -43,6 +43,19 @@ def check_model_status():
                 print(f"    path_exists: {catvton.get('path_exists')}")
                 print(f"    model_exists: {catvton.get('model_exists')}")
                 print(f"    runner_exists: {catvton.get('runner_exists')}")
+                print(f"    width: {catvton.get('width')} x {catvton.get('height')}")
+                print(f"    steps: {catvton.get('steps')}")
+                print(f"    guidance: {catvton.get('guidance')}")
+                print(f"    repaint: {catvton.get('repaint')}")
+                print(f"    timeout_s: {catvton.get('timeout_s')}")
+                print(f"\n[3] VRAM 优化配置:")
+                print(f"    precision: {catvton.get('precision')}")
+                print(f"    force_fp16: {catvton.get('force_fp16')}")
+                print(f"    vae_slicing: {catvton.get('vae_slicing')}")
+                print(f"    xformers: {catvton.get('xformers')}")
+                print(f"    cpu_offload: {catvton.get('cpu_offload')}")
+                print(f"    low_vram_mode: {catvton.get('low_vram_mode')}")
+                print(f"    debug_dir: {catvton.get('debug_dir') or '(未设置)'}")
 
                 if not catvton.get("model_exists"):
                     print("\n    [!] 警告: CatVTON 模型文件不存在！")
@@ -104,14 +117,33 @@ def suggest_fixes():
    - 检查 enhance_tryon_result 函数
    - 尝试禁用后处理
 
-4. 使用 debug_mode=preprocess_only 查看中间产物
-   - 这会显示 mask、pose 等是否正确
-   - 如果 mask 错误，CatVTON 输出也会错误
+4. Mask 错误导致衣物区域不对
+   - 使用 --preprocess-only 模式查看中间产物
+   - 检查 03_mask.png 是否覆盖了正确的衣服区域
+   - 检查 04_pose_keypoints.jpg 关键点是否准确
+
+5. VRAM 不足导致推理失败或 OOM
+   - RTX 4060 Laptop (8GB) 推荐启用低显存模式：
+     cd backend && python scripts/test_catvton_direct.py --low-vram
+   - 或者手动设置：
+     # .env 中设置
+     CATVTON_LOW_VRAM_MODE=true
+     CATVTON_FORCE_FP16=true
+     CATVTON_ENABLE_VAE_SLICING=true
+     CATVTON_ENABLE_XFORMERS=true
+
+6. CatVTON 推理实际没有运行（被降级到 warp 等）
+   - 检查 API 返回的 metadata.engine 字段
+   - 应该是 "catvton"，而不是 "warp_preserve"
+   - 查看后端日志中是否有 [CATVTON-RUNNER] 或 [CATVTON-STEP]
 
 建议的测试步骤：
-1. 启用 debug_mode=preprocess_only 查看中间产物
+1. 先用 --preprocess-only 查看中间产物（不需要 GPU）
+   cd backend && python scripts/test_catvton_direct.py --preprocess-only
 2. 检查 03_mask.png 是否覆盖了正确的衣服区域
 3. 检查 04_pose_keypoints.jpg 关键点是否准确
+4. 如果都正常，再用 --low-vram 跑完整推理
+   cd backend && python scripts/test_catvton_direct.py --low-vram
     """
     )
 

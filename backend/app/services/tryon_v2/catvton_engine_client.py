@@ -59,15 +59,17 @@ def _catvton_configured() -> bool:
     if not has_model:
         # Try alternative path: CatVTON_full
         alt_path = Path(r"D:\models\CatVTON_full")
-        model_found = any((alt_path / d).exists() for d in model_dirs)
-        if alt_path.exists() and model_found:
-            logger.info("CatVTON _catvton_configured: Found model at D:\\models\\CatVTON_full")
+        if alt_path.exists() and any((alt_path / d).exists() for d in model_dirs):
+            logger.info(
+                "CatVTON _catvton_configured: Found model at "
+                "D:\\models\\CatVTON_full, updating path"
+            )
             has_model = True
         else:
             logger.info(
                 "CatVTON _catvton_configured: model directory not found in %s. "
                 "Expected one of: %s or zhengchong_CatVTON subdirectory. "
-                "Model will be downloaded on first use.",
+                "Model will be downloaded on first use (requires HuggingFace access).",
                 catvton_path,
                 model_dirs,
             )
@@ -125,7 +127,7 @@ def _run_catvton_sync(
     garment_bytes: bytes,
     cloth_type: str,
     seed: int = -1,
-    timeout: int = 600,
+    timeout: int = 2400,
     debug_dir: Optional[str] = None,
     preprocess_only: bool = False,
     vae_slicing: bool = True,
@@ -167,7 +169,10 @@ def _run_catvton_sync(
             "message": "CatVTON path not found",
             "metadata": {
                 "reason": "path_not_found",
-                "hint": "Set CATVTON_PATH or use D:\\models\\CatVTON_full",
+                "hint": (
+                    "Set CATVTON_PATH in config or ensure "
+                    "D:\\models\\CatVTON or D:\\models\\CatVTON_full exists"
+                ),
             },
         }
 
@@ -417,7 +422,7 @@ def _run_catvton_sync(
         # ── Handle preprocess_only mode ────────────────────────────────
         stdout = result.stdout or ""
 
-        # Extract debug_dir from output (e.g. "DEBUG_DIR:C:\path")
+        # Extract debug_dir from output (e.g. "DEBUG_DIR:C:\path" or "PREPROCESS_ONLY:C:\path")
         debug_session_dir = None
         for line in stdout.splitlines():
             if line.startswith("DEBUG_DIR:"):
@@ -428,8 +433,6 @@ def _run_catvton_sync(
                     parts = line.split(":", 1)
                     if len(parts) > 1:
                         debug_session_dir = parts[1].strip()
-            elif line.startswith("SUCCESS:"):
-                pass  # preprocess_only confirmed
 
         if preprocess_only:
             # Return success with debug session directory
@@ -529,6 +532,7 @@ async def call_local_catvton(
     person_bytes: bytes,
     garment_category: Optional[str] = None,
     seed: int = -1,
+    timeout: int = 2400,
     debug_dir: Optional[str] = None,
     preprocess_only: bool = False,
     low_vram_mode: bool = False,
@@ -555,7 +559,12 @@ async def call_local_catvton(
         return None
 
     catvton_type = _catvton_category_hint(garment_category)
-    timeout = int(getattr(settings, "CATVTON_TIMEOUT_SECONDS", 600) or 600)
+    # Use explicit timeout param if provided (> 0), otherwise fall back to settings
+    effective_timeout = (
+        timeout
+        if timeout and timeout > 0
+        else int(getattr(settings, "CATVTON_TIMEOUT_SECONDS", 2400) or 2400)
+    )
 
     # Determine debug_dir from settings if not overridden
     debug_dir_setting = getattr(settings, "CATVTON_DEBUG_DIR", "") or ""
@@ -575,7 +584,7 @@ async def call_local_catvton(
             garment_bytes=garment_bytes,
             cloth_type=catvton_type,
             seed=seed,
-            timeout=timeout,
+            timeout=effective_timeout,
             debug_dir=debug_dir,
             preprocess_only=preprocess_only,
             vae_slicing=vae_slicing,
@@ -631,7 +640,7 @@ def get_catvton_status() -> Dict[str, Any]:
         "steps": int(getattr(settings, "CATVTON_STEPS", 50) or 50),
         "guidance": float(getattr(settings, "CATVTON_GUIDANCE", 2.5) or 2.5),
         "repaint": bool(getattr(settings, "CATVTON_REPAINT", True)),
-        "timeout_s": int(getattr(settings, "CATVTON_TIMEOUT_SECONDS", 600) or 600),
+        "timeout_s": int(getattr(settings, "CATVTON_TIMEOUT_SECONDS", 2400) or 2400),
         # VRAM 优化配置
         "precision": getattr(settings, "CATVTON_MIXED_PRECISION", "bf16"),
         "force_fp16": getattr(settings, "CATVTON_FORCE_FP16", False),
@@ -664,16 +673,14 @@ def log_catvton_status(prefix: str = "") -> str:
         f"cpu_offload={status['cpu_offload']}, low_vram_mode={status['low_vram_mode']}"
     )
 
-    vram_opts = (
-        f"fp16({status['force_fp16']})/vae({status['vae_slicing']})/" f"xfrm({status['xformers']})"
-    )
     summary = " | ".join(
         [
             f"CatVTON enabled={status['enabled']}",
             f"path={'OK' if status['path_exists'] else 'MISSING'}",
             f"runner={'OK' if status['runner_exists'] else 'MISSING'}",
             f"model={'OK' if status['model_exists'] else 'NOT_DOWNLOADED'}",
-            f"VRAM={vram_opts}",
+            f"VRAM=fp16({status['force_fp16']})/vae({status['vae_slicing']})"
+            f"/xfrm({status['xformers']})",
         ]
     )
 

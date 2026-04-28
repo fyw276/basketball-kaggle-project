@@ -9,6 +9,8 @@ CatVTON 端到端测试 - 验证 CatVTON 是否正确工作
 
 使用方法：
     python scripts/test_catvton_e2e.py
+    python scripts/test_catvton_e2e.py --low-vram
+    python scripts/test_catvton_e2e.py --real
 """
 
 import os
@@ -67,8 +69,8 @@ def test_catvton_e2e():
 
     print(f"\n    测试图片已保存到: {test_dir}")
 
-    # 3. 调用 CatVTON
     print("\n[2] 调用 CatVTON...")
+    print("    (使用 vae_slicing=True, xformers=True 以节省显存)")
     from backend.app.services.tryon_v2.catvton_engine_client import _run_catvton_sync
 
     person_bytes = open(person_path, "rb").read()
@@ -80,6 +82,10 @@ def test_catvton_e2e():
         garment_bytes=garment_bytes,
         cloth_type="upper",
         timeout=300,
+        vae_slicing=True,
+        xformers=True,
+        force_fp16=False,
+        low_vram_mode=False,
     )
     elapsed = time.time() - start_time
 
@@ -207,6 +213,7 @@ def test_with_real_images():
     garment_bytes = open(garment_path, "rb").read()
 
     print("\n    开始 CatVTON 推理...")
+    print("    (使用 vae_slicing=True, xformers=True 以节省显存)")
 
     start_time = time.time()
     result = _run_catvton_sync(
@@ -214,6 +221,10 @@ def test_with_real_images():
         garment_bytes=garment_bytes,
         cloth_type="upper",
         timeout=300,
+        vae_slicing=True,
+        xformers=True,
+        force_fp16=False,
+        low_vram_mode=False,
     )
     elapsed = time.time() - start_time
 
@@ -234,7 +245,22 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="CatVTON 端到端测试")
-    parser.add_argument("--real", action="store_true", help="使用真实图片测试")
+    parser.add_argument(
+        "--real",
+        action="store_true",
+        help="使用真实图片测试（需准备 real_person.jpg 和 real_garment.jpg）",
+    )
+    parser.add_argument(
+        "--low-vram",
+        action="store_true",
+        help="启用低显存模式（等于 --force-fp16 + VAE slicing + xformers，RTX 4060 Laptop 推荐）",
+    )
+    parser.add_argument(
+        "--force-fp16", action="store_true", help="强制 fp16 而非 bf16（节省约 2GB 显存）"
+    )
+    parser.add_argument("--no-vae-slicing", action="store_true", help="禁用 VAE 分片推理")
+    parser.add_argument("--no-xformers", action="store_true", help="禁用 xformers 高效注意力")
+    parser.add_argument("--steps", type=int, default=50, help="扩散步数（默认 50）")
     args = parser.parse_args()
 
     if args.real:

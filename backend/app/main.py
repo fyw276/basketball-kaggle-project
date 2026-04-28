@@ -128,14 +128,16 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             elapsed_ms = (time.time() - start_time) * 1000
 
             # Log request completion
-            log_msg = (
-                f"[REQUEST] {method} {path} - completed {response.status_code} "
-                f"in {elapsed_ms:.1f}ms"
-            )
             if response.status_code >= 400:
-                logger.warning(log_msg)
+                logger.warning(
+                    f"[REQUEST] {method} {path} - completed "
+                    f"{response.status_code} in {elapsed_ms:.1f}ms"
+                )
             else:
-                logger.info(log_msg)
+                logger.info(
+                    f"[REQUEST] {method} {path} - completed "
+                    f"{response.status_code} in {elapsed_ms:.1f}ms"
+                )
 
             return response
         except Exception as e:

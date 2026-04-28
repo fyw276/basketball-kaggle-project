@@ -10,14 +10,32 @@
 
 - **引擎入口**：[`backend/app/services/tryon_v2/catvton_engine_client.py`](../backend/app/services/tryon_v2/catvton_engine_client.py) — 调用同目录的 `catvton_runner.py` 子进程（subprocess），避免 Python 依赖冲突
 - **子进程脚本**：[`vton_inference_service/catvton_runner.py`](../vton_inference_service/catvton_runner.py) — 独立的 CatVTON 推理脚本，支持 MediaPipe PoseLandmarker 生成掩码（无需 SCHP / DensePose）
-- **CatVTON 核心**：[`vton_inference_service/catvion_engine.py`](../vton_inference_service/catvton_engine.py) — CatVTONPipeline 封装，支持 bf16 / fp16 / fp32，自动下载 HuggingFace 权重
+- **CatVTON 核心**：[`vton_inference_service/catvton_engine.py`](../vton_inference_service/catvton_engine.py) — CatVTONPipeline 封装，支持 bf16 / fp16 / fp32，自动下载 HuggingFace 权重
 
 配置项（`backend/.env`）：
 - `CATVTON_ENABLED=true` — 启用本地 CatVTON
 - `CATVTON_PATH=/path/to/CatVTON` — CatVTON 仓库目录（需含 `zhengchong_CatVTON` 权重，或首次运行时自动从 HuggingFace 下载）
 - `CATVTON_WIDTH=768`、`CATVTON_HEIGHT=1024`、`CATVTON_STEPS=50`、`CATVTON_GUIDANCE=2.5` — 推理参数
 - `CATVTON_REPAINT=true` — 是否在生成后用原图 repaint 背景
-- `CATVTON_TIMEOUT_SECONDS=600` — 超时秒数
+- `CATVTON_TIMEOUT_SECONDS=2400` — 超时秒数
+
+**极限 VRAM 优化（8GB 及以下显存推荐全部开启）：**
+- `CATVTON_FORCE_FP16=true` — 强制 fp16 替代 bf16（RTX 4060 Laptop 推荐，节省约 2GB 显存）
+- `CATVTON_ENABLE_VAE_SLICING=true` — VAE 分片推理（峰值显存 -40%）
+- `CATVTON_ENABLE_XFORMERS=true` — xformers 高效注意力（无则自动降级到 PyTorch SDPA/FlashAttention）
+- `CATVTON_LOW_VRAM_MODE=true` — **一键低显存模式**（等于 force_fp16 + vae_slicing + xformers，兼容性最好）
+
+**白盒调试工具：**
+- `--preprocess-only` 模式：仅运行前处理（mask + pose 生成），跳过扩散推理，极大加快调试速度
+- `CATVTON_DEBUG_DIR=./debug_output` — 保存所有中间产物（01_input_person.jpg、03_mask.png、04_pose_keypoints.jpg、09_mask_overlay.jpg 等），每次请求生成独立文件夹
+- 实时日志：子进程 stdout/stderr 通过线程流式传输到父进程终端
+
+**快速测试脚本：**
+```bash
+python backend/scripts/diagnose_catvton.py          # 诊断 CatVTON 状态
+python backend/scripts/test_catvton_e2e.py          # 端到端测试
+cd backend && python scripts/test_catvton_direct.py # 直接测试（跳过 API 层）
+```
 
 CatVTON 在 `replace` / `realistic` / `professional` 三种模式中均会被尝试使用。
 

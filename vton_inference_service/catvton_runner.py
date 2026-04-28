@@ -756,17 +756,17 @@ def _apply_memory_optimizations(
                 applied.append("xformers")
                 logger.info("VRAM 优化已应用: xformers 高效注意力")
             except ImportError:
-                # xformers 不可用，降级到 PyTorch 2.0 Flash Attention
-                # 原理：FlashAttention 使用 IO-aware 切片重计算，将显存降到 O(n)
-                # PyTorch 2.0+ 在 cuda >= 11.6 时默认开启。
+                # xformers 不可用，降级到 PyTorch 原生 SDPA (FlashAttention)
+                # 原理：PyTorch 2.0+ 在 CUDA >= 11.6 时通过 SDPA 实现接近 FlashAttention 的性能。
+                # SDPA 由 diffusers 的 AttnProcessor2_0 自动使用，只需启用底层 flags。
                 try:
-                    from torch.backends.cuda import flash_attention
-
-                    flash_attention.enabled = True
+                    torch.backends.cuda.enable_flash_sdp(True)
+                    torch.backends.cuda.enable_mem_efficient_sdp(True)
+                    torch.backends.cuda.enable_math_sdp(False)
                     applied.append("flash_attention_fallback")
-                    logger.info("VRAM 优化已应用: PyTorch FlashAttention (xformers 未安装，降级)")
-                except (ImportError, AttributeError):
-                    logger.info("VRAM 优化: xformers 和 FlashAttention 均不可用，跳过注意力优化")
+                    logger.info("VRAM 优化已应用: PyTorch SDPA (xformers 未安装，降级)")
+                except (ImportError, AttributeError) as e:
+                    logger.warning(f"SDPA 启用失败: {e}, 跳过注意力优化")
         except Exception as e:
             logger.warning(f"xformers/FlashAttention 应用失败: {e}")
 
@@ -775,15 +775,15 @@ def _apply_memory_optimizations(
     # 立即卸载到 CPU DRAM。只有在 8GB 以下显存且其他方法仍 OOM 时使用。
     # 速度影响：显著变慢（数据在 PCIe 总线上传输），但能保证不崩溃。
     if cpu_offload:
+        # NOTE: accelerate.cpu_offload has known compatibility issues with CatVTON's
+        # CatVTONPipeline (meta tensor errors during VAE encoding). The pipeline
+        # already uses accelerate hooks internally, and cpu_offload conflicts with them.
+        # Instead, rely on fp16 + VAE slicing for VRAM management.
         try:
-            from diffusers import enable_sequential_cpu_offload
-
-            enable_sequential_cpu_offload(pipeline.unet)
-            enable_sequential_cpu_offload(pipeline.vae)
-            applied.append("sequential_cpu_offload")
-            logger.info("VRAM 优化已应用: 顺序 CPU 卸载 (最省显存，速度最慢)")
-        except Exception as e:
-            logger.warning(f"CPU offload 应用失败: {e}")
+            logger.info("CPU offload 已禁用（与 CatVTON pipeline 不兼容，使用 fp16 + VAE slicing 替代）")
+        except Exception:
+            pass
+        applied.append("cpu_offload_skipped")
 
     # ── 推理前强制清空显存缓存 ───────────────────────────────────────
     # Python 的循环引用和临时对象可能使显存无法及时回收。
