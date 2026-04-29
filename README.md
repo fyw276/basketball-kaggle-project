@@ -1,6 +1,6 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-04-28（极限 VRAM 优化、实时日志、白盒调试工具、极限低显存一键模式、CatVTON 预处理调试）
+**最后更新**: 2026-04-29（CatVTON 后处理修复：尺寸不匹配修复、快速增强模式、极限 VRAM 优化、实时日志、白盒调试工具、极限低显存一键模式、CatVTON 预处理调试）
 **状态**: ✅ 生产级可用（后端 FastAPI + Flutter Web/移动端，CatVTON 8GB VRAM 兼容）
 
 ## 项目简介

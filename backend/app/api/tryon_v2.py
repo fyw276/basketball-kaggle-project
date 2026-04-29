@@ -1247,14 +1247,31 @@ async def tryon_garment_v2(
             elif any(k in gc for k in ("bottom", "下装", "裤")):
                 garment_region = _estimate_garment_region_for_postprocess(result_img.size, "bottom")
 
-            # 应用后处理
-            result_img = enhance_tryon_result(
-                result=result_img,
-                person=person_image,
-                original_garment=garment_image,
-                garment_region=garment_region,
-                strength=postprocess_strength,
+            # 检查是否是 CatVTON 输出（尺寸可能是 768x1024 或 512x512 等）
+            is_catvton_output = (
+                result.get("metadata", {}).get("engine") == "catvton"
+                or result.get("metadata", {}).get("model") == "catvton_local"
             )
+
+            # CatVTON 输出尺寸可能与原始图片不同，需要特殊处理
+            if is_catvton_output and result_img.size != person_image.size:
+                # CatVTON 输出：使用快速增强，避免与不同尺寸的原始图片混合
+                from app.services.tryon_v2.postprocess import quick_enhance
+
+                result_img = quick_enhance(result_img)
+                logger.info(
+                    f"Post-processing: CatVTON output ({result_img.size}), using quick_enhance"
+                )
+            else:
+                # 正常流程：完整后处理
+                result_img = enhance_tryon_result(
+                    result=result_img,
+                    person=person_image,
+                    original_garment=garment_image,
+                    garment_region=garment_region,
+                    strength=postprocess_strength,
+                )
+
             result["result_image"] = result_img
             result["metadata"] = {
                 **(result.get("metadata") or {}),
