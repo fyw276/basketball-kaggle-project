@@ -1,159 +1,228 @@
 """
-CatVTON 诊断脚本 - 验证 CatVTON 是否正常工作
+诊断 CatVTON 效果差的具体原因
 
-使用方法：
-1. 确保后端已启动
-2. 运行此脚本查看 CatVTON 诊断信息
-3. 或者直接调用 API 并检查返回的 metadata.engine 字段
+分析调试目录中的所有图片，找出导致效果不好的原因
 """
 
-import json
 import os
-import sys
+from pathlib import Path
 
-import requests
+import numpy as np
+from PIL import Image
 
-API_BASE = "http://localhost:8010"
 
+def analyze_debug_session(debug_dir: str):
+    """详细分析一个调试会话目录"""
+    debug_path = Path(debug_dir)
 
-def check_model_status():
-    """检查所有试衣引擎的状态"""
-    print("=" * 60)
-    print("检查试衣引擎状态")
-    print("=" * 60)
+    if not debug_path.exists():
+        print(f"目录不存在: {debug_dir}")
+        return
 
-    try:
-        # 获取 token (需要先登录)
-        # 这里假设你已经有 token，或者直接测试公开端点
-        response = requests.get(f"{API_BASE}/api/tryon/v2/model-status")
-        print(f"\n[1] Model Status API 响应:")
-        print(f"    状态码: {response.status_code}")
+    print(f"\n{'='*60}")
+    print(f"详细分析: {debug_path.name}")
+    print(f"{'='*60}\n")
 
-        if response.status_code == 200:
-            data = response.json()
-            print(f"\n    数据: {json.dumps(data, indent=4, ensure_ascii=False)}")
+    # 加载所有关键图片
+    images = {}
+    for f in debug_path.glob("*.*"):
+        try:
+            img = Image.open(f)
+            images[f.name] = {
+                "path": f,
+                "size": img.size,
+                "mode": img.mode,
+                "arr": np.array(img) if img.mode in ("L", "RGB", "RGBA") else None,
+            }
+        except:
+            pass
 
-            # 检查 CatVTON 配置
-            if "engines" in data and "catvton_local" in data["engines"]:
-                catvton = data["engines"]["catvton_local"]
-                print(f"\n[2] CatVTON 详细状态:")
-                print(f"    enabled: {catvton.get('enabled')}")
-                print(f"    configured: {catvton.get('configured')}")
-                print(f"    path: {catvton.get('path')}")
-                print(f"    path_exists: {catvton.get('path_exists')}")
-                print(f"    model_exists: {catvton.get('model_exists')}")
-                print(f"    runner_exists: {catvton.get('runner_exists')}")
-                print(f"    width: {catvton.get('width')} x {catvton.get('height')}")
-                print(f"    steps: {catvton.get('steps')}")
-                print(f"    guidance: {catvton.get('guidance')}")
-                print(f"    repaint: {catvton.get('repaint')}")
-                print(f"    timeout_s: {catvton.get('timeout_s')}")
-                print(f"\n[3] VRAM 优化配置:")
-                print(f"    precision: {catvton.get('precision')}")
-                print(f"    force_fp16: {catvton.get('force_fp16')}")
-                print(f"    vae_slicing: {catvton.get('vae_slicing')}")
-                print(f"    xformers: {catvton.get('xformers')}")
-                print(f"    cpu_offload: {catvton.get('cpu_offload')}")
-                print(f"    low_vram_mode: {catvton.get('low_vram_mode')}")
-                print(f"    debug_dir: {catvton.get('debug_dir') or '(未设置)'}")
-
-                if not catvton.get("model_exists"):
-                    print("\n    [!] 警告: CatVTON 模型文件不存在！")
-                    print("    这意味着 CatVTON 可能无法正常工作")
+    # 1. 检查人物图
+    person_orig = images.get("01_input_person.jpg", {})
+    if person_orig:
+        w, h = person_orig["size"]
+        ratio = w / h
+        print(f"1. 原始人物图: {w}x{h}, 宽高比={ratio:.3f}")
+        if 0.72 <= ratio <= 0.78:
+            print("   ✓ 宽高比正常 (接近 3:4)")
         else:
-            print(f"    错误: {response.text}")
+            print(f"   ⚠ 宽高比异常！期望 0.75 (3:4)，实际 {ratio:.3f}")
+            print("   原因: 图片宽高比不正确会导致 resize 变形")
+        print()
 
-    except Exception as e:
-        print(f"    请求失败: {e}")
+    # 2. 检查衣服图
+    garment_orig = images.get("02_input_garment.jpg", {})
+    if garment_orig:
+        w, h = garment_orig["size"]
+        ratio = w / h
+        print(f"2. 原始衣服图: {w}x{h}, 宽高比={ratio:.3f}")
+        if 0.8 <= ratio <= 1.2:
+            print("   ✓ 衣服图宽高比正常")
+        else:
+            print(f"   ⚠ 衣服图宽高比异常！")
+        print()
 
+    # 3. 检查 Mask
+    mask = images.get("03_mask.png", {})
+    if mask and mask["arr"] is not None:
+        arr = mask["arr"]
+        if len(arr.shape) == 3:
+            arr = arr[..., 0]  # 取第一个通道
 
-def check_log_analysis():
-    """分析后端日志中的 CatVTON 调用情况"""
-    print("\n" + "=" * 60)
-    print("CatVTON 调用分析")
+        unique = len(np.unique(arr))
+        white = (arr > 200).sum()
+        black = (arr < 50).sum()
+        total = arr.size
+        white_ratio = white / total
+        black_ratio = black / total
+
+        print(f"3. 衣服遮罩 (03_mask.png):")
+        print(f"   大小: {mask['size']}")
+        print(f"   唯一值数量: {unique}")
+        print(f"   白色(>200)比例: {white_ratio:.1%}")
+        print(f"   黑色(<50)比例: {black_ratio:.1%}")
+
+        if white_ratio < 0.02:
+            print("   ❌ 问题: 白色区域极少！mask 没有正确覆盖衣服")
+        elif white_ratio < 0.05:
+            print("   ⚠ 警告: 白色区域偏少，可能覆盖不完整")
+        elif white_ratio > 0.4:
+            print("   ⚠ 警告: 白色区域过多，可能包含了背景")
+        else:
+            print("   ✓ Mask 覆盖比例正常")
+        print()
+
+    # 4. 检查缩放后的图片
+    person_resized = images.get("06_person_resized.jpg", {})
+    if person_resized:
+        w, h = person_resized["size"]
+        print(f"4. 缩放后人物图: {w}x{h}")
+        if w == 768 and h == 1024:
+            print("   ✓ 大小正确")
+        else:
+            print(f"   ⚠ 大小不正确！期望 768x1024，实际 {w}x{h}")
+        print()
+
+    mask_resized = images.get("08_mask_resized.png", {})
+    if mask_resized:
+        w, h = mask_resized["size"]
+        print(f"5. 缩放后遮罩: {w}x{h}")
+        if w == 768 and h == 1024:
+            print("   ✓ 大小正确")
+        else:
+            print(f"   ⚠ 大小不正确！")
+        print()
+
+    # 6. 检查最终结果
+    result = images.get("10_result_final.jpg", {})
+    if result and result["arr"] is not None:
+        arr = result["arr"]
+        print(f"6. 最终结果 (10_result_final.jpg):")
+        print(f"   大小: {result['size']}")
+
+        # 分析结果图片的质量
+        if result["mode"] == "RGB":
+            # 检查是否有大面积纯色区域（可能是生成失败）
+            r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+            same_color = ((r == g) & (g == b)).mean()
+            if same_color > 0.5:
+                print(f"   ⚠ 警告: 图片中有 {same_color:.1%} 的像素是灰度的，可能是生成问题")
+            else:
+                print("   ✓ 颜色分布正常")
+
+        print()
+
+    # 7. 综合诊断
+    print(f"{'='*60}")
+    print("问题诊断总结")
+    print(f"{'='*60}\n")
+
+    issues = []
+
+    if person_orig:
+        w, h = person_orig["size"]
+        ratio = w / h
+        if not (0.72 <= ratio <= 0.78):
+            issues.append(f"人物图宽高比异常 ({ratio:.3f}，应为 0.75)")
+
+    if mask:
+        arr = mask["arr"]
+        if arr is not None:
+            if len(arr.shape) == 3:
+                arr = arr[..., 0]
+            white_ratio = (arr > 200).sum() / arr.size
+            if white_ratio < 0.02:
+                issues.append("Mask 白色区域极少，无法正确覆盖衣服")
+            elif white_ratio < 0.05:
+                issues.append("Mask 白色区域偏少，可能覆盖不完整")
+
+    if not issues:
+        print("✓ 未发现明显问题，效果差可能是以下原因：")
+        print()
+        print("  1. 人物图背景不够干净（复杂背景会干扰生成）")
+        print("  2. 人物图分辨率不足（建议 >= 768x1024）")
+        print("  3. guidance_scale 过高（当前 3.5，建议尝试 2.0-2.5）")
+        print("  4. 推理步数不足（当前 50 步，建议尝试 30 步但用 seed 固定）")
+    else:
+        print("❌ 发现以下问题：")
+        for issue in issues:
+            print(f"   - {issue}")
+
+    print()
+    print("优化建议:")
     print("=" * 60)
-
     print(
         """
-要确定 CatVTON 是否被正确调用，请检查后端终端日志：
+1. 【最重要】使用标准宽高比的人物图
+   - 推荐尺寸: 768x1024 或 1024x1365 (3:4 比例)
+   - 宽高比应该在 0.72-0.78 之间
 
-1. 应该有 "[CATVTON]" 或 "[CATVTON-RUNNER]" 前缀的日志
-2. 应该看到类似以下的步骤日志：
-   - [CATVTON-STEP] 开始生成衣服遮罩
-   - [CATVTON-STEP] 正在加载 CatVTON Pipeline
-   - [CATVTON-STEP] 正在缩放图片
-   - [CATVTON-STEP] 开始 CatVTON 扩散推理
-   - [CATVTON-STEP] 推理完成，耗时 X秒
+2. 使用纯白背景的人物图
+   - 如果背景复杂，CatVTON 容易产生伪影
+   - 可以用 remove.bg 等工具去除背景
 
-3. API 返回的 metadata 中应该包含：
-   - "engine": "catvton"
-   - 而不是 "engine": "warp_preserve"
+3. 使用纯白背景的衣服商品图
+   - 衣服图应该是平铺展示，背景干净
 
-如果只看到 warp 日志，说明 CatVTON 失败了或未被调用
-    """
+4. 调整参数（降低 guidance_scale）
+   - 当前: guidance=3.5
+   - 建议: guidance=2.0 或 2.5
+
+5. 检查人物图质量
+   - 分辨率越高越好（建议 >= 768x1024）
+   - 人物应该居中，占图片 60-80%
+   - 姿势尽量标准（正面站立）
+"""
     )
 
 
-def suggest_fixes():
-    """建议的修复方案"""
-    print("\n" + "=" * 60)
-    print("可能的修复方案")
-    print("=" * 60)
+def find_latest_debug_sessions(
+    base_dir: str = r"D:\models\catvton_debug", limit: int = 5
+) -> list[str]:
+    """查找最近的调试会话"""
+    base_path = Path(base_dir)
+    if not base_path.exists():
+        return []
 
-    print(
-        """
-根据你的情况（结果不符合 CatVTON 预期），可能的原因：
+    sessions = [d for d in base_path.iterdir() if d.is_dir()]
+    if not sessions:
+        return []
 
-1. CatVTON 模型未正确下载
-   - 检查 D:\\models\\CatVTON_full 目录
-   - 应该有 mix-48k-1024/attention/model.safetensors 文件
-   - 如果没有，运行: python -m huggingface_hub.commands.huggingface_hub download zhengchong/CatVTON
-
-2. CatVTON 返回了错误的结果
-   - 可能是因为模型权重损坏
-   - 尝试重新下载模型
-
-3. 后处理步骤可能改变了 CatVTON 输出
-   - 检查 enhance_tryon_result 函数
-   - 尝试禁用后处理
-
-4. Mask 错误导致衣物区域不对
-   - 使用 --preprocess-only 模式查看中间产物
-   - 检查 03_mask.png 是否覆盖了正确的衣服区域
-   - 检查 04_pose_keypoints.jpg 关键点是否准确
-
-5. VRAM 不足导致推理失败或 OOM
-   - RTX 4060 Laptop (8GB) 推荐启用低显存模式：
-     cd backend && python scripts/test_catvton_direct.py --low-vram
-   - 或者手动设置：
-     # .env 中设置
-     CATVTON_LOW_VRAM_MODE=true
-     CATVTON_FORCE_FP16=true
-     CATVTON_ENABLE_VAE_SLICING=true
-     CATVTON_ENABLE_XFORMERS=true
-
-6. CatVTON 推理实际没有运行（被降级到 warp 等）
-   - 检查 API 返回的 metadata.engine 字段
-   - 应该是 "catvton"，而不是 "warp_preserve"
-   - 查看后端日志中是否有 [CATVTON-RUNNER] 或 [CATVTON-STEP]
-
-建议的测试步骤：
-1. 先用 --preprocess-only 查看中间产物（不需要 GPU）
-   cd backend && python scripts/test_catvton_direct.py --preprocess-only
-2. 检查 03_mask.png 是否覆盖了正确的衣服区域
-3. 检查 04_pose_keypoints.jpg 关键点是否准确
-4. 如果都正常，再用 --low-vram 跑完整推理
-   cd backend && python scripts/test_catvton_direct.py --low-vram
-    """
-    )
+    sessions.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+    return [str(s) for s in sessions[:limit]]
 
 
 if __name__ == "__main__":
-    print("CatVTON 诊断工具\n")
+    import sys
 
-    if len(sys.argv) > 1 and sys.argv[1] == "--check":
-        check_model_status()
+    if len(sys.argv) > 1:
+        debug_dirs = [sys.argv[1]]
     else:
-        suggest_fixes()
+        debug_dirs = find_latest_debug_sessions()
+        if not debug_dirs:
+            print("未找到调试目录")
+            sys.exit(1)
+        print(f"找到 {len(debug_dirs)} 个调试会话，分析最新的...")
 
-    check_log_analysis()
+    for debug_dir in debug_dirs:
+        analyze_debug_session(debug_dir)

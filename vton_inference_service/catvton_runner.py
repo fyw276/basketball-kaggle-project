@@ -448,7 +448,13 @@ def _apply_cloth_region(
     pw: int,
     ph: int,
 ) -> "Image.Image":
-    """将人物遮罩与衣服类型区域矩形取交集。"""
+    """
+    将人物遮罩与衣服类型区域矩形取交集。
+
+    关键修复：当 MediaPipe 人物分割质量差（暗色衣服、背景对比度低）时，
+    person_mask 可能是稀疏噪点，bitwise_and 交集几乎为空。
+    此时 fallback 到纯关键点矩形遮罩，保证 CatVTON 有可用的衣服生成区域。
+    """
     import cv2
 
     person_np = np.asarray(person_mask)
@@ -461,8 +467,26 @@ def _apply_cloth_region(
     cloth_mask[y0:y1, x0:x1] = 255
     combined = cv2.bitwise_and(person_np, cloth_mask)
 
-    kernel = np.ones((3, 3), np.uint8)
-    combined = cv2.dilate(combined, kernel, iterations=1)
+    # ── 关键修复：当交集质量差时，直接用关键点矩形 ────────────────────────
+    # 判断标准：白色像素占比 < 5% → MediaPipe 分割不可靠，fallback
+    total_pixels = person_np.size
+    white_pixels = int(np.sum(combined > 0))
+    white_ratio = white_pixels / max(1, total_pixels)
+
+    # 正常情况下人物分割应该有足够的白色像素
+    # 如果 white_ratio 极低（比如 < 5%），说明分割质量差
+    # 此时 cloth_mask（纯关键点矩形）比交集更可靠
+    if white_ratio < 0.05:
+        logger.warning(
+            f"MediaPipe segmentation too sparse (white_ratio={white_ratio:.3f}), "
+            f"falling back to keypoint rect mask for cloth region"
+        )
+        # 用关键点矩形遮罩 + 轻微膨胀来覆盖肩膀和身体两侧
+        kernel = np.ones((5, 5), np.uint8)
+        combined = cv2.dilate(cloth_mask, kernel, iterations=2)
+    else:
+        kernel = np.ones((3, 3), np.uint8)
+        combined = cv2.dilate(combined, kernel, iterations=1)
 
     return Image.fromarray(combined, mode="L")
 
@@ -473,17 +497,22 @@ def _get_cloth_region_rect(
     pw: int,
     ph: int,
 ) -> tuple[int, int, int, int] | None:
-    """从姿态关键点推导衣服区域矩形 (x0, y0, x1, y1)。"""
+    """从姿态关键点推导衣服区域矩形 (x0, y0, x1, y1)。
+
+    注意：landmarks 中的坐标已经是像素坐标（lm.x * pw, lm.y * ph），
+    所有计算都应基于像素坐标进行，不要再乘以或除以 pw/ph。
+    """
     lm_dict = {lm_idx: (lm.x * pw, lm.y * ph) for lm_idx, lm in enumerate(landmarks)}
 
     def clamp(val, lo, hi):
         return max(lo, min(hi, int(val)))
 
     if cloth_type == "upper":
-        ls = lm_dict.get(11)
-        rs = lm_dict.get(12)
-        lh = lm_dict.get(23)
-        rh = lm_dict.get(24)
+        ls = lm_dict.get(11)  # 左肩
+        rs = lm_dict.get(12)  # 右肩
+        lh = lm_dict.get(23)  # 左臀
+        rh = lm_dict.get(24)  # 右臀
+        nose = lm_dict.get(0)  # 鼻尖
 
         shoulder_y = (ls[1] + rs[1]) / 2 if ls and rs else None
         hip_y = (lh[1] + rh[1]) / 2 if lh and rh else None
@@ -491,25 +520,46 @@ def _get_cloth_region_rect(
             return _upper_fallback(pw, ph)
 
         x_pts = [p[0] for p in [ls, rs] if p]
-        y_top = max(0.0, shoulder_y / ph - 0.09)
-        y_bottom = min(1.0, hip_y / ph + 0.04)
-        x_left = max(0.0, min(x_pts) / pw - 0.04) if x_pts else 0.12
-        x_right = min(1.0, max(x_pts) / pw + 0.04) if x_pts else 0.88
+        x_left_px = min(x_pts) if x_pts else pw * 0.12
+        x_right_px = max(x_pts) if x_pts else pw * 0.88
+
+        # 上边界：肩膀上方一点，不超过鼻尖
+        # 所有值已经是像素坐标，直接使用
+        if nose:
+            # 鼻尖位置作为安全下界
+            nose_y = nose[1]
+            # 肩膀上方 5-10% 图片高度
+            shoulder_based_top = shoulder_y - ph * 0.08
+            # 取较大值，确保不覆盖头部
+            y_top = max(shoulder_y - ph * 0.15, shoulder_based_top)
+            # 但也不能太靠近鼻尖
+            y_top = min(y_top, nose_y + ph * 0.05)
+        else:
+            y_top = shoulder_y - ph * 0.08
+
+        # 下边界：臀部位置再往下一点
+        y_bottom = hip_y + ph * 0.04
+
+        # 左右边界：肩膀外扩一点
+        shoulder_width = x_right_px - x_left_px
+        margin = max(shoulder_width * 0.15, pw * 0.05)
+        x_left = x_left_px - margin
+        x_right = x_right_px + margin
 
         return (
-            clamp(x_left * pw, 0, pw - 2),
-            clamp(y_top * ph, 0, ph - 2),
-            clamp(x_right * pw, 2, pw),
-            clamp(y_bottom * ph, 2, ph),
+            clamp(x_left, 0, pw - 2),
+            clamp(y_top, 0, ph - 2),
+            clamp(x_right, 2, pw),
+            clamp(y_bottom, 2, ph),
         )
 
     elif cloth_type == "lower":
-        lh = lm_dict.get(23)
-        rh = lm_dict.get(24)
-        la = lm_dict.get(27)
-        ra = lm_dict.get(28)
-        lk = lm_dict.get(25)
-        rk = lm_dict.get(26)
+        lh = lm_dict.get(23)  # 左臀
+        rh = lm_dict.get(24)  # 右臀
+        la = lm_dict.get(27)  # 左踝
+        ra = lm_dict.get(28)  # 右踝
+        lk = lm_dict.get(25)  # 左膝
+        rk = lm_dict.get(26)  # 右膝
 
         hip_y = (lh[1] + rh[1]) / 2 if lh and rh else None
         ankle_y = None
@@ -522,16 +572,29 @@ def _get_cloth_region_rect(
             return _lower_fallback(pw, ph)
 
         x_pts = [p[0] for p in [lh, rh, la, ra] if p]
-        y_top = max(0.0, hip_y / ph - 0.04)
-        y_bottom = min(1.0, (ankle_y / ph + 0.03) if ankle_y else 0.97)
-        x_left = max(0.0, (min(x_pts) / pw - 0.06) if x_pts else 0.16)
-        x_right = min(1.0, (max(x_pts) / pw + 0.06) if x_pts else 0.84)
+        x_left_px = min(x_pts) if x_pts else pw * 0.16
+        x_right_px = max(x_pts) if x_pts else pw * 0.84
+
+        # 上边界：臀部上方一点
+        y_top = hip_y - ph * 0.04
+
+        # 下边界：脚踝或膝盖位置
+        if ankle_y:
+            y_bottom = ankle_y + ph * 0.03
+        else:
+            y_bottom = ph * 0.97
+
+        # 左右边界：臀部外扩一点
+        hip_width = x_right_px - x_left_px
+        margin = max(hip_width * 0.10, pw * 0.06)
+        x_left = x_left_px - margin
+        x_right = x_right_px + margin
 
         return (
-            clamp(x_left * pw, 0, pw - 2),
-            clamp(y_top * ph, 0, ph - 2),
-            clamp(x_right * pw, 2, pw),
-            clamp(y_bottom * ph, 2, ph),
+            clamp(x_left, 0, pw - 2),
+            clamp(y_top, 0, ph - 2),
+            clamp(x_right, 2, pw),
+            clamp(y_bottom, 2, ph),
         )
 
     else:  # overall
@@ -575,12 +638,20 @@ def _protect_face(
     pw: int,
     ph: int,
 ) -> "Image.Image":
-    """清除面部椭圆区域，防止 AI 重绘人脸（产生"换脸感"的根源之一）。"""
+    """清除面部和头部区域，防止 AI 重绘人脸（产生"换脸感"的根源之一）。
+
+    增强版：保护更大的头部区域，确保 mask 不会覆盖到头发和颈部以上的部分。
+    """
     import cv2
+
+    if len(landmarks) == 0:
+        return mask
 
     nose = landmarks[0] if len(landmarks) > 0 else None
     l_ear = landmarks[7] if len(landmarks) > 7 else None
     r_ear = landmarks[8] if len(landmarks) > 8 else None
+    l_shoulder = landmarks[11] if len(landmarks) > 11 else None
+    r_shoulder = landmarks[12] if len(landmarks) > 12 else None
 
     if nose is None:
         return mask
@@ -588,24 +659,41 @@ def _protect_face(
     cx = int(nose.x * pw)
     cy = int(nose.y * ph)
 
+    # 根据耳朵距离计算头部大小
     if l_ear and r_ear:
         ear_dist = abs(l_ear.x - r_ear.x) * pw
     else:
         ear_dist = pw * 0.12
 
-    ew = max(5, int(ear_dist * 1.2))
-    eh = max(5, int(ew * 1.3))
+    # 增强头部保护：使用更大的区域
+    ew = max(5, int(ear_dist * 1.5))  # 增加宽度保护
+    eh = max(5, int(ew * 1.4))  # 增加高度保护
 
-    mask_np = np.asarray(mask)
+    # 使用 np.array() 而不是 np.asarray()，确保数组可写
+    mask_np = np.array(mask)
     rows, cols = mask_np.shape
 
+    # 1. 清除面部椭圆区域（主要面部）
     y_grid, x_grid = np.ogrid[:rows, :cols]
     face_ellipse = (
         ((x_grid - cx) ** 2) // max(1, ew ** 2)
         + ((y_grid - (cy - int(ew * 0.1))) ** 2) // max(1, eh ** 2)
     ) <= 1
-
     mask_np[face_ellipse] = 0
+
+    # 2. 额外保护：清除头部上方区域（头发保护）
+    # 以鼻尖为中心向上延伸的保护区域
+    head_top_y = max(0, cy - int(ph * 0.15))  # 头部顶部（头发）
+    head_left_x = max(0, cx - int(ew * 1.3))
+    head_right_x = min(cols, cx + int(ew * 1.3))
+
+    # 创建一个头部保护矩形（比面部椭圆稍大）
+    head_protection = (
+        (x_grid >= head_left_x) & (x_grid <= head_right_x) &
+        (y_grid >= head_top_y) & (y_grid <= cy + int(ph * 0.02))
+    )
+    mask_np[head_protection] = 0
+
     return Image.fromarray(mask_np, mode="L")
 
 
@@ -639,11 +727,22 @@ def _fallback_mask(person_img: "Image.Image", cloth_type: str) -> "Image.Image":
 
 
 def resize_and_crop_garment(image, size):
-    """中心裁剪衣服图以匹配目标宽高比。"""
+    """中心裁剪衣服图以匹配目标宽高比，同时保留衣服方向信息。
+
+    改进：
+    1. 检测衣服方向（如果衣架在顶部，自动翻转）
+    2. 保持衣服正面朝外
+    3. 中心裁剪确保衣服主体在画面中央
+    """
     w, h = image.size
     target_w, target_h = size
     target_ratio = target_w / target_h
     img_ratio = w / h
+
+    # 检测衣架/挂钩位置（如果衣服挂在衣架上）
+    # 衣架通常在图片顶部中间位置，颜色较浅
+    garment_img = _detect_and_correct_garment_orientation(image)
+
     if img_ratio > target_ratio:
         new_w = int(h * target_ratio)
         new_h = h
@@ -654,8 +753,63 @@ def resize_and_crop_garment(image, size):
         new_h = int(w / target_ratio)
         x0 = 0
         y0 = (h - new_h) // 2
-    cropped = image.crop((x0, y0, x0 + new_w, y0 + new_h))
+    cropped = garment_img.crop((x0, y0, x0 + new_w, y0 + new_h))
     return cropped.resize(size, Image.LANCZOS)
+
+
+def _detect_and_correct_garment_orientation(image: "Image.Image") -> "Image.Image":
+    """检测并校正衣服方向。
+
+    如果衣服挂在衣架上（衣架在顶部），自动翻转使衣服正面朝上。
+    这样可以确保衣服颜色和图案方向正确。
+    """
+    import cv2
+
+    arr = np.array(image.convert("RGB"))
+    h, w = arr.shape[:2]
+
+    # 检测顶部是否有浅色横向条带（可能是衣架）
+    top_region = arr[:int(h * 0.1), :, :]
+    top_brightness = top_region.mean()
+    overall_brightness = arr.mean()
+
+    # 如果顶部区域明显比整体亮，可能是衣架
+    if top_brightness > overall_brightness * 1.3:
+        # 检测是否是水平条带（衣架特征）
+        top_gray = cv2.cvtColor(top_region, cv2.COLOR_RGB2GRAY)
+        edges = cv2.Canny(top_gray, 50, 150)
+        # 水平边缘多说明是衣架
+        horizontal_lines = np.sum(edges > 0) / edges.size
+        if horizontal_lines > 0.02:
+            # 翻转图片使衣服正面朝上
+            return image.transpose(Image.FLIP_TOP_BOTTOM)
+
+    return image
+
+
+def _enhance_garment_colors(image: "Image.Image", strength: float = 1.2) -> "Image.Image":
+    """增强衣服颜色饱和度和对比度，帮助 CatVTON 更好地识别衣服颜色。
+
+    适度的颜色增强可以让模型更准确地保留衣服的颜色信息。
+    """
+    import cv2
+
+    arr = np.array(image.convert("RGB"))
+    h, w = arr.shape[:2]
+
+    # 转换到 HSV 色彩空间进行饱和度增强
+    hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV).astype(np.float32)
+
+    # 增强饱和度
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * strength, 0, 255)
+
+    # 稍微增加亮度
+    hsv[:, :, 2] = np.clip(hsv[:, :, 2] * 1.05, 0, 255)
+
+    hsv = hsv.astype(np.uint8)
+    enhanced = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+
+    return Image.fromarray(enhanced, mode="RGB")
 
 
 def _feather_mask(mask: "Image.Image", feather_radius: int = 4) -> "Image.Image":
@@ -687,6 +841,81 @@ def _repaint_with_feather(
     person_np = np.array(person).astype(np.float32)
     blended = result_np * mask_3ch + person_np * (1 - mask_3ch)
     return Image.fromarray(blended.astype(np.uint8))
+
+
+def _transfer_color_to_region(
+    source_img: "Image.Image",
+    target_img: "Image.Image",
+    mask: "Image.Image",
+    strength: float = 0.5,
+) -> "Image.Image":
+    """
+    将源图像（衣服）的颜色传递到目标图像的指定区域。
+
+    这是解决 CatVTON 颜色偏移问题的关键后处理：
+    1. 计算衣服图像的颜色统计（均值和标准差）
+    2. 计算 CatVTON 输出中衣服区域的颜色统计
+    3. 通过直方图匹配调整衣服区域颜色，使其更接近原始衣服
+
+    Args:
+        source_img: 原始衣服图像（参考）
+        target_img: CatVTON 输出图像（待调整）
+        mask: 衣服区域遮罩（L 模式）
+        strength: 调整强度 0.0-1.0，0.5 表示 50% 校正
+
+    Returns:
+        颜色校正后的图像
+    """
+    import cv2
+
+    # 转换为 numpy 数组
+    src_arr = np.array(source_img.convert("RGB")).astype(np.float32)
+    tgt_arr = np.array(target_img.convert("RGB")).astype(np.float32)
+
+    # 获取衣服区域（从 mask 提取）
+    mask_np = np.asarray(mask.convert("L")).astype(np.float32) / 255.0
+    # 创建衣服区域掩码（只处理 mask > 0.3 的区域）
+    garment_mask = (mask_np > 0.3).astype(np.float32)[:, :, np.newaxis]
+
+    # 1. 计算原始衣服的颜色统计
+    # 对衣服区域进行采样（使用原始衣服图）
+    src_garment_pixels = src_arr[garment_mask[:, :, 0] > 0.5]
+
+    if len(src_garment_pixels) < 100:
+        # 衣服区域太小，跳过颜色校正
+        return target_img
+
+    # 计算每个通道的均值和标准差
+    src_mean = src_garment_pixels.mean(axis=0)  # [R, G, B]
+    src_std = src_garment_pixels.std(axis=0) + 1e-6  # 避免除零
+
+    # 2. 计算 CatVTON 输出中衣服区域的颜色统计
+    tgt_garment_pixels = tgt_arr[garment_mask[:, :, 0] > 0.5]
+
+    if len(tgt_garment_pixels) < 100:
+        return target_img
+
+    tgt_mean = tgt_garment_pixels.mean(axis=0)
+    tgt_std = tgt_garment_pixels.std(axis=0) + 1e-6
+
+    # 3. 应用直方图匹配/颜色校正
+    # 方法：基于 Z-score 的颜色转移
+    # 对于衣服区域：new_pixel = (pixel - tgt_mean) * (src_std / tgt_std) + src_mean
+    result_arr = tgt_arr.copy()
+
+    # 只在衣服区域内应用
+    for c in range(3):
+        # 计算校正后的值
+        corrected = (tgt_arr[:, :, c] - tgt_mean[c]) * (src_std[c] / tgt_std[c]) + src_mean[c]
+        # 混合原始值和校正值
+        result_arr[:, :, c] = (
+            tgt_arr[:, :, c] * (1 - garment_mask[:, :, 0] * strength * 0.7) +
+            corrected * (garment_mask[:, :, 0] * strength * 0.7)
+        )
+
+    # 裁剪到有效范围
+    result_arr = np.clip(result_arr, 0, 255).astype(np.uint8)
+    return Image.fromarray(result_arr, mode="RGB")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1039,8 +1268,19 @@ def main():
         print(f"[CATVTON-STEP] 正在缩放图片...", flush=True)
         person_resized = resize_and_crop(person_img, (args.width, args.height))
         garment_resized = resize_and_crop_garment(garment_img, (args.width, args.height))
-        mask_resized = cloth_mask.resize((args.width, args.height), Image.LANCZOS)
-        mask_resized = _feather_mask(mask_resized, feather_radius=3)
+
+        # ── 衣服颜色增强 ─────────────────────────────────────────────
+        # 增强衣服颜色饱和度，帮助模型更好地识别和保留衣服颜色
+        logger.info("增强衣服颜色...")
+        garment_resized = _enhance_garment_colors(garment_resized, strength=1.15)
+
+        # ── 关键修复：mask 必须用 NEAREST 缩放保持二值性 ──────────────────
+        # CatVTON 训练时使用的是纯二值 mask（0 或 1），prepare_mask_image 内部会
+        # 规范化 mask：< 0.5 → 0，>= 0.5 → 1。
+        # 如果在 resize 前应用 GaussianBlur，mask 会变成灰度图（0.3, 0.7 等），
+        # 规范化后大部分信息丢失，导致 CatVTON 无法识别衣服区域。
+        # 正确的做法：NEAREST 缩放（保持二值）→ CatVTON 推理 → 重绘时再模糊
+        mask_resized = cloth_mask.resize((args.width, args.height), Image.NEAREST)
 
         # ── 白盒调试：保存缩放后的中间产物 ─────────────────────────────
         if _debug_output_dir is not None:
@@ -1093,6 +1333,21 @@ def main():
         if not args.no_repaint:
             logger.info("执行背景重绘与原图混合...")
             result = _repaint_with_feather(result, person_resized, mask_resized, feather_radius=3)
+
+        # ── 衣服颜色保真校正 ─────────────────────────────────────────
+        # 这是解决 CatVTON 颜色偏移问题的关键步骤
+        # 使用原始衣服图像校正 CatVTON 输出中的衣服颜色
+        logger.info("执行衣服颜色保真校正...")
+        try:
+            result = _transfer_color_to_region(
+                source_img=garment_resized,
+                target_img=result,
+                mask=mask_resized,
+                strength=0.4,  # 40% 校正强度，避免过度处理
+            )
+            logger.info("颜色保真校正完成")
+        except Exception as e:
+            logger.warning(f"颜色校正失败，跳过: {e}")
 
         # ── 白盒调试：保存最终结果 ──────────────────────────────────────
         if _debug_output_dir is not None:

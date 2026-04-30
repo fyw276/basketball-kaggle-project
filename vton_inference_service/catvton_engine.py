@@ -144,11 +144,25 @@ def _make_body_mask_from_pose(
         region = _get_cloth_rect(landmarks, cloth_type, pw, ph)
         if region:
             region_mask = _rect_to_mask(region, pw, ph)
-            # Combine: cloth region inside person silhouette
             import cv2
             pm = np.array(person_mask)
             rm = np.array(region_mask)
             combined = cv2.bitwise_and(pm, rm)
+
+            # Key fix: when MediaPipe segmentation is too sparse (dark clothes),
+            # fall back to the keypoint rect directly so CatVTON has a usable region
+            white_ratio = int(np.sum(combined > 0)) / max(1, pm.size)
+            if white_ratio < 0.05:
+                logger.warning(
+                    f"MediaPipe segmentation sparse (ratio={white_ratio:.3f}), "
+                    "using keypoint rect mask"
+                )
+                kernel = np.ones((5, 5), np.uint8)
+                combined = cv2.dilate(rm, kernel, iterations=2)
+            else:
+                kernel = np.ones((3, 3), np.uint8)
+                combined = cv2.dilate(combined, kernel, iterations=1)
+
             person_mask = Image.fromarray(combined, mode="L")
 
     # Protect face
@@ -159,7 +173,11 @@ def _make_body_mask_from_pose(
 
 
 def _get_cloth_rect(landmarks, cloth_type: str, pw: int, ph: int):
-    """Return (x0,y0,x1,y1) cloth region from landmarks."""
+    """Return (x0,y0,x1,y1) cloth region from landmarks.
+
+    注意：pt() 返回的坐标已经是像素坐标 (lm.x * pw, lm.y * ph)，
+    所有计算都应基于像素坐标进行。
+    """
     def pt(idx):
         if len(landmarks) <= idx:
             return None
@@ -175,13 +193,37 @@ def _get_cloth_rect(landmarks, cloth_type: str, pw: int, ph: int):
         sy = (ls[1] + rs[1]) / 2 if ls and rs else None
         hy = (lh[1] + rh[1]) / 2 if lh and rh else None
         if sy is None or hy is None:
-            return (clamp(pw*0.12, 0, pw-2), clamp(ph*0.12, 0, ph-2), clamp(pw*0.88, 2, pw), clamp(ph*0.60, 2, ph))
-        sx = [p[0] for p in [ls, rs] if p]
+            return (clamp(pw * 0.10, 0, pw - 2), clamp(ph * 0.12, 0, ph - 2),
+                    clamp(pw * 0.90, 2, pw), clamp(ph * 0.60, 2, ph))
+
+        x_pts = [p[0] for p in [ls, rs] if p]
+        x_left_px = min(x_pts) if x_pts else pw * 0.12
+        x_right_px = max(x_pts) if x_pts else pw * 0.88
+
+        # 上边界：肩膀上方一点
+        nose = pt(0)
+        if nose:
+            nose_y = nose[1]
+            shoulder_based_top = sy - ph * 0.08
+            y_top = max(sy - ph * 0.15, shoulder_based_top)
+            y_top = min(y_top, nose_y + ph * 0.05)
+        else:
+            y_top = sy - ph * 0.08
+
+        # 下边界：臀部位置再往下一点
+        y_bottom = hy + ph * 0.04
+
+        # 左右边界：肩膀外扩一点
+        shoulder_width = x_right_px - x_left_px
+        margin = max(shoulder_width * 0.15, pw * 0.05)
+        x_left = x_left_px - margin
+        x_right = x_right_px + margin
+
         return (
-            clamp(min(sx)/pw - 0.04, 0, pw-2) if sx else 0,
-            clamp(sy/ph - 0.09, 0, ph-2),
-            clamp(max(sx)/pw + 0.04, 2, pw) if sx else pw,
-            clamp(hy/ph + 0.04, 2, ph),
+            clamp(x_left, 0, pw - 2),
+            clamp(y_top, 0, ph - 2),
+            clamp(x_right, 2, pw),
+            clamp(y_bottom, 2, ph),
         )
     elif cloth_type == "lower":
         lh, rh = pt(23), pt(24)
@@ -194,13 +236,33 @@ def _get_cloth_rect(landmarks, cloth_type: str, pw: int, ph: int):
         elif lk and rk:
             ay = (lk[1] + rk[1]) / 2
         if hy is None:
-            return (clamp(pw*0.16, 0, pw-2), clamp(ph*0.44, 0, ph-2), clamp(pw*0.84, 2, pw), clamp(ph*0.97, 2, ph))
-        sx = [p[0] for p in [lh, rh, la, ra] if p]
+            return (clamp(pw * 0.16, 0, pw - 2), clamp(ph * 0.44, 0, ph - 2),
+                    clamp(pw * 0.84, 2, pw), clamp(ph * 0.97, 2, ph))
+
+        x_pts = [p[0] for p in [lh, rh, la, ra] if p]
+        x_left_px = min(x_pts) if x_pts else pw * 0.16
+        x_right_px = max(x_pts) if x_pts else pw * 0.84
+
+        # 上边界：臀部上方一点
+        y_top = hy - ph * 0.04
+
+        # 下边界：脚踝或膝盖位置
+        if ay:
+            y_bottom = ay + ph * 0.03
+        else:
+            y_bottom = ph * 0.97
+
+        # 左右边界：臀部外扩一点
+        hip_width = x_right_px - x_left_px
+        margin = max(hip_width * 0.10, pw * 0.06)
+        x_left = x_left_px - margin
+        x_right = x_right_px + margin
+
         return (
-            clamp(min(sx)/pw - 0.06, 0, pw-2) if sx else 0,
-            clamp(hy/ph - 0.04, 0, ph-2),
-            clamp(max(sx)/pw + 0.06, 2, pw) if sx else pw,
-            clamp((ay/ph + 0.03) if ay else 0.97, 2, ph),
+            clamp(x_left, 0, pw - 2),
+            clamp(y_top, 0, ph - 2),
+            clamp(x_right, 2, pw),
+            clamp(y_bottom, 2, ph),
         )
     else:  # overall
         u = _get_cloth_rect(landmarks, "upper", pw, ph)
@@ -224,11 +286,12 @@ def _rect_to_mask(rect, pw: int, ph: int) -> Image.Image:
 
 def _make_rect_person_mask(pw: int, ph: int, cloth_type: str) -> Image.Image:
     if cloth_type == "upper":
-        region = (int(pw*0.12), int(ph*0.12), int(pw*0.88), int(ph*0.60))
+        # FIX: 使用更保守的上装区域，不覆盖头部
+        region = (int(pw*0.10), int(ph*0.18), int(pw*0.90), int(ph*0.58))
     elif cloth_type == "lower":
         region = (int(pw*0.16), int(ph*0.44), int(pw*0.84), int(ph*0.97))
     else:
-        upper = (int(pw*0.12), int(ph*0.12), int(pw*0.88), int(ph*0.60))
+        upper = (int(pw*0.10), int(ph*0.18), int(pw*0.90), int(ph*0.58))
         lower = (int(pw*0.16), int(ph*0.44), int(pw*0.84), int(ph*0.97))
         region = (min(upper[0], lower[0]), min(upper[1], lower[1]),
                   max(upper[2], lower[2]), max(upper[3], lower[3]))
@@ -236,24 +299,39 @@ def _make_rect_person_mask(pw: int, ph: int, cloth_type: str) -> Image.Image:
 
 
 def _clear_face(mask: Image.Image, landmarks, pw: int, ph: int) -> Image.Image:
-    """Clear face ellipse from mask (prevent AI from modifying face)."""
+    """Clear face region from mask to prevent AI from modifying face."""
     nose = landmarks[0] if len(landmarks) > 0 else None
     if nose is None:
-        return mask
+        # FIX: 无关键点时保护顶部40%区域
+        m = np.asarray(mask)
+        m[0:int(ph * 0.40), :] = 0
+        return Image.fromarray(m, mode="L")
+
     cx = int(nose.x * pw)
     cy = int(nose.y * ph)
     l_ear = landmarks[7] if len(landmarks) > 7 else None
     r_ear = landmarks[8] if len(landmarks) > 8 else None
-    ew = int(abs(l_ear.x - r_ear.x) * pw * 0.6) if l_ear and r_ear else max(5, int(pw * 0.12))
-    eh = int(ew * 1.3)
+    ew = int(abs(l_ear.x - r_ear.x) * pw * 0.75) if l_ear and r_ear else max(5, int(pw * 0.15))
+    eh = int(ew * 1.8)  # FIX: 使用更大的高度覆盖整个头部
+
     m = np.asarray(mask)
     rows, cols = m.shape
     y_g, x_g = np.ogrid[:rows, :cols]
+
+    # 主面部椭圆（覆盖更大的区域）
     ellipse = (
         ((x_g - cx) ** 2) // max(1, ew**2)
-        + ((y_g - (cy - int(ew*0.1))) ** 2) // max(1, eh**2)
+        + ((y_g - (cy - int(ew*0.3))) ** 2) // max(1, eh**2)
     ) <= 1
     m[ellipse] = 0
+
+    # FIX: 额外保护脖颈以上区域
+    shoulder_l = landmarks[11] if len(landmarks) > 11 else None
+    shoulder_r = landmarks[12] if len(landmarks) > 12 else None
+    if shoulder_l and shoulder_r:
+        neck_y = int((shoulder_l.y + shoulder_r.y) / 2 * ph * 0.95)
+        m[0:neck_y, :] = 0
+
     return Image.fromarray(m, mode="L")
 
 
@@ -365,8 +443,9 @@ class CatVTONEngine:
 
             # Generate or use provided mask
             if mask_image is not None:
+                # Use NEAREST resize to preserve binary mask quality for CatVTON
                 mask_resized = mask_image.convert("L").resize(
-                    (self.width, self.height), Image.LANCZOS
+                    (self.width, self.height), Image.NEAREST
                 )
                 import numpy as np
                 m = np.array(mask_resized)
@@ -374,13 +453,15 @@ class CatVTONEngine:
                 mask_resized = Image.fromarray(m)
             else:
                 # MediaPipe-based auto mask
+                # Critical: use NEAREST resize to preserve binary mask quality
+                # DO NOT blur or feather before CatVTON inference
+                # CatVTON training uses pure binary masks (0 or 1)
+                # Feather blending should ONLY happen during repaint AFTER inference
                 body_mask = _make_body_mask_from_pose(person_image, cloth_type)
                 body_mask = body_mask.resize(
-                    (self.width, self.height), Image.LANCZOS
+                    (self.width, self.height), Image.NEAREST
                 )
-                mask_resized = self.mask_processor.blur(body_mask, blur_factor=9)
-                # Additional Gaussian feather on edges for smoother garment boundary
-                mask_resized = self._feather_mask(mask_resized, feather_radius=3)
+                mask_resized = body_mask
 
             # Generator for reproducibility
             generator = None
