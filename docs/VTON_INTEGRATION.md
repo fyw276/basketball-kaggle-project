@@ -37,7 +37,9 @@ python backend/scripts/test_catvton_e2e.py          # 端到端测试
 cd backend && python scripts/test_catvton_direct.py # 直接测试（跳过 API 层）
 ```
 
-CatVTON 在 `replace` / `realistic` / `professional` 三种模式中均会被尝试使用。
+CatVTON 在 `replace` / `realistic` / `professional` / `strict` / `balanced` 五种 v2 模式中均会被尝试使用。
+
+> **2026-05-01 更新**：v2 模式已扩展为 5 种：`strict`（默认，方案 A 几何贴合）、`balanced`（宽松 QC）、`replace`（AI 生成，引擎优先级 warp→bailian→remote→catvton→diffusion）、`realistic`（CatVTON 深度学习）、`professional`（CatVTON + 后处理）。详见 [`backend/app/api/tryon_v2.py`](../backend/app/api/tryon_v2.py) 和 [`backend/app/services/tryon_v2/`](<../backend/app/services/tryon_v2/>)。
 
 ### 百炼（DashScope）试衣
 

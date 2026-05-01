@@ -81,10 +81,9 @@ copy .env.example .env  # Windows
 ```
 
 > 模型相关提示：
-> - CLIP / 虚拟试衣首次运行可能会下载权重（弱网易超时）。
+> - FashionCLIP / 虚拟试衣首次运行可能会下载权重（弱网易超时）。
 > - 在 `.env` 中设置 `HF_ENDPOINT=https://hf-mirror.com`（及可选 `HF_HUB_DOWNLOAD_TIMEOUT` 等）；这些键已在 `app.core.config.Settings` 中声明，启动时会注入 `os.environ`。详见仓库根目录 [docs/WEATHER_DISPLAY_AND_HF_ENV.md](../docs/WEATHER_DISPLAY_AND_HF_ENV.md)。
-> - 虚拟试衣默认模型为公开的 `stable-diffusion-v1-5/stable-diffusion-inpainting`；若改用 gated 模型（例如 stabilityai/*），需要配置 `HF_TOKEN` 并在 HF 网站同意条款。
-> - **扩散试衣依赖**：`torch` 与 `torchvision` 须版本匹配（同一轮 `pip install`）；勿随意开启 `TRYON_FORCE_FALLBACK=true`（会跳过扩散）。可选表单字段 `garment_category` 改善 fallback 粘贴，见 [docs/AI_OUTFIT_PREDICT_AND_TRYON.md](../docs/AI_OUTFIT_PREDICT_AND_TRYON.md)。
+> - **扩散试衣依赖**：`torch` 与 `torchvision` 须版本匹配（同一轮 `pip install`）；可选表单字段 `garment_category` 改善 fallback 粘贴。CatVTON realistic/professional 模式见 [docs/VTON_INTEGRATION.md](../docs/VTON_INTEGRATION.md)。
 
 ### 4. 启动开发服务器
 
@@ -122,21 +121,23 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8010
 ```
 backend/
 ├── app/
-│   ├── __init__.py
-│   ├── main.py              # FastAPI 应用入口
-│   ├── api/                 # API 路由
-│   ├── core/                # 核心配置
-│   │   ├── config.py        # 应用配置
-│   │   └── logging.py       # 日志配置
-│   ├── db/                  # 数据库配置
-│   ├── models/              # SQLAlchemy 模型
-│   ├── schemas/             # Pydantic 模式
-│   └── services/            # 业务逻辑
-├── tests/                   # 测试文件
-├── .env.example             # 环境变量示例
-├── requirements.txt         # 生产依赖
-├── requirements-dev.txt     # 开发依赖
-└── pyproject.toml          # 项目配置
+│   ├── api/                    # 20 个路由模块（含 tryon_v2）
+│   ├── core/                  # 配置、错误处理、日志、超参
+│   ├── db/                    # 数据库配置
+│   ├── models/               # SQLAlchemy 模型
+│   ├── ml/                   # 模型加载（CLIP）
+│   ├── observability/         # 指标收集
+│   ├── schemas/              # Pydantic schemas
+│   └── services/             # 50 个服务模块
+│       └── tryon_v2/         # 14 个虚拟试衣 v2 管线模块
+├── scripts/                   # 诊断与测试脚本
+├── tests/                    # pytest 套件
+├── uploads/                  # 上传图片
+├── .env.example              # 环境变量示例
+├── requirements.txt           # Python 3.9-3.12 依赖
+├── requirements-py314.txt    # Python 3.14 兼容依赖
+├── requirements-dev.txt      # 开发依赖
+└── pyproject.toml           # 项目配置
 ```
 
 ## 开发工具
@@ -185,20 +186,43 @@ pre-commit run --all-files
 
 ## API 端点
 
-### 当前可用端点
+### 核心端点（`/api/v1`）
 
-- `GET /` - 根端点，返回 API 信息
-- `GET /health` - 健康检查
-- **智能穿搭（v1）**（需登录，前缀 **`/api/v1/smart-outfit`**）:
-  - `GET /api/v1/smart-outfit/weather` — 经纬度查天气
-  - `GET /api/v1/smart-outfit/weather-by-city` — 城市名查天气
-  - `POST /api/v1/smart-outfit/upload-reference` — 上传参考衣物图
-  - `POST /api/v1/smart-outfit/generate` — 生成多套搭配（JSON，含 `ai_recommendation`）
- - `POST /api/v1/mood/recommend` - 情绪穿搭推荐（可选包含衣橱匹配）
- - `GET /api/v1/mood/quick-recall` - 心情快捷入口列表
- - `POST /api/v1/tryon/garment` - 虚拟试衣（FormData：garment_file/person_file，可选 prompt）
+- `GET /` — 根端点
+- `GET /health` — 健康检查
+- `GET /release` — 发布台账
+- `GET /health/ready` — 就绪探针（数据库探活）
 
-> 说明：本项目 API 以 `http://127.0.0.1:8010/docs`（Swagger，端口以 `.env` 的 `PORT` 为准）为准；业务路径均在 **`/api/v1/...`** 下。若某处文档写成 `/api/smart-outfit/...`（缺少 `/v1`），应以 Swagger 与 [`API_EXAMPLES.md`](API_EXAMPLES.md) 为准。
+**认证**（`/api/v1/auth/`）: register、login
+**用户**（`/api/v1/users/`）: me (GET/DELETE)
+**画像**（`/api/v1/profile/`）: POST/GET/PUT
+**衣橱**（`/api/v1/wardrobe/`）: CRUD + split-outfit；简化版（`/api/v1/wardrobe/simple/`）
+**识别**（`/api/v1/recognition/`）: analyze、category、colors、categories
+**分析**（`/api/v1/analysis/`）: similarity、outfits（多图）、suitability（三维原因说明）
+**智能穿搭**（`/api/v1/smart-outfit/`）: weather、weather-by-city、upload-reference、generate
+**情绪**（`/api/v1/mood/`）: quick-recall、recommend
+**虚拟试衣**（`/api/v1/tryon/`）: garment（v1，SD Inpainting + fallback）
+**套装收藏**（`/api/v1/outfit-collections/`）: CRUD
+**反馈**（`/api/v1/feedback/events`）: like/dislike/adopt/view
+**分析**（`/api/v1/analytics/`）: summary、dependency-observability
+**意图路由**（`/api/v1/agent/intent`）: 自然语言 → MCP 工具名
+**记忆 RAG**（`/api/v1/memory/snippets`）: POST/GET/DELETE + 搜索
+**订阅**（`/api/v1/subscription/`）: 管理；`/api/v1/subscription/usage`: 用量
+
+### 虚拟试衣 v2（`/api/v2`）
+
+- `POST /api/v2/tryon/garment` — 多模式试衣（mode: strict/balanced/replace/realistic/professional）
+- `POST /api/v2/tryon/validate-input` — 输入门禁评估
+- `POST /api/v2/tryon/preprocess` — 衣物预处理（自动品类检测）
+- `POST /api/v2/tryon/preprocess-batch` — 批量预处理
+- `GET /api/v2/tryon/capabilities` — 能力开关
+- `GET /api/v2/tryon/model-status` — 引擎就绪诊断
+
+### AI 穿搭风格分（无前缀）
+
+- `POST /predict` — sklearn 风格分 + Top3 推荐
+
+> 完整 API 以 http://127.0.0.1:8010/docs（Swagger）为准。业务路径均在 `/api/v1/...` 或 `/api/v2/...` 下。
 
 ## 环境变量
 
@@ -214,10 +238,8 @@ pre-commit run --all-files
 - `AI_RECOMMENDER_API_KEY` - AI 推荐接口密钥
 - `AI_RECOMMENDER_MODEL` - AI 推荐模型名（默认 `gpt-4o-mini`）
 
-## 下一步
+## 模型说明
 
-按照 `tasks.md` 继续实现：
-- 任务 2: 数据库设计与初始化
-- 任务 3: 用户认证与授权模块
-- 任务 4: 用户画像管理模块
-- ...
+- **FashionCLIP**（`transformers` + `torch`）：零样本品类/风格/场景识别，非 TensorFlow/MobileNetV2
+- **虚拟试衣**：`torch` + `torchvision` 须版本匹配；`diffusers` SD Inpainting 作 fallback
+- **HuggingFace**：在 `.env` 设置 `HF_ENDPOINT=https://hf-mirror.com`（弱网加速）；`HF_HUB_DOWNLOAD_TIMEOUT` 等已在 Settings 声明

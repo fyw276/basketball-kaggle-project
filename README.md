@@ -1,23 +1,24 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-04-29（CatVTON 后处理修复：尺寸不匹配修复、快速增强模式、极限 VRAM 优化、实时日志、白盒调试工具、极限低显存一键模式、CatVTON 预处理调试）
-**状态**: ✅ 生产级可用（后端 FastAPI + Flutter Web/移动端，CatVTON 8GB VRAM 兼容）
+**最后更新**: 2026-05-01
+**状态**: 生产级可用（FastAPI 后端 + Flutter Web/移动端 + CLI + MCP Agent 工具面）
 
 ## 项目简介
 
-智能穿搭助手是一个多端协同的智能穿搭决策系统，通过图像理解（CLIP）与多维度推荐算法，为用户提供：
+智能穿搭助手是一个多端协同的智能穿搭决策系统，通过图像理解（CLIP/FashionCLIP）与多维度推荐算法，为用户提供：
 
-- 🔍 **相似度分析与重复预警**：找出相似单品，避免重复购买
-- 👔 **智能搭配推荐**：基于衣橱与画像生成场景穿搭方案
-- ⭐ **适合度评分**：颜色 / 风格 / 体型友好度建议
-- 🧠 **情绪穿搭**：根据心情给出更“治愈/更冷静/更有能量”的配色与风格方向，并匹配衣橱单品
-- 🧥 **虚拟试衣（伪 3D 多视角）**：正面 / 侧面 / 背面三视角生成与轮播预览（支持多视角人物照）
-- 🌤️ **首页天气与今日推荐卡**：展示城市/天气/温度、AI 评分/风格/理由，并支持回到上次浏览搭配
+- 相似度分析与重复预警：找出相似单品，避免重复购买
+- 智能搭配推荐：基于衣橱与画像生成场景穿搭方案
+- 适合度评分：颜色 / 风格 / 体型友好度建议（含三维原因说明）
+- 情绪穿搭：根据心情给出配色与风格方向，并匹配衣橱单品
+- 虚拟试衣 v2：多引擎多模式虚拟试穿（CatVTON 深度学习 / 百炼 / Warp 几何粘贴 / Stable Diffusion），支持白盒调试与极限低显存优化
+- 首页天气与今日推荐卡：展示城市/天气/温度、AI 评分/风格/理由
+- 性别表达指数系统：动态全局配色（柔粉 ↔ 深蓝）
 
 ## 核心功能
 
 ### 1. 重复购买预警
-- 优先使用 CLIP 提取服饰特征向量（transformers + torch），弱网/离线可回退轻量方案
+- 优先使用 CLIP/FashionCLIP 提取服饰特征向量（`transformers` + `torch`），弱网/离线可回退轻量方案
 - 基于余弦相似度计算与衣橱中服饰的相似度
 - 高/中/低三级相似度分级，自动标记重复购买风险
 
@@ -32,32 +33,85 @@
 - 版型适合度：基于体型和不希望强化的身体部位
 - 风格适合度：基于用户风格偏好
 - 综合评分并提供个性化改进建议
-- 返回 **三维原因说明**：`scene_match_reason` / `body_fit_reason` / `style_coordination_reason`（在每个维度进度条下展示原因）
+- 返回三维原因说明：`scene_match_reason` / `body_fit_reason` / `style_coordination_reason`
 
 ### 4. 情绪穿搭（Mood → Outfit）
 - 快捷心情选择（例如「心情不好 · 想暖一点」）
 - 后端输出：风格建议、适用场景、配色倾向（权重）、衣橱单品匹配列表
 
-### 5. 虚拟试衣（Try-on）
-- Flutter **单次请求**生成一张试衣结果图（轮播 UI 兼容单张）；历史多视角人物照仍可上传正面（必填）及可选侧面/背面，未上传则复用正面照
-- **衣服图**：需无模特（后端做人脸检测）；**扩散模型就绪**时用 Stable Diffusion inpainting；否则 **去背景 + alpha 粘贴（fallback）**，并按可选 **`garment_category`**（如衣柜里的「下装」）改善下装锚点与上半身遮罩，避免整块商品图盖住躯干
-- **依赖**：`torch` 与 `torchvision` 须同一代、成对安装（例如均来自同一 `pip install`）；否则可能出现 `CLIPImageProcessor` / `torchvision::nms` 导入失败并长期落在 fallback
-- 勿在 `.env` 中开启 **`TRYON_FORCE_FALLBACK=true`**（除非刻意跳过扩散）；详见 [`docs/AI_OUTFIT_PREDICT_AND_TRYON.md`](docs/AI_OUTFIT_PREDICT_AND_TRYON.md)
-- 轮播与全屏预览：等比例完整显示（`contain`），支持缩放/拖拽
+### 5. 虚拟试衣 v2（多引擎多模式）
 
-### 6. AI 穿搭风格分（演示用 `POST /predict`）
+#### 四种试衣模式
 
-- **sklearn** 风格分 + Top3 推荐与中文解释；与 **Flutter / Vite** 共用同一契约（见 `backend/app/services/outfit_style_predict.py`）。
-- 独立服务默认端口 **8765**；主应用 **`app.main`** 亦提供 **`POST /predict`**（无 `/api/v1` 前缀），可与 Flutter `--dart-define=PREDICT_API_PORT=<PORT>` 对齐。
+| 模式 | 说明 | 推荐场景 |
+|------|------|---------|
+| `strict`（默认） | 方案 A 几何贴合 + QC 门禁，平衡速度与质量 | 日常使用 |
+| `balanced` | 宽松 QC，更易通过验证 | 快速预览 |
+| `replace` | AI 生成式合成，引擎优先级：warp → bailian → remote → catvton → diffusion | 需要真实感时 |
+| `realistic` | CatVTON 深度学习，100% 保留商品细节 + 真实褶皱和光照 | 商品展示 |
+| `professional` | CatVTON + 后处理 + 质量评分 | 专业应用 |
+
+#### 引擎架构（`backend/app/services/tryon_v2/`）
+
+| 模块 | 说明 |
+|------|------|
+| `pipeline_a.py` | 方案 A 主管道：输入门禁 QC → 几何贴合 → 后处理增强 |
+| `input_gate.py` | 输入门禁：全人体评分 / 腿部可见度 / 前姿态评分 / 衣服正面评分 |
+| `warp_engine.py` | Warp 几何引擎：上装 / 下装 / 裙装 / 套装多段贴合，含阴影生成 |
+| `catvton_engine_client.py` | CatVTON 本地引擎客户端（子进程调用） |
+| `catvton_client.py` | CatVTON HTTP 远程推理客户端 |
+| `postprocess.py` | 后处理增强：`quick_enhance()` + 完整 `enhance_tryon_result()` |
+| `qc.py` | 质量评分：身份保真度 / 边缘伪影检测 |
+| `preprocess.py` | 衣物预处理：自动品类检测（top/bottom/skirt/outfit）+ 标准化 |
+| `pose_utils.py` | 姿态关键点工具 |
+| `realism_engine.py` | 真实感引擎 |
+| `occlusion_blend.py` | 遮挡区域混合 |
+| `professional_tryon.py` | Professional 模式管道（6 步流水线） |
+| `garment_struct.py` | 衣物结构化数据 |
+
+#### 极限 VRAM 优化（8GB 及以下显存）
+
+全部开启可在 8GB VRAM 正常运行：
+
+```env
+CATVTON_FORCE_FP16=true
+CATVTON_ENABLE_VAE_SLICING=true
+CATVTON_ENABLE_XFORMERS=true
+CATVTON_LOW_VRAM_MODE=true
+```
+
+RTX 4060 Laptop 推荐开启 `CATVTON_FORCE_FP16=true` 节省约 2GB。
+
+#### 白盒调试模式
+
+```bash
+# 仅运行预处理（极快，验证 mask 质量）
+debug_mode=preprocess_only
+
+# 完整运行（含扩散，耗时最长）
+debug_mode=full
+# 输出目录：CATVTON_DEBUG_DIR 中每个请求一个独立时间戳会话目录
+# 中间产物：01_input_person.jpg, 02_input_garment.jpg, 03_mask.png, 04_pose_keypoints.jpg, 05_mask_overlay.png ...
+```
+
+### 6. AI 穿搭风格分（`POST /predict`）
+
+- **sklearn** 风格分 + Top3 推荐与中文解释；与 Flutter / Vite 共用同一契约
+- 独立服务默认端口 **8765**；主应用 `app.main` 亦提供 `POST /predict`（无 `/api/v1` 前缀）
+
+### 7. 智能穿搭（Flutter Web 行为、CORS、认证顺序、响应式）
+
+详见 [`docs/SMART_OUTFIT_FLUTTER_WEB.md`](docs/SMART_OUTFIT_FLUTTER_WEB.md)。
 
 ## 技术架构
 
 ### 后端服务
-- **框架**: FastAPI（推荐 Python 3.12+）
+- **框架**: FastAPI（推荐 Python 3.12+，支持 3.14）
 - **数据库**: PostgreSQL + Redis
 - **AI**:
-  - CLIP（`transformers` + `torch`）用于类别/风格/场景与相似检索特征
-  - 虚拟试衣：可选 **百炼（DashScope）**、**`VTON_INFERENCE_URL` 远程专用 VTON**、或本机 **diffusers** inpainting（未就绪时 fallback）；概述见 [`docs/VTON_DELIVERY_2026-04.md`](docs/VTON_DELIVERY_2026-04.md)
+  - CLIP/FashionCLIP（`transformers` + `torch`）用于零样本品类/风格/场景识别与相似检索
+  - 虚拟试衣：**CatVTON**（本地子进程深度学习）/ **百炼（DashScope）** / **Warp 几何引擎** / **diffusers** SD Inpainting（fallback）
+- **独立推理服务**: `vton_inference_service/` 最小 HTTP 服务，支持 CatVTON 子进程 / HTTP 上游 / Stub 三种模式
 
 ### 移动端 (Flutter)
 - **框架**: Flutter 3.x + Dart（iOS / Android / Web）
@@ -69,212 +123,111 @@
 - **性别表达指数** 动态配色（0.0 柔粉 ↔ 1.0 深蓝）
 - **大圆角** 统一样式（BorderRadius 统一为 22px）
 
-### CLI 工具（已实现）
-- **实现**: Python **argparse** + **httpx**，默认 **JSON** 输出，便于脚本与 Agent 调用
+### CLI 工具
+- **实现**: Python **argparse** + **httpx**，默认 **JSON** 输出
 - **入口**: `cli/outfit_cli.py`（`python cli/outfit_cli.py --help`）
-- **能力**: 注册/登录、衣橱、相似度/场景搭配/适合度、**按城市天气**、**智能穿搭上传+生成**、**情绪列表/推荐**、**虚拟试衣**、**套装收藏列表**；成功响应自动解包统一 `{success,data}` Envelope
+- **能力**: 注册/登录、衣橱、相似度/场景搭配/适合度、按城市天气、智能穿搭上传+生成、情绪列表/推荐、虚拟试衣、套装收藏列表
 
-### MCP 服务（已实现）
-- **实现**: **FastMCP**（`mcp` PyPI），工具通过 HTTP 转发后端 ` /api/v1 `
-- **入口**: `mcp/server.py`；依赖：`pip install mcp httpx`
-- **环境变量**: `OUTFIT_API_BASE_URL`（默认 `http://127.0.0.1:8010/api/v1`）、`OUTFIT_API_TOKEN`（调用需登录接口时必填；也可用 MCP `login` 取得 token 后写入环境再启动）
-- **说明**: **动态工具选择**由 MCP Host（如 Cursor / Claude）在运行时完成，本仓库提供 **可组合工具面**；详见 [docs/CLI_MCP_QUICKSTART.md](docs/CLI_MCP_QUICKSTART.md)
-
-### 竞赛/课题扩展方向（可选迭代）
-- 多智能体 / 记忆 / 数据飞轮的**缺口与落地清单**见 [docs/COMPETITION_EXTENSIONS.md](docs/COMPETITION_EXTENSIONS.md)
+### MCP 服务
+- **实现**: **FastMCP**（`mcp` PyPI），工具通过 HTTP 转发后端 `/api/v1`
+- **入口**: `mcp/server.py`
+- **环境变量**: `OUTFIT_API_BASE_URL`（默认 `http://127.0.0.1:8010/api/v1`）、`OUTFIT_API_TOKEN`
 
 ## 项目结构
 
 ```
 clothing-assistant/
-├── .kiro/specs/smart-outfit-assistant/
-│   ├── requirements.md             # 需求文档
-│   ├── design.md                  # 技术设计文档
-│   ├── tasks.md                   # 实现计划
-│   └── .config.kiro               # 配置文件
-├── backend/                        # ✅ FastAPI 后端服务（已完成）
-│   ├── app/                       # 应用代码
-│   │   ├── api/                   # API 路由（多模块，完整列表见 `/docs` OpenAPI）
-│   │   ├── core/                  # 核心配置（含性别表达系统）
-│   │   ├── db/                    # 数据库
-│   │   ├── ml/                    # 机器学习模型
-│   │   ├── models/                # ORM 模型
+├── backend/
+│   ├── app/
+│   │   ├── api/                   # 20 个路由模块（含 tryon_v2）
+│   │   ├── core/                  # 配置、错误处理、日志、超参
+│   │   ├── db/                    # 数据库会话 + SQLite schema patches
+│   │   ├── ml/                    # 模型加载（CLIP）
+│   │   ├── models/                # ORM 模型（含 FeedbackEvent、MemorySnippet 等）
+│   │   ├── observability/          # 指标收集（tryon_v2_metrics, dependency_metrics）
 │   │   ├── schemas/               # Pydantic schemas
-│   │   └── services/              # 业务逻辑
-│   ├── tests/                     # ✅ pytest 套件（见 backend/tests）
+│   │   └── services/              # 50 个服务模块
+│   │       └── tryon_v2/           # 14 个 v2 管线模块（pipeline_a / warp_engine 等）
+│   ├── scripts/                    # 诊断与测试脚本
+│   ├── tests/                     # pytest 套件
 │   └── uploads/                   # 上传的图片
-├── frontend/                       # ✅ Vite + React（AI 穿搭打分演示页，可选）
-├── mobile/                         # ✅ Flutter 前端（已完成）
+├── mobile/                         # Flutter 前端（Provider + GoRouter）
 │   └── lib/
-│       ├── core/                  # 核心服务、主题、性别表达系统
-│       └── features/              # 功能模块
-│           ├── auth/              # 认证
-│           ├── home/              # 主页导航
-│           ├── profile/           # 用户画像
-│           ├── wardrobe/          # 衣橱管理（左右分栏 + 批量上传）
-│           └── analysis/          # 分析功能（结果同屏展示）
-├── cli/                           # ✅ CLI（outfit_cli.py，JSON 输出）
-├── mcp/                           # ✅ MCP（server.py，FastMCP 工具桥接后端）
-└── docs/                          # 📚 项目文档（多图推荐、衣橱拆分等）
+│       ├── core/                  # API 客户端、主题、性别表达系统
+│       └── features/              # auth / home / profile / wardrobe / analysis
+├── vton_inference_service/         # 独立最小 HTTP 推理服务
+│   ├── catvton_runner.py          # CatVTON 子进程推理（含 MediaPipe PoseLandmarker）
+│   ├── catvton_engine.py          # CatVTON 引擎封装
+│   ├── ootd_engine.py             # OOTDiffusion 引擎（待接入）
+│   └── main.py                    # FastAPI 入口
+├── cli/                           # outfit_cli.py
+├── mcp/                           # server.py（FastMCP 工具桥接）
+├── docs/                          # 技术文档（40+ 篇）
+├── deploy/ecs/                    # ECS 部署脚本与清单
+└── .kiro/specs/                   # 需求与设计规格
 ```
-
-## 开发状态
-
-✅ **核心功能已完成** - 项目可用于演示和测试
-
-本项目采用规格驱动开发（Spec-Driven Development）方法，完整的开发文档请查看：
-
-- 📋 [需求文档](.kiro/specs/smart-outfit-assistant/requirements.md) - 16 个核心需求
-- 🎨 [技术设计文档](.kiro/specs/smart-outfit-assistant/design.md) - 详细的架构和算法设计
-- ✅ [实现计划](.kiro/specs/smart-outfit-assistant/tasks.md) - 37 个实现任务
-- 📊 [项目状态](PROJECT_STATUS.md) - 当前完成度和功能清单
 
 ## 快速开始
 
-详细的启动指南请查看 [QUICK_START.md](QUICK_START.md)。**AI `/predict`、Vite 演示前端、虚拟试衣与 Web 根路径**见 [docs/AI_OUTFIT_PREDICT_AND_TRYON.md](docs/AI_OUTFIT_PREDICT_AND_TRYON.md)。搭配推荐多图上传见 [docs/OUTFIT_MULTI_IMAGE_UPLOAD.md](docs/OUTFIT_MULTI_IMAGE_UPLOAD.md)；衣橱整套拆分与删除提示见 [docs/WARDROBE_FEATURES.md](docs/WARDROBE_FEATURES.md)。**智能穿搭（Flutter Web 行为、CORS、认证顺序、响应式等）**见 [docs/SMART_OUTFIT_FLUTTER_WEB.md](docs/SMART_OUTFIT_FLUTTER_WEB.md)。**天气展示（道路名过滤）与 Hugging Face / 虚拟试衣下载配置**见 [docs/WEATHER_DISPLAY_AND_HF_ENV.md](docs/WEATHER_DISPLAY_AND_HF_ENV.md)。
-本次交付说明见 [docs/RELEASE_2026-04-10_SMART_OUTFIT_UX_AND_API.md](docs/RELEASE_2026-04-10_SMART_OUTFIT_UX_AND_API.md)。
-2026-04-13 公网一致性审计与部署修复说明见 [docs/RELEASE_2026-04-13_DEPLOY_AUDIT_AND_PARITY.md](docs/RELEASE_2026-04-13_DEPLOY_AUDIT_AND_PARITY.md)。
-工程协作与最小质量门禁基线见 [docs/ENGINEERING_BASELINE.md](docs/ENGINEERING_BASELINE.md)。
-分支保护与合并门禁基线见 [docs/BRANCH_PROTECTION_BASELINE.md](docs/BRANCH_PROTECTION_BASELINE.md)。
-
-### 工程治理文档入口
-
-- [工程基线（CI / 轻量测试边界）](docs/ENGINEERING_BASELINE.md)
-- [分支保护基线](docs/BRANCH_PROTECTION_BASELINE.md)
-- [分支保护执行清单](docs/BRANCH_PROTECTION_CHECKLIST.md)
-- [提交前自检清单](docs/PRE_SUBMIT_SELF_CHECK.md)
-- [交付状态（本轮治理改造）](docs/DELIVERY_STATUS.md)
-- [双通道推理速交付方案（本地主推理 + 外部增强）](docs/HYBRID_INFERENCE_FAST_TRACK.md)
-- [竞赛/课题扩展清单（多智能体 · 记忆 · 数据飞轮）](docs/COMPETITION_EXTENSIONS.md)
-- [生产部署清单（Nginx / 持久化 / JWT / 就绪探针）](docs/PRODUCTION_DEPLOY.md)
-- [发布台账与依赖观测（/release、analytics、ops 看板）](docs/OPS_RELEASE_AND_OBSERVABILITY.md)
-- [ECS 部署目录与 Tar/Git 模式、RELEASE_MANIFEST](deploy/ecs/README.md)
-- [线上值班速查（1页）](docs/ONCALL_QUICK_REFERENCE.md)
-- [本地完整运行 + 最小 API 接入（执行清单）](docs/LOCAL_FULL_RUN_AND_MINIMAL_API.md)
-- [专用 VTON（OOTDiffusion / IDM-VTON）选型、PoC 与 `VTON_INFERENCE_URL`](docs/VTON_INTEGRATION.md) · [2026-04 试衣/百炼/Stub 交付说明](docs/VTON_DELIVERY_2026-04.md) · [最小 HTTP 服务 `vton_inference_service/`](vton_inference_service/README.md)
-
-### 环境要求
-
-- Python 3.11+ (推荐 3.12)
-- PostgreSQL 14+ (开发环境可使用 SQLite)
-- Redis 7+ (可选，用于缓存)
-- Flutter 3.x (前端开发)
-- 使用 **NVIDIA GPU + 本机 PyTorch CUDA** 时：全量 `pip install -r requirements.txt` 可能把 `torch` 换成 **CPU 新版**；恢复方式见 [docs/PYTORCH_CUDA_WINDOWS.md](docs/PYTORCH_CUDA_WINDOWS.md)。
-
-### 快速启动
-
-**注意**：
-
-- 必须在 **`backend` 目录**下启动，否则会出现 `ModuleNotFoundError: No module named 'app'`（包 `app` 在 `backend/app/`）。
-- 推荐使用仓库根目录的 **`.venv`**：`..\.venv\Scripts\python.exe`（Windows）或先 `Activate.ps1`，与 `backend/requirements.txt` 一致。
-- 没有 `backend/.env` 时仍可启动：配置来自 `Settings` 默认值与环境变量；本地无 PostgreSQL 时可设 `DATABASE_URL=sqlite:///./outfit_local.db`（PowerShell：`$env:DATABASE_URL=...`）。
-- 若出现 **`WinError 10048`（端口已被占用）**，说明 **8010** 上已有进程：结束旧 `uvicorn` 或改用 `--port 8011`（Flutter 需 `--dart-define=API_PORT=8011`）。
+### 1. 启动后端
 
 ```bash
-# 1. 启动后端服务（端口默认 8010；与 mobile/lib/core/services/api_port_config.dart 中 kApiPort 一致）
+# Windows PowerShell
 cd backend
-# Windows（示例：使用仓库根 .venv，无需 activate）:
-# ..\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8010
+# 激活 .venv
+..\.venv\Scripts\Activate.ps1
+
+# 启动服务（默认端口 8010）
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8010
 
-# 2. 启动前端应用（新终端，默认请求 http://127.0.0.1:8010/api/v1）
+# API 文档
+# http://127.0.0.1:8010/docs
+```
+
+### 2. 启动前端
+
+```bash
 cd mobile
 flutter run -d chrome
-
-# 3. 访问应用
-# 前端: 浏览器自动打开
-# API 文档: http://127.0.0.1:8010/docs
 ```
 
-### 公网部署与一致性审计（Windows 本地执行）
+### 3. CatVTON 虚拟试衣（如需 realistic/professional 模式）
 
-```powershell
-# 一体化发布（前端+后端）
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\deploy_full_to_ecs.ps1
-
-# 一键远端审计（上传并在 ECS 执行 Linux 审计脚本）
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\push_and_run_remote_audit.ps1 -ServerHost 101.200.127.179 -User root
-```
-
-说明：
-- `.ps1` 仅在 Windows 下执行；Linux ECS 请执行 `scripts/full_chain_consistency_audit.sh`。
-- 审计脚本返回 `warn=1` 且 `fail=0` 时表示“仅告警不阻断”，不是硬失败。
-- 若在 `C:\Windows\System32` 等非仓库目录执行，请改用 `-File` 绝对路径。
-
-### 开发环境配置（必做）
-
-1. **后端环境文件**：在 `backend` 目录执行 `copy .env.example .env`（macOS/Linux：`cp .env.example .env`）。`PORT` 默认 `8010`，与 Flutter `kApiPort` 一致；勿与机器上已占用端口冲突。
-2. **生产部署前**：将 `JWT_SECRET_KEY` 换为强随机字符串；设置 `DEBUG=False`、`ENVIRONMENT=production`；按域名配置 `CORS_ORIGINS`（勿依赖 `CORS_ALLOW_ALL_LOCALHOST`）。
-
-### API 路径约定（v1）
-
-业务接口统一挂在 **`http://<host>/api/v1`** 下（与 Swagger `/docs` 一致）。**智能穿搭**相关端点为：
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/v1/smart-outfit/weather` | 经纬度查询当前城市与天气（需登录） |
-| `GET` | `/api/v1/smart-outfit/weather-by-city` | 按城市名查询天气（需登录） |
-| `POST` | `/api/v1/smart-outfit/upload-reference` | 上传参考衣物图，`multipart/form-data` 字段 `file` |
-| `POST` | `/api/v1/smart-outfit/generate` | 生成搭配，JSON：`image_url`、`city`、`weather`、`temperature`、`mood`、`count`、`regeneration_index` 等 |
-| `POST` | `/api/v1/feedback/events` | 用户反馈：`like` / `dislike` / `adopt` / `view`（用于重排与飞轮指标） |
-| `GET` | `/api/v1/analytics/summary` | 数据飞轮摘要：`positive_feedback_rate`、`collection_rate_proxy` 等（`scope=user|global`） |
-| `GET` | `/api/v1/analytics/dependency-observability` | 天气/试衣/AI/外部增强：成功·失败·超时·降级计数与占比（需登录；进程内累计） |
-| `GET` | `/release` | 发布台账：前端 index 指纹、后端 commit、部署时间与无密钥环境快照（无需登录） |
-| `POST` | `/api/v1/agent/intent` | 薄意图路由：自然语言 → 建议 MCP 工具名（无需登录） |
-| `POST` | `/api/v1/memory/snippets` | 写入记忆片段（轻量 RAG） |
-| `GET` | `/api/v1/memory/snippets/search` | 关键词检索记忆片段 |
-
-> 若文档或旧需求里写成 `/api/smart-outfit/...`（缺少 **`/v1`**），请改为上表路径，否则客户端会 404。
-
-更完整的 curl 示例见 [`backend/API_EXAMPLES.md`](backend/API_EXAMPLES.md)。
-
-### 虚拟试衣 v2（多模式）
-
-虚拟试衣 v2 接口统一挂在 **`http://<host>/api/v2`** 下，提供四种模式，适用于不同场景：
-
-| 模式 | 说明 | 推荐场景 |
-|------|------|---------|
-| `stable`（默认） | 方案 A 几何贴合 + AI 增强，平衡速度与质量 | 日常使用 |
-| `replace` | AI 生成式合成，融合 CatVTON / 百炼 / Warp / Diffusion 多引擎 | 需要真实感时 |
-| `realistic` | CatVTON 深度学习，100% 保留商品细节 + 真实褶丝和光照 | 商品展示 |
-| `professional` | 精确分割 + 姿态拟合 + 服装消除 + 光照融合 + 严格验证 | 专业摇摇空级 |
-
-`realistic` 和 `professional` 模式依赖本地 CatVTON（需 `CATVTON_ENABLED=true` 且 `CATVTON_PATH` 已配置）。CatVTON 在 8GB VRAM 环境下通过 **bf16 + VAE slicing + xformers** 可正常运行；RTX 4060 Laptop 推荐开启 `CATVTON_FORCE_FP16=true` 节省约 2GB；极端情况使用 `CATVTON_LOW_VRAM_MODE=true` 一键开启低显存模式。移动端建议采用"先预检再生成"的双阶段流程。
-
-> 移动端 `ApiClient` 默认 `baseUrl` 为 `/api/v1`，但 v2 方法会自动切换到 `/api/v2`，无需手动改基址。
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `POST` | `/api/v2/tryon/validate-input` | 仅做输入门限评估，不生成图片；返回 `passed/error_code/action_hint/qc_scores/thresholds` |
-| `POST` | `/api/v2/tryon/garment` | 多模式下装/上装试衣；`multipart/form-data` 字段 `person_file`、`garment_file`、`garment_category`、`mode` |
-| `GET` | `/api/v2/tryon/capabilities` | 查询 v2 能力开关、默认模式、支持品类与当前阈值（需登录） |
-| `GET` | `/api/v2/tryon/model-status` | CatVTON 等引擎就绪状态诊断（需登录） |
-
-后端配置项（`backend/.env`）：
-- `TRYON_V2_ENABLED`、`TRYON_BOTTOM_FORCE_FALLBACK`
-- `CATVTON_ENABLED=true`、`CATVTON_PATH=D:\models\CatVTON_full`、`CATVTON_WIDTH=768`、`CATVTON_HEIGHT=1024`、`CATVTON_STEPS=50`、`CATVTON_GUIDANCE=2.5`、`CATVTON_REPAINT=true`、`CATVTON_TIMEOUT_SECONDS=2400`
-- **极限 VRAM 优化**（8GB 及以下显存推荐全部开启）：`CATVTON_FORCE_FP16=true`、`CATVTON_ENABLE_VAE_SLICING=true`、`CATVTON_ENABLE_XFORMERS=true`、`CATVTON_LOW_VRAM_MODE=true`（一键开启低显存模式）
-- `TRYON_V2_STRICT_IDENTITY`、`TRYON_V2_MIN_FULL_BODY_SCORE`、`TRYON_V2_MIN_LEG_VISIBILITY_SCORE`
-- `TRYON_V2_QC_THRESHOLD`、`TRYON_V2_TIMEOUT_MS`
-
-CatVTON 配置文档（详细说明）：[`docs/VTON_INTEGRATION.md`](docs/VTON_INTEGRATION.md)、[`docs/TRYON_TECH_BLUEPRINT_AB.md`](docs/TRYON_TECH_BLUEPRINT_AB.md)。
-
-CatVTON 诊断与测试脚本：
 ```bash
-# 诊断 CatVTON 状态
-python backend/scripts/diagnose_catvton.py
-
-# 端到端测试
-python backend/scripts/test_catvton_e2e.py
-
-# 直接测试（跳过 API 层）
-cd backend && python scripts/test_catvton_direct.py
-
-# 调试：仅运行预处理（生成 mask + pose，不跑扩散，极快）
-# 在 catvton_engine_client.py 中设置 preprocess_only=True，或查看 vton_inference_service/catvton_runner.py --preprocess-only
+# 环境变量（在 backend/.env 中配置）
+CATVTON_ENABLED=true
+CATVTON_PATH=D:\models\CatVTON_full
+CATVTON_WIDTH=768
+CATVTON_HEIGHT=1024
+CATVTON_STEPS=50
+CATVTON_FORCE_FP16=true
+CATVTON_ENABLE_VAE_SLICING=true
+CATVTON_ENABLE_XFORMERS=true
+CATVTON_LOW_VRAM_MODE=true
 ```
 
-CLI 调用示例（`cli/outfit_cli.py`）：
+### 4. CLI / MCP
+
+```bash
+python cli/outfit_cli.py --help
+# 或
+python -m mcp.server  # 需要先设置 OUTFIT_API_BASE_URL / OUTFIT_API_TOKEN
+```
+
+## 虚拟试衣 v2 API
+
+虚拟试衣 v2 接口统一挂在 `http://<host>/api/v2` 下：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/v2/tryon/garment` | 多模式试衣（`mode`: strict/balanced/replace/realistic/professional） |
+| `POST` | `/api/v2/tryon/validate-input` | 输入门禁评估（不生成图片） |
+| `POST` | `/api/v2/tryon/preprocess` | 衣物预处理（自动品类检测） |
+| `POST` | `/api/v2/tryon/preprocess-batch` | 批量预处理 |
+| `GET` | `/api/v2/tryon/capabilities` | 能力开关、默认模式、支持品类 |
+| `GET` | `/api/v2/tryon/model-status` | CatVTON 等引擎就绪状态诊断 |
+
+### CLI 调用示例
 
 ```bash
 # 仅做 v2 预检
@@ -296,196 +249,55 @@ python cli/outfit_cli.py tryon --v2 \
   --person ./samples/person.jpg \
   --mode professional
 ```
-### 适合度分析接口（原因说明）
 
-适合度分析接口位于：
-
-- `POST /api/v1/analysis/suitability`（`multipart/form-data` 字段：`file`，可选 `scene`）
-
-响应中除 `suitability_score/color_score/fit_score/style_score` 外，还会返回三段“原因说明”字段：
-
-- `scene_match_reason`：场景匹配原因
-- `body_fit_reason`：体型适配原因
-- `style_coordination_reason`：风格协调原因
-
-### 模型下载/离线提示（重要）
-
-- CLIP / 虚拟试衣首次运行需要从 Hugging Face 下载权重（弱网易超时、大文件需较长超时）。
-- 在 **`backend/.env`** 中配置（示例见 `backend/.env.example`）：`HF_ENDPOINT=https://hf-mirror.com`、`HF_HUB_DOWNLOAD_TIMEOUT=600` 等。这些键已列入后端 `Settings`，启动时会 **`sync_hf_env_from_settings` 注入 `os.environ`**，供 `huggingface_hub` / `diffusers` 使用（仅写进未被 Pydantic 声明的裸 `.env` 键不会生效）。
-- 可用脚本一次性预下载（用于离线/加速）：
+### 诊断脚本
 
 ```bash
-cd backend
-python scripts/prefetch_models.py --clip vit_l14
-python scripts/prefetch_models.py --tryon
+python backend/scripts/diagnose_catvton.py
+python backend/scripts/analyze_debug.py
 ```
 
-更完整的说明与排障见 [docs/WEATHER_DISPLAY_AND_HF_ENV.md](docs/WEATHER_DISPLAY_AND_HF_ENV.md)。
+## 环境要求
 
-### Git Hooks 设置
+- Python 3.11+（推荐 3.12；支持 3.14，使用 `requirements-py314.txt`）
+- PostgreSQL 14+（开发环境可使用 SQLite：`DATABASE_URL=sqlite:///./outfit_local.db`）
+- Redis 7+（可选，用于缓存）
+- Flutter 3.x（前端开发）
+- NVIDIA GPU + CUDA（如使用 CatVTON realistic 模式，8GB VRAM 可正常运行）
 
-本项目使用 **pre-commit 框架**管理 Git hooks，确保跨语言的代码质量和安全检查。
+> 使用 NVIDIA GPU + 本机 PyTorch CUDA 时：全量 `pip install -r requirements.txt` 可能把 `torch` 换成 CPU 新版；恢复方式见 [`docs/PYTORCH_CUDA_WINDOWS.md`](docs/PYTORCH_CUDA_WINDOWS.md)。
 
-#### 🎯 已实现的 Hooks
+## 工程治理
 
-| 阶段 | 功能 | 语言 | 说明 |
-|------|------|------|------|
-| **Pre-commit** | 代码格式化 | Python | Black + isort |
-| | 代码格式化 | Dart/Flutter | `dart format` |
-| | Linting | Python | flake8 (100字符上限) |
-| | Linting | Dart/Flutter | `dart analyze` |
-| | 基础检查 | 全局 | trailing whitespace, EOF, merge conflicts, etc. |
-| | 大文件检查 | 全局 | 禁止提交 >1MB 文件 |
-| | 密钥检测 | 全局 | detect-secrets 防止凭证泄露 |
-| **Commit-msg** | 提交规范 | 全局 | Conventional Commits 强制执行 |
-| **Pre-push** | 测试 | Python | `pytest tests_lite`（轻量门禁，见 `.pre-commit-config.yaml`） |
-| | 测试 | Flutter | `flutter test` |
+- **Pre-commit**: Black + isort + flake8 + dart-format + dart-analyze + detect-secrets + Conventional Commits
+- **测试**: pytest（`backend/tests/`）；pre-push 跑 `tests_lite`（轻量门禁）
+- **Flutter**: `flutter test`（pre-push）
+- **安装 Hooks**: `powershell -NoProfile -ExecutionPolicy Bypass -File setup-hooks.ps1`
 
-#### ⚡ 快速安装
+详见 [docs/ENGINEERING_BASELINE.md](docs/ENGINEERING_BASELINE.md)。
 
-从项目根目录运行安装脚本：
+## 文档清单
 
-```powershell
-# Windows PowerShell（推荐）:
-.\setup-hooks.ps1
-
-# Windows CMD:
-setup-hooks.bat
-
-# Linux/Mac:
-chmod +x setup-hooks.sh
-./setup-hooks.sh
-```
-
-或手动安装：
-
-```bash
-# 1. 安装依赖
-pip install pre-commit==4.0.1 detect-secrets==1.5.0
-
-# 2. 安装 hooks
-pre-commit install --hook-type pre-commit
-pre-commit install --hook-type commit-msg
-pre-commit install --hook-type pre-push
-
-# 3. 验证安装
-ls .git/hooks
-# 应该看到：pre-commit, commit-msg, pre-push （无 .sample 后缀）
-```
-
-#### 📝 提交消息规范
-
-遵循 **Conventional Commits** 格式：
-
-```bash
-# 基础格式：type(scope): description
-type(scope): description
-
-# 示例：
-git commit -m "feat: add wardrobe management feature"
-git commit -m "fix(api): resolve authentication timeout bug"
-git commit -m "docs: update installation guide"
-git commit -m "refactor(ui): simplify color theme system"
-```
-
-**允许的提交类型：**
-- `feat` - 新功能
-- `fix` - bug 修复
-- `docs` - 文档更新
-- `style` - 代码格式、无逻辑修改
-- `refactor` - 代码重构
-- `test` - 测试相关
-- `chore` - 构建、依赖、工具更新
-- `perf` - 性能优化
-- `ci` - CI/CD 配置
-- `build` - 构建系统
-- `revert` - 回滚提交
-
-**Scope（作用域）是可选的：** `(api)`, `(ui)`, `(mobile)`, `(backend)` 等
-
-#### 🔧 常见操作
-
-```bash
-# 运行所有 hooks（不提交）
-pre-commit run --all-files
-
-# 跳过 hooks 提交（仅在特殊情况下使用）
-git commit --no-verify -m "type: message"
-
-# 手动格式化和检查 Dart 代码
-cd mobile
-dart format lib test
-dart analyze lib
-
-# 手动运行 Python 测试
-cd backend
-python -m pytest -v --tb=short
-
-# 手动运行 Flutter 测试
-cd mobile
-flutter test
-```
-
-#### 📚 详细文档
-
-- [GIT_HOOKS 完整指南](backend/GIT_HOOKS.md)
-- [Conventional Commits 规范](backend/COMMIT_CONVENTION.md)
-- [Git Hooks 设置说明](SETUP_HOOKS_README.md)
-
-## 功能完成度
-
-✅ **后端服务**: 100% 完成
-- 全部核心 API 端点已实现（数量见 [PROJECT_STATUS.md](PROJECT_STATUS.md)）
-- 后端 `pytest`：`backend/tests` 全量约 **358 收集，356 通过、2 跳过**（以本机 `python -m pytest` 为准）。成功响应经 `ApiEnvelopeMiddleware` 统一为 `{success,data,error,message}`；测试侧用 `tests.api_json.unwrap_json` 读取内层 `data`。Pre-push 钩子跑 `tests_lite`（35 例，更快）。
-- 性别表达指数系统、图像识别、相似度分析、搭配推荐、适合度评分全部可用
-
-✅ **前端应用**: 100% 完成
-- 用户认证、用户画像、衣橱管理全部实现
-- **衣橱页** 左右分栏（固定分类边栏 + 虚拟滚动网格，每行4张1:1正方形）
-- **批量上传** 支持一次选择多张图片，逐张上传并显示进度
-- **分析页** 四种分析结果同屏展示
-- 性别表达指数滑块（全局大圆角样式）
-- Flutter Web 完全兼容
-
-✅ **CLI 工具**: 已实现（见 `cli/outfit_cli.py`、`docs/CLI_MCP_QUICKSTART.md`）
-✅ **MCP 服务**: 已实现（见 `mcp/server.py`；工具覆盖衣橱/分析/智能穿搭/情绪/试衣/收藏等）
-
-## 贡献指南
-
-欢迎贡献！请遵循以下步骤：
-
-1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启 Pull Request
-
-## 测试策略
-
-本项目采用双重测试方法：
-
-- **单元测试**: 使用 pytest 验证具体功能
-- **属性测试**: 使用 Hypothesis 验证通用属性
-- **集成测试**: 验证多组件协同工作
-- **性能测试**: 确保响应时间满足要求
+- [`QUICK_START.md`](QUICK_START.md) — 5 分钟快速启动
+- [`docs/AI_OUTFIT_PREDICT_AND_TRYON.md`](docs/AI_OUTFIT_PREDICT_AND_TRYON.md) — AI 预测与虚拟试衣配置
+- [`docs/VTON_INTEGRATION.md`](docs/VTON_INTEGRATION.md) — 专用 VTON 选型与集成
+- [`docs/VTON_DELIVERY_2026-04.md`](docs/VTON_DELIVERY_2026-04.md) — 2026-04 试衣交付说明
+- [`vton_inference_service/README.md`](vton_inference_service/README.md) — 独立推理服务说明
+- [`docs/SMART_OUTFIT_FLUTTER_WEB.md`](docs/SMART_OUTFIT_FLUTTER_WEB.md) — Flutter Web 行为与 CORS
+- [`docs/CLI_MCP_QUICKSTART.md`](docs/CLI_MCP_QUICKSTART.md) — CLI + MCP 快速入门
+- [`docs/PRODUCTION_DEPLOY.md`](docs/PRODUCTION_DEPLOY.md) — 生产部署清单
+- [`docs/ENGINEERING_BASELINE.md`](docs/ENGINEERING_BASELINE.md) — 工程基线
+- [`docs/COMPETITION_EXTENSIONS.md`](docs/COMPETITION_EXTENSIONS.md) — 竞赛/课题扩展清单
+- [`backend/API_EXAMPLES.md`](backend/API_EXAMPLES.md) — curl 示例
+- [`docs/DELIVERY_STATUS.md`](docs/DELIVERY_STATUS.md) — 本轮治理交付状态
 
 ## 许可证
 
-本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
-
-## 联系方式
-
-- 项目主页: https://github.com/your-username/smart-outfit-assistant
-- 问题反馈: https://github.com/your-username/smart-outfit-assistant/issues
-
-## 致谢
-
-- CLIP / Diffusers 等模型组件来自开源社区
-- 感谢所有开源项目的贡献者
+MIT License — 详见 [LICENSE](LICENSE)
 
 ---
 
-**注意**: 本项目为毕业设计/课题研究项目，仅供学习和研究使用。
-年级：2024级
-学号：202452320220
-班级：智能科学与技术2班
+**项目类型**: 毕业设计/课题研究
+**年级**: 2024级
+**学号**: 202452320220
+**班级**: 智能科学与技术2班

@@ -1,6 +1,6 @@
 # 智能穿搭助手 - Flutter 移动端
 
-更新时间：2026-04-25
+更新时间：2026-05-01
 
 这是智能穿搭助手的 Flutter 移动端应用。
 
@@ -158,6 +158,12 @@ flutter test
 flutter test integration_test
 ```
 
+## 近期关键变更（2026-05-01）
+
+- 虚拟试衣 v2 多引擎多模式正式上线（strict/balanced/replace/realistic/professional），CatVTON 深度学习 + 百炼 + Warp 几何引擎全支持
+- CatVTON 后处理修复（尺寸不匹配 → `quick_enhance()` 快速路径）
+- 极限 VRAM 优化（8GB 可用）、白盒调试工具、实时日志
+
 ## 近期关键变更（2026-04-25）
 
 - **Flutter Web 渲染修复**：修复了登录页标题 `Text` widget 在 Web 上的 `debugSize == size` 断言错误（通过添加 `maxLines: 1` 约束）。
@@ -207,9 +213,9 @@ A: Token 默认有效期 24 小时，过期后需要重新登录。
 
 ## 下一步建议
 
-- [ ] 将虚拟试衣从 inpainting 升级为真正 VTON（人体解析/遮挡/几何贴合）
 - [ ] 增加更多情绪与场景模板，丰富解释性文案
 - [ ] 增加端到端/集成测试覆盖（Web/真机）
+- [ ] 训练专用服饰分类模型（替代 FashionCLIP 零样本）
 
 ## 许可证
 
