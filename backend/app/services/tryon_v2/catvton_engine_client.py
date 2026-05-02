@@ -134,6 +134,7 @@ def _run_catvton_sync(
     xformers: bool = True,
     force_fp16: bool = False,
     low_vram_mode: bool = False,
+    torch_compile: bool = False,
 ) -> Dict[str, Any]:
     """
     Run CatVTON inference synchronously via subprocess.
@@ -296,6 +297,10 @@ def _run_catvton_sync(
         if preprocess_only:
             cmd.append("--preprocess-only")
 
+        # torch.compile JIT 编译（需要 PyTorch 2.0+，推理步数>=20 时效果最佳）
+        if torch_compile:
+            cmd.append("--torch-compile")
+
         cmd.extend(["--catvton-path", catvton_path])
 
         # Enable debug intermediate saves
@@ -307,7 +312,7 @@ def _run_catvton_sync(
             f"size={width}x{height}, steps={steps}, guidance={guidance}, "
             f"precision={final_precision}, vae_slicing={vae_slicing}, "
             f"xformers={xformers}, preprocess_only={preprocess_only}, "
-            f"low_vram_mode={low_vram_mode}"
+            f"low_vram_mode={low_vram_mode}, torch_compile={torch_compile}"
         )
 
         # Pass HF cache dir to subprocess so it finds downloaded models
@@ -536,6 +541,7 @@ async def call_local_catvton(
     debug_dir: Optional[str] = None,
     preprocess_only: bool = False,
     low_vram_mode: bool = False,
+    torch_compile: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """
     Call local CatVTON for virtual try-on.
@@ -575,6 +581,7 @@ async def call_local_catvton(
     vae_slicing = getattr(settings, "CATVTON_ENABLE_VAE_SLICING", True)
     xformers = getattr(settings, "CATVTON_ENABLE_XFORMERS", True)
     force_fp16 = getattr(settings, "CATVTON_FORCE_FP16", False)
+    torch_compile = getattr(settings, "CATVTON_TORCH_COMPILE", False)
 
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
@@ -591,6 +598,7 @@ async def call_local_catvton(
             xformers=xformers,
             force_fp16=force_fp16,
             low_vram_mode=low_vram_mode,
+            torch_compile=torch_compile,
         ),
     )
 
@@ -650,6 +658,7 @@ def get_catvton_status() -> Dict[str, Any]:
         "low_vram_mode": getattr(settings, "CATVTON_LOW_VRAM_MODE", False),
         "gc_after_infer": getattr(settings, "CATVTON_ENABLE_GC_AFTER_INFER", True),
         "debug_dir": getattr(settings, "CATVTON_DEBUG_DIR", ""),
+        "torch_compile": getattr(settings, "CATVTON_TORCH_COMPILE", False),
     }
 
 

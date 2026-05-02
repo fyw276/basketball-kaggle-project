@@ -1,12 +1,30 @@
-"""Deterministic 2D warp + paste engine for Try-on v2 pipeline A (bottom garments).
+"""Deterministic 2D warp + CatVTON hybrid engine for Try-on v2.
 
-Goal: keep identity/background, only replace bottom garment area using
-simple geometric warps. This is not a physics simulation; it's a stable,
-explainable heuristic intended for the v2 MVP and regression testing.
+Goal: keep identity/background, only replace garment area using geometric
+warps or Warp+CatVTON hybrid blending. Not a physics simulation; it's a
+stable, explainable heuristic.
 
-v2 upgrade: uses MediaPipe Pose keypoints (shoulders/hips/ankles) when available
-for accurate garment placement. Falls back to gradient energy estimation if
-MediaPipe is unavailable or pose detection fails.
+v2 modes:
+- `strict`/`balanced`: warp-based geometric fitting with QC gate
+- `replace`: AI generation (catvton → bailian → remote → warp → diffusion)
+- `realistic`: CatVTON deep learning
+- `professional`: CatVTON + postprocessing + quality scoring
+- `hybrid`: Warp pixel-perfect + CatVTON realism overlay with saturation-aware
+  drape_alpha (warp handles color/pattern, CatVTON adds shadow/lighting)
+
+Warp engine uses MediaPipe Pose keypoints (shoulders/hips/ankles/knees) for
+accurate garment placement; falls back to gradient energy estimation if
+MediaPipe is unavailable. The two-stage knee-aware pants warp preserves
+pattern symmetry at knee-bend vs single-taper warp.
+
+Usage:
+  from app.services.tryon_v2.warp_engine import tryon_top_warp_preserve
+  result, meta = tryon_top_warp_preserve(person_image, garment_image)
+
+  # hybrid mode:
+  from app.services.tryon_v2.warp_engine import tryon_hybrid_warp_catvton
+  result, meta = tryon_hybrid_warp_catvton(
+      person_image, garment_image, catvton_result, garment_category)
 """
 
 from __future__ import annotations
@@ -269,12 +287,56 @@ def tryon_pants_warp(
 
     Uses MediaPipe Pose keypoints (hips/knees/ankles) when available for
     accurate waist and leg placement; falls back to gradient energy estimation.
+
+    Two-stage warp for patterned pants:
+      - Stage 1: waistband + upper legs (hip→knee) — single taper
+      - Stage 2: lower legs (knee→ankle) — full taper
+    This preserves knee-bend pattern symmetry vs. single-taper warp.
     """
     base = person_image.convert("RGBA")
     pw, ph = base.size
 
     cutout = cutout_garment_rgba(garment_image)
-    parts = split_pants_parts(cutout.cropped)
+
+    # ── Extract MediaPipe knee keypoints for knee-aware leg warp ──────────────
+    kpts = detect_pose_keypoints(person_image)
+    _left_knee_y: float | None = None
+    _right_knee_y: float | None = None
+    _left_ankle_y: float | None = None
+    _right_ankle_y: float | None = None
+    _knee_garment_ratio: float | None = None
+
+    if kpts:
+        lk = kpts.get("left_knee")
+        rk = kpts.get("right_knee")
+        la = kpts.get("left_ankle")
+        ra = kpts.get("right_ankle")
+        if lk and la:
+            leg_total = la[1] - lk[1]
+            if leg_total > 0:
+                _left_knee_y = lk[1]
+                _left_ankle_y = la[1]
+        if rk and ra:
+            leg_total = ra[1] - rk[1]
+            if leg_total > 0:
+                _right_knee_y = rk[1]
+                _right_ankle_y = ra[1]
+        # knee_garment_ratio: knee position within leg portion (0=at waist, 1=at ankle)
+        # The leg portion starts after waistband (~20% of cropped pants).
+        # Use average of both legs for robustness.
+        ratios = []
+        if _left_knee_y and _left_ankle_y:
+            ratios.append((_left_knee_y - 0.20) / (_left_ankle_y - 0.20))
+        if _right_knee_y and _right_ankle_y:
+            ratios.append((_right_knee_y - 0.20) / (_right_ankle_y - 0.20))
+        if ratios:
+            avg = sum(ratios) / len(ratios)
+            _knee_garment_ratio = max(0.30, min(0.65, avg))
+            parts = split_pants_parts(cutout.cropped, knee_garment_ratio=_knee_garment_ratio)
+        else:
+            parts = split_pants_parts(cutout.cropped)
+    else:
+        parts = split_pants_parts(cutout.cropped)
 
     # ── MediaPipe 优先路径 ──────────────────────────────────────────────────
     kpts = detect_pose_keypoints(person_image)
@@ -343,8 +405,70 @@ def tryon_pants_warp(
         return canvas
 
     layer_waist = _warp_into_box(parts.waistband, waistband_box)
-    layer_left = _warp_into_box(parts.left_leg, left_leg_box)
-    layer_right = _warp_into_box(parts.right_leg, right_leg_box)
+
+    # ── Two-stage knee-aware warp for patterned pants ─────────────────────────
+    # Stage 1: warp upper leg (hip→knee) — mild taper
+    # Stage 2: warp lower leg (knee→ankle) — full taper
+    # This preserves pattern alignment at knee vs. single-taper warp which distorts patterns.
+    def _warp_two_stage(
+        src_upper: Image.Image,
+        src_lower: Image.Image,
+        leg_box: tuple[int, int, int, int],
+        knee_person_y: float | None = None,
+    ) -> Image.Image:
+        """Two-stage leg warp: upper (mild taper) then lower (full taper).
+
+        Args:
+            leg_box: (x0, y0, x1, y1) of the full leg (hip→ankle)
+            knee_person_y: Optional knee y-coordinate in person-image pixel space.
+                If provided, splits leg_box at knee for two separate warps.
+                If None, performs single warp for the whole leg.
+        """
+        if knee_person_y is None:
+            return _warp_into_box(src_upper, leg_box)
+
+        x0, y0_full, x1, y1_full = leg_box
+        # Split full leg at knee position
+        knee_y_clamped = _clamp_int(int(knee_person_y), y0_full + 2, y1_full - 2)
+        upper_box = (x0, y0_full, x1, knee_y_clamped)
+        lower_box = (x0, knee_y_clamped, x1, y1_full)
+
+        canvas = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
+        # Stage 1: upper leg (hip→knee) — mild taper
+        upper_layer = _warp_into_box(src_upper, upper_box)
+        canvas = Image.alpha_composite(canvas, upper_layer)
+        # Stage 2: lower leg (knee→ankle) — full taper (15%)
+        lower_layer = _warp_into_box(src_lower, lower_box)
+        canvas = Image.alpha_composite(canvas, lower_layer)
+        return canvas
+
+    # Two-stage warp if knee keypoints and split parts are available
+    if (
+        parts.left_upper is not None
+        and parts.left_lower is not None
+        and parts.right_upper is not None
+        and parts.right_lower is not None
+        and _left_knee_y is not None
+        and _right_knee_y is not None
+    ):
+        left_knee_px = int(_left_knee_y * ph)
+        right_knee_px = int(_right_knee_y * ph)
+        layer_left = _warp_two_stage(
+            parts.left_upper,
+            parts.left_lower,
+            left_leg_box,
+            knee_person_y=left_knee_px,
+        )
+        layer_right = _warp_two_stage(
+            parts.right_upper,
+            parts.right_lower,
+            right_leg_box,
+            knee_person_y=right_knee_px,
+        )
+    else:
+        # Fallback: single-stage warp
+        layer_left = _warp_into_box(parts.left_leg, left_leg_box)
+        layer_right = _warp_into_box(parts.right_leg, right_leg_box)
 
     merged = Image.alpha_composite(Image.alpha_composite(layer_left, layer_right), layer_waist)
 
@@ -1098,3 +1222,99 @@ def overlay_top_onto_ai_result(
 
         _logger.warning("overlay_top_onto_ai_result failed: %s\n%s", e, traceback.format_exc())
         return ai_result, {"engine": "ai_only", "reason": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Warp + CatVTON Hybrid Try-On
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def tryon_hybrid_warp_catvton(
+    person_image: Image.Image,
+    garment_image: Image.Image,
+    catvton_result: Image.Image,
+    garment_category: str,
+    *,
+    drape_alpha: float = 0.55,
+) -> tuple[Image.Image, dict]:
+    """
+    Warp + CatVTON 两阶段混合试衣。
+
+    策略：
+      1. Stage 1 (Warp): tryon_top_warp_preserve / tryon_pants_warp
+         → 像素级保真的衣服贴在人物身上
+      2. Stage 3 (Blend): overlay_draping_from_ai
+         → 将 CatVTON 产生的真实光影/阴影/褶皱叠加到 Warp 结果上
+         → 衣服像素 100% 保留（颜色/图案/纹理完全来自原始衣服图）
+
+    Args:
+        person_image: 人物全身图
+        garment_image: 衣服商品图
+        catvton_result: CatVTON 推理结果（从 tryon_v2.catvton_engine_client 获得）
+        garment_category: 衣服类别 (top/bottom/skirt)
+        drape_alpha: AI 光影叠加强度（0.55 = 55% AI realism，45% warp identity）
+                     高彩色衣服建议用 0.45（更多身份保留）
+                     低饱和衣服建议用 0.65（更多 AI 真实感）
+
+    Returns:
+        (混合结果图, metadata_dict)
+    """
+    import logging as _log
+
+    _logger = _log.getLogger(__name__)
+
+    cat = (garment_category or "").strip().lower()
+    if any(k in cat for k in ("top", "上装", "上衣")):
+        warp_engine_name = "top_warp_preserve"
+        warp_result, warp_meta = tryon_top_warp_preserve(
+            person_image=person_image, garment_image=garment_image
+        )
+    elif any(k in cat for k in ("skirt", "dress", "裙", "连衣裙")):
+        warp_engine_name = "skirt_warp"
+        warp_result, warp_meta = tryon_skirt_warp(
+            person_image=person_image, garment_image=garment_image
+        )
+    else:
+        warp_engine_name = "pants_warp"
+        warp_result, warp_meta = tryon_pants_warp(
+            person_image=person_image, garment_image=garment_image
+        )
+
+    _logger.info(
+        f"[HYBRID] Stage 1 Warp 完成: engine={warp_engine_name}, "
+        f"garment={garment_category}, drape_alpha={drape_alpha}"
+    )
+
+    # Stage 2: overlay_draping_from_ai
+    # 核心：衣服区域 100% 保留 warp，颜色/图案完全来自原始衣服
+    #         衣服区域外叠加 CatVTON 的光影/阴影
+    result, blend_meta = overlay_draping_from_ai(
+        warp_result=warp_result,
+        ai_result=catvton_result,
+        drape_alpha=drape_alpha,
+    )
+
+    _logger.info(
+        f"[HYBRID] Stage 2 Blend 完成: engine=overlay_draping_from_ai, "
+        f"drape_alpha={drape_alpha}"
+    )
+
+    meta = {
+        "engine": "warp_catvton_hybrid",
+        "stage1_engine": warp_engine_name,
+        "stage2_engine": "overlay_draping_from_ai",
+        "warp_meta": {
+            "engine": warp_meta.engine,
+            "waistband_box": warp_meta.waistband_box,
+            "left_leg_box": warp_meta.left_leg_box,
+            "right_leg_box": warp_meta.right_leg_box,
+            "alpha_feather_px": warp_meta.alpha_feather_px,
+        },
+        "blend_meta": blend_meta,
+        "drape_alpha": drape_alpha,
+        "garment_category": garment_category,
+        "color_fidelity": "100% (warp pixels preserved)",
+        "realism_source": "CatVTON diffusion result",
+        "pipeline": "warp_preserve → overlay_draping_from_ai",
+    }
+    return result, meta

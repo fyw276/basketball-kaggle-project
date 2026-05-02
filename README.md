@@ -1,6 +1,6 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-05-01
+**最后更新**: 2026-05-02
 **状态**: 生产级可用（FastAPI 后端 + Flutter Web/移动端 + CLI + MCP Agent 工具面）
 
 ## 项目简介
@@ -41,15 +41,16 @@
 
 ### 5. 虚拟试衣 v2（多引擎多模式）
 
-#### 四种试衣模式
+#### 六种试衣模式
 
 | 模式 | 说明 | 推荐场景 |
 |------|------|---------|
 | `strict`（默认） | 方案 A 几何贴合 + QC 门禁，平衡速度与质量 | 日常使用 |
 | `balanced` | 宽松 QC，更易通过验证 | 快速预览 |
-| `replace` | AI 生成式合成，引擎优先级：warp → bailian → remote → catvton → diffusion | 需要真实感时 |
+| `replace` | AI 生成式合成，引擎优先级：catvton → bailian → remote → warp → diffusion | 需要真实感时 |
 | `realistic` | CatVTON 深度学习，100% 保留商品细节 + 真实褶皱和光照 | 商品展示 |
 | `professional` | CatVTON + 后处理 + 质量评分 | 专业应用 |
+| `hybrid` | Warp 保真 + CatVTON 真实感，智能饱和度感知 alpha 调节 | 彩色高饱和度衣物 |
 
 #### 引擎架构（`backend/app/services/tryon_v2/`）
 

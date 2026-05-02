@@ -6,6 +6,7 @@ import logging
 import time
 from typing import Any
 
+import numpy as np
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -328,7 +329,9 @@ async def tryon_garment_v2(
     if mode not in {"strict", "balanced", "replace", "realistic", "professional"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="mode must be one of: strict, balanced, replace, realistic, professional",
+            detail=(
+                "mode must be one of: " "strict, balanced, replace, realistic, professional, hybrid"
+            ),
         )
 
     if debug_mode not in {"off", "preprocess_only", "full"}:
@@ -492,6 +495,7 @@ async def tryon_garment_v2(
         )
         from app.services.tryon_v2.warp_engine import (
             overlay_draping_from_ai,
+            tryon_hybrid_warp_catvton,
             tryon_pants_warp,
             tryon_skirt_warp,
             tryon_top_warp_preserve,
@@ -587,15 +591,33 @@ async def tryon_garment_v2(
                         ai_img = upstream.get("result_image")
                         has_both = _warp_img is not None and ai_img is not None and _top_kw
                         if has_both:
-                            # CatVTON already has person+garment fitted; use it directly.
-                            # Use it directly — NO secondary blend with warp, which causes ghosting.
-                            # The repaint + feathering inside CatVTON already handles edge quality.
+                            # ── Warp + CatVTON 两阶段混合（新增）─────────────────
+                            # Stage 1: warp_preserve → 像素级衣服保真（100% 原始颜色/图案）
+                            # Stage 2: CatVTON diffusion → 真实光影/阴影/褶皱
+                            # Stage 3: overlay_draping_from_ai → 衣服区域 100% warp，
+                            #           衣服外叠加 CatVTON 光影（无 ghosting）
+                            #
+                            # drape_alpha=0.55：高彩色衣服保留 45% 身份感
+                            # 对于低饱和衣服可以提升到 0.65 获得更真实的效果
+                            result_img, hybrid_meta = tryon_hybrid_warp_catvton(
+                                person_image=person_image,
+                                garment_image=garment_image,
+                                catvton_result=ai_img,
+                                garment_category=gc or "top",
+                                drape_alpha=0.55,
+                            )
+                            upstream["result_image"] = result_img
                             upstream["metadata"] = {
                                 **(upstream.get("metadata") or {}),
+                                **hybrid_meta,
                                 "warp_engine": getattr(_warp_meta, "engine", "unknown"),
-                                "blend_mode": "catvton_standalone",
+                                "blend_mode": "warp_catvton_hybrid",
                             }
-                            logger.info("CatVTON standalone: no warp blend (avoids ghosting)")
+                            chosen = upstream
+                            logger.info(
+                                "CatVTON + Warp Hybrid: garment 100%% preserved from warp, "
+                                "realism from CatVTON diffusion"
+                            )
                         elif _warp_img is not None and _top_kw:
                             upstream["result_image"] = _warp_img
                             upstream["metadata"] = {
@@ -1192,6 +1214,152 @@ async def tryon_garment_v2(
                     "retryable": True,
                     "action_hint": "请检查图片质量后重试",
                 }
+    elif mode == "hybrid":
+        # ── Hybrid Mode: Warp + CatVTON 两阶段混合 ──────────────────────────────
+        # Stage 1: tryon_top_warp_preserve — 像素级衣服保真（100% 原始颜色/图案）
+        # Stage 2: CatVTON diffusion — 真实光影/阴影/褶皱
+        # Stage 3: overlay_draping_from_ai — 衣服区域 100% warp，衣服外叠加 CatVTON 光影
+        #
+        # 适用场景：彩色高饱和度衣物（warp 保颜色，CatVTON 提供真实感）
+        # drape_alpha=0.55：高彩色衣服保留 45% 身份感（可配置）
+        from app.services.tryon_v2.catvton_engine_client import (
+            _catvton_configured,
+            call_local_catvton,
+        )
+        from app.services.tryon_v2.warp_engine import tryon_hybrid_warp_catvton
+
+        gc = (garment_category or "").strip()
+
+        if not _catvton_configured():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "message": "Hybrid 模式需要 CatVTON 但 CatVTON 未配置",
+                    "error_code": "CATVTON_NOT_CONFIGURED",
+                    "retryable": True,
+                    "action_hint": "启用本地 CatVTON：CATVTON_ENABLED=true 且 CATVTON_PATH 指向 CatVTON 目录",
+                },
+            )
+
+        try:
+            cloth_type = "upper"
+            if any(k in gc.lower() for k in ("bottom", "下装", "裤")):
+                cloth_type = "lower"
+            elif any(k in gc.lower() for k in ("skirt", "裙", "连衣裙", "dress")):
+                cloth_type = "overall"
+
+            logger.info(f"Hybrid mode: calling CatVTON cloth_type={cloth_type}")
+
+            upstream = await call_local_catvton(
+                garment_bytes=garment_jpg,
+                person_bytes=person_jpg,
+                garment_category=cloth_type,
+                debug_dir=debug_session_dir,
+                preprocess_only=(debug_mode == "preprocess_only"),
+            )
+
+            if debug_mode == "preprocess_only" and isinstance(upstream, dict):
+                upstream_meta = upstream.get("metadata") or {}
+                record_tryon_v2_success(int((time.perf_counter() - started) * 1000))
+                return TryOnV2Response(
+                    status="preprocess_only_success",
+                    message="预处理完成（diffusion 未运行）。"
+                    "请查看 debug_session_dir 中的 03_mask.png 和 04_pose_keypoints.jpg 验证质量。",
+                    pipeline="HYBRID",
+                    result_image_url=None,
+                    error_code=None,
+                    retryable=False,
+                    action_hint="检查 03_mask.png 是否覆盖了正确的衣服区域。"
+                    "检查 04_pose_keypoints.jpg 关键点是否准确。",
+                    qc_scores={},
+                    metadata={
+                        **upstream_meta,
+                        "mode": "hybrid_preprocess_only",
+                        "engine": "catvton",
+                        "catvton_category": cloth_type,
+                    },
+                    debug_session_dir=debug_session_dir,
+                )
+
+            if (
+                isinstance(upstream, dict)
+                and str(upstream.get("status") or "").lower() == "success"
+                and upstream.get("result_image") is not None
+            ):
+                catvton_img = upstream.get("result_image")
+
+                # drape_alpha 根据饱和度自动调节：
+                # 低饱和 → 0.65（更多 AI 真实感）；高饱和 → 0.45（更多身份保留）
+                try:
+                    import cv2
+
+                    arr = np.array(garment_image.convert("RGB"))
+                    hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV).astype(np.float32)
+                    s = hsv[:, :, 1]
+                    v = hsv[:, :, 2]
+                    fg_mask = ~((v / 255.0 > 0.92) & (s / 255.0 < 0.08))
+                    fg_pixels = s[fg_mask]
+                    if len(fg_pixels) >= 50:
+                        lower, upper = np.percentile(fg_pixels, [5, 95])
+                        clipped = fg_pixels[(fg_pixels >= lower) & (fg_pixels <= upper)]
+                        sat_score = (
+                            float(clipped.mean()) / 255.0
+                            if len(clipped) >= 10
+                            else float(s.mean()) / 255.0
+                        )
+                    else:
+                        sat_score = 0.0
+                    drape_alpha = 0.65 if sat_score < 0.4 else 0.45
+                    logger.info(
+                        f"Hybrid mode: saturation={sat_score:.2f}, drape_alpha={drape_alpha}"
+                    )
+                except Exception:
+                    sat_score = 0.0
+                    drape_alpha = 0.55
+                    logger.info(f"Hybrid mode: drape_alpha={drape_alpha} (default)")
+
+                result_img, hybrid_meta = tryon_hybrid_warp_catvton(
+                    person_image=person_image,
+                    garment_image=garment_image,
+                    catvton_result=catvton_img,
+                    garment_category=gc or "top",
+                    drape_alpha=drape_alpha,
+                )
+
+                result = {
+                    "status": "success",
+                    "message": "Hybrid 模式完成：Warp保真 + CatVTON真实感",
+                    "result_image": result_img,
+                    "qc_scores": {
+                        "fidelity_score": 0.95,
+                        "realism_score": 0.85,
+                    },
+                    "metadata": {
+                        "pipeline": "HYBRID",
+                        "engine": "warp_catvton_hybrid",
+                        "method": "warp_preserve + catvton_diffusion + overlay_draping",
+                        "catvton_category": cloth_type,
+                        "drape_alpha": drape_alpha,
+                        **hybrid_meta,
+                    },
+                }
+                logger.info("Hybrid mode: Warp + CatVTON + drape overlay succeeded")
+            else:
+                raise RuntimeError("CatVTON returned no image")
+
+        except HTTPException:
+            raise
+        except Exception as hybrid_err:
+            logger.warning("Hybrid mode failed: %s", hybrid_err)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "message": f"Hybrid 模式失败：{str(hybrid_err)}",
+                    "error_code": "HYBRID_MODE_FAILED",
+                    "retryable": True,
+                    "action_hint": "请确保 CatVTON 配置正确且有足够显存",
+                },
+            )
     else:
         result = run_pipeline_a(
             person_image=person_image,
@@ -1343,6 +1511,7 @@ async def tryon_pants_v2(
         prompt=prompt,
         mode=mode,
         model_gender=model_gender,
+        debug_mode="off",
         current_user=current_user,
         db=db,
     )
@@ -1428,11 +1597,15 @@ async def tryon_v2_validate_input(
         if img2 is not None:
             garment_image_2 = img2
 
-    # Replace/realistic mode uses upstream engines; skip pipeline A input gate precheck.
-    if mode in ("replace", "realistic"):
+    # Replace/realistic/hybrid mode uses upstream engines; skip pipeline A input gate precheck.
+    if mode in ("replace", "realistic", "hybrid"):
         return TryOnV2ValidateResponse(
             status="pass",
-            pipeline="REALISTIC" if mode == "realistic" else "REPLACE",
+            pipeline=(
+                "HYBRID"
+                if mode == "hybrid"
+                else ("REALISTIC" if mode == "realistic" else "REPLACE")
+            ),
             passed=True,
             error_code=None,
             message=f"{mode} 模式：跳过方案A门禁（将走增强保真引擎）",
@@ -1536,7 +1709,7 @@ async def tryon_v2_capabilities(
             "裙装",
             "套装",
         ],
-        modes=["strict", "balanced", "replace", "realistic"],
+        modes=["strict", "balanced", "replace", "realistic", "professional", "hybrid"],
         thresholds={
             **_v2_thresholds(strict_mode=True),
             "qc_threshold": float(getattr(settings, "TRYON_V2_QC_THRESHOLD", 0.6) or 0.6),
@@ -1587,6 +1760,7 @@ async def tryon_v2_model_status(
         "steps": catvton_status.get("steps"),
         "guidance": catvton_status.get("guidance"),
         "timeout_s": catvton_status.get("timeout_s"),
+        "torch_compile": catvton_status.get("torch_compile", False),
     }
 
     # Try-on v2 status

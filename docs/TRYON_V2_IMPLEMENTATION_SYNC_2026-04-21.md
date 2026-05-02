@@ -1,6 +1,9 @@
-# Try-On V2 文档同步说明（2026-04-21，**已由 2026-04-24 同步替代**）
+# Try-On V2 文档同步说明（2026-04-21，**已由后续工作大幅扩展**）
 
-> **2026-04-24 更新**：本文件的同步范围（方案 A MVP）已被后续工作大幅扩展。详见新的同步说明或直接查看 [`docs/TRYON_TECH_BLUEPRINT_AB.md`](TRYON_TECH_BLUEPRINT_AB.md) 的"实施现状"章节。
+> **2026-04-29 及 2026-05-02 更新**：本文件的同步范围（方案 A MVP）已被后续工作大幅扩展。详见新的同步说明或直接查看当前实现：
+> - 完整 v2 模式说明：[`docs/TRYON_TECH_BLUEPRINT_AB.md`](TRYON_TECH_BLUEPRINT_AB.md) 的"实施现状"章节
+> - 当前 try-on v2 API：[`backend/app/api/tryon_v2.py`](../backend/app/api/tryon_v2.py)
+> - v2 引擎模块：[`backend/app/services/tryon_v2/`](<../backend/app/services/tryon_v2/>)
 
 ## 目标
 

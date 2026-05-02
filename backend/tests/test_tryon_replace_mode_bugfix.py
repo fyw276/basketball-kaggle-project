@@ -1,17 +1,15 @@
 """
-Bug condition exploration property-based tests for try-on replace mode fix.
+Bug condition exploration property-based tests for try-on replace mode.
 
 **Validates: Requirements 2.2, 2.3, 2.4, 2.5**
 
-This test demonstrates the bug on UNFIXED code:
-- When mode="replace" and Bailian is configured but API calls fail
-- The error response lacks detailed diagnostics (incomplete bailian_diag, generic error hints)
+This test validates that when mode="replace" and Bailian is configured but API calls fail,
+the error response includes complete bailian_diag and specific action_hints.
 
-EXPECTED OUTCOME ON UNFIXED CODE: Test FAILS
-- bailian_diag is missing fields like status_code, code, exception_message, model, function
-- action_hint contains generic messages like "百炼失败：未知错误" instead of specific hints
-
-This proves the bug exists. After the fix is implemented, this test should PASS.
+Key insight: the replace mode engine priority is [catvton, bailian, remote, warp, diffusion].
+Since CatVTON is configured in this test environment, CatVTON runs first.
+To test the Bailian diagnostics path, we mock _catvton_configured() to False so CatVTON
+is skipped, letting Bailian be the first attempted engine.
 """
 
 from __future__ import annotations
@@ -140,33 +138,23 @@ def test_bug_condition_bailian_error_diagnostics_missing(
     error_response: dict[str, Any],
 ):
     """
-    **Property 1: Bug Condition - Detailed Bailian Error Diagnostics Missing**
+    **Property: Bailian Error Diagnostics Completeness**
 
-    **Validates: Requirements 2.2, 2.3, 2.4, 2.5**
+    For any replace mode request where CatVTON is skipped (not configured) and
+    Bailian API call fails, the error response should include complete bailian_diag
+    with all available fields and specific action_hints (not generic ones).
 
-    For any replace mode request where Bailian is configured and the Bailian API call fails,
-    the UNFIXED code returns an HTTP 503 error response with INCOMPLETE bailian_diag
-    (missing status_code, code, exception_message, model, function) and GENERIC error hints
-    (like "百炼失败：未知错误" instead of specific hints like "百炼失败：API key 无效或已过期").
-
-    EXPECTED OUTCOME ON UNFIXED CODE: This test FAILS
-    - Assertions fail because bailian_diag is missing diagnostic fields
-    - Assertions fail because action_hint is generic instead of specific
-
-    This proves the bug exists. After the fix, this test should PASS.
+    We skip CatVTON by mocking _catvton_configured() to False so Bailian is the
+    first attempted engine.
     """
     import app.api.tryon_v2 as tryon_v2_api
     import app.services.bailian_tryon_client as bailian_client
-    import app.services.tryon_v2.warp_engine as warp_engine
+    import app.services.tryon_v2.catvton_engine_client as catvton_client
     import app.services.vton_remote_client as vton_client
 
-    # Mock composition engine to fail so we exercise the Bailian fallback path
-    def mock_warp_fail(*args, **kwargs):
-        raise RuntimeError("composition_test_stub")
-
-    monkeypatch.setattr(warp_engine, "tryon_top_warp", mock_warp_fail)
-    monkeypatch.setattr(warp_engine, "tryon_pants_warp", mock_warp_fail)
-    monkeypatch.setattr(warp_engine, "tryon_skirt_warp", mock_warp_fail)
+    # Skip CatVTON so Bailian is the first attempted engine in priority.
+    # This lets us test Bailian error diagnostics without CatVTON subprocess.
+    monkeypatch.setattr(catvton_client, "_catvton_configured", lambda: False)
 
     # Mock Bailian as configured
     monkeypatch.setattr(bailian_client, "_bailian_configured", lambda: True)
@@ -177,18 +165,25 @@ def test_bug_condition_bailian_error_diagnostics_missing(
 
     monkeypatch.setattr(bailian_client, "call_bailian_tryon", mock_call_bailian_tryon)
 
-    # Mock remote VTON as not configured (so we hit the error path)
+    # Mock remote VTON as not configured (so we move to warp fallback)
     monkeypatch.setattr(vton_client, "_remote_url_configured", lambda: False)
 
     # Mock check_tryon_garment_has_face to return False
-    def _stub_check_tryon_garment_has_face(_img):
-        return False
-
     monkeypatch.setattr(
         tryon_v2_api,
         "check_tryon_garment_has_face",
-        _stub_check_tryon_garment_has_face,
+        lambda _img: False,
     )
+
+    # Mock warp to fail (so we get the 503 "all engines failed" response)
+    import app.services.tryon_v2.warp_engine as warp_engine
+
+    def mock_warp_fail(*args, **kwargs):
+        raise RuntimeError("warp_disabled_for_test")
+
+    monkeypatch.setattr(warp_engine, "tryon_top_warp_preserve", mock_warp_fail)
+    monkeypatch.setattr(warp_engine, "tryon_pants_warp", mock_warp_fail)
+    monkeypatch.setattr(warp_engine, "tryon_skirt_warp", mock_warp_fail)
 
     # Prepare request
     garment_bytes = _jpeg_bytes(color=(245, 245, 245))
@@ -213,7 +208,7 @@ def test_bug_condition_bailian_error_diagnostics_missing(
     # Assert HTTP 503 error
     assert (
         res.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
-    ), f"Expected HTTP 503, got {res.status_code}"
+    ), f"Expected HTTP 503, got {res.status_code}. Body: {res.text}"
 
     body = res.json()
     error = body.get("error", {})
@@ -233,81 +228,47 @@ def test_bug_condition_bailian_error_diagnostics_missing(
     expected_function = metadata.get("function")
     expected_specific_hint = metadata.get("specific_hint", "")
 
-    # ========================================================================
-    # BUG ASSERTIONS: These FAIL on unfixed code, proving the bug exists
-    # ========================================================================
-
     # Assert bailian_diag contains ALL available diagnostic fields
-    # (UNFIXED code is missing these fields)
-
     if expected_status_code is not None:
         assert "status_code" in bailian_diag, (
-            f"BUG: bailian_diag missing 'status_code' field. "
-            f"Expected {expected_status_code}, got bailian_diag={bailian_diag}"
+            f"bailian_diag missing 'status_code'. Expected {expected_status_code}, "
+            f"got bailian_diag={bailian_diag}"
         )
-        assert bailian_diag.get("status_code") == expected_status_code, (
-            f"BUG: bailian_diag['status_code'] incorrect. "
-            f"Expected {expected_status_code}, got {bailian_diag.get('status_code')}"
-        )
+        assert bailian_diag.get("status_code") == expected_status_code
 
     if expected_code is not None:
-        assert "code" in bailian_diag, (
-            f"BUG: bailian_diag missing 'code' field. "
-            f"Expected {expected_code}, got bailian_diag={bailian_diag}"
-        )
-        assert bailian_diag.get("code") == expected_code, (
-            f"BUG: bailian_diag['code'] incorrect. "
-            f"Expected {expected_code}, got {bailian_diag.get('code')}"
-        )
+        assert (
+            "code" in bailian_diag
+        ), f"bailian_diag missing 'code'. Expected {expected_code}, got bailian_diag={bailian_diag}"
+        assert bailian_diag.get("code") == expected_code
 
     if expected_exception_message is not None:
         assert "exception_message" in bailian_diag, (
-            f"BUG: bailian_diag missing 'exception_message' field. "
-            f"Expected {expected_exception_message}, got bailian_diag={bailian_diag}"
+            f"bailian_diag missing 'exception_message'. Expected {expected_exception_message}, "
+            f"got bailian_diag={bailian_diag}"
         )
-        assert bailian_diag.get("exception_message") == expected_exception_message, (
-            f"BUG: bailian_diag['exception_message'] incorrect. "
-            f"Expected {expected_exception_message}, got {bailian_diag.get('exception_message')}"
-        )
+        assert bailian_diag.get("exception_message") == expected_exception_message
 
     if expected_model is not None:
         assert "model" in bailian_diag, (
-            f"BUG: bailian_diag missing 'model' field. "
+            f"bailian_diag missing 'model'. "
             f"Expected {expected_model}, got bailian_diag={bailian_diag}"
         )
-        assert bailian_diag.get("model") == expected_model, (
-            f"BUG: bailian_diag['model'] incorrect. "
-            f"Expected {expected_model}, got {bailian_diag.get('model')}"
-        )
+        assert bailian_diag.get("model") == expected_model
 
     if expected_function is not None:
         assert "function" in bailian_diag, (
-            f"BUG: bailian_diag missing 'function' field. "
-            f"Expected {expected_function}, got bailian_diag={bailian_diag}"
+            f"bailian_diag missing 'function'. Expected {expected_function}, "
+            f"got bailian_diag={bailian_diag}"
         )
-        assert bailian_diag.get("function") == expected_function, (
-            f"BUG: bailian_diag['function'] incorrect. "
-            f"Expected {expected_function}, got {bailian_diag.get('function')}"
-        )
+        assert bailian_diag.get("function") == expected_function
 
     # Assert action_hint contains specific error message (not generic)
-    # (UNFIXED code uses generic hints like "百炼失败：未知错误")
-
     if expected_specific_hint:
         assert expected_specific_hint in action_hint, (
-            f"BUG: action_hint missing specific error hint. "
-            f"Expected to contain '{expected_specific_hint}', got action_hint='{action_hint}'"
+            f"action_hint missing specific error hint. "
+            f"Expected '{expected_specific_hint}', got action_hint='{action_hint}'"
         )
-
-        # Assert action_hint is NOT generic
-        generic_hints = ["未知错误", "查看 detail.replace_debug.bailian 获取详情"]
-        for generic in generic_hints:
-            if generic in action_hint and expected_specific_hint not in action_hint:
-                pytest.fail(
-                    f"BUG: action_hint is generic instead of specific. "
-                    f"Contains '{generic}' but missing '{expected_specific_hint}'. "
-                    f"action_hint='{action_hint}'"
-                )
 
 
 # ============================================================================
@@ -315,31 +276,52 @@ def test_bug_condition_bailian_error_diagnostics_missing(
 # ============================================================================
 
 
+def _setup_replace_mode_mocks(monkeypatch, bailian_response, warp_fails=True):
+    """Common mock setup for replace mode bailian tests."""
+    import app.api.tryon_v2 as tryon_v2_api
+    import app.services.bailian_tryon_client as bailian_client
+    import app.services.tryon_v2.catvton_engine_client as catvton_client
+    import app.services.tryon_v2.warp_engine as warp_engine
+    import app.services.vton_remote_client as vton_client
+
+    # Skip CatVTON so Bailian is first engine
+    monkeypatch.setattr(catvton_client, "_catvton_configured", lambda: False)
+
+    # Configure Bailian
+    monkeypatch.setattr(bailian_client, "_bailian_configured", lambda: True)
+
+    async def mock_call_bailian_tryon(**kwargs):
+        return bailian_response
+
+    monkeypatch.setattr(bailian_client, "call_bailian_tryon", mock_call_bailian_tryon)
+
+    # Remote VTON not configured
+    monkeypatch.setattr(vton_client, "_remote_url_configured", lambda: False)
+
+    # Skip face check
+    monkeypatch.setattr(
+        tryon_v2_api,
+        "check_tryon_garment_has_face",
+        lambda _img: False,
+    )
+
+    # Fail warp so we get the "all engines failed" 503
+    if warp_fails:
+
+        def mock_warp_fail(*args, **kwargs):
+            raise RuntimeError("warp_disabled_for_test")
+
+        monkeypatch.setattr(warp_engine, "tryon_top_warp_preserve", mock_warp_fail)
+        monkeypatch.setattr(warp_engine, "tryon_pants_warp", mock_warp_fail)
+        monkeypatch.setattr(warp_engine, "tryon_skirt_warp", mock_warp_fail)
+
+
 def test_bug_invalid_api_key_scenario(
     client: TestClient,
     auth_headers: dict,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """
-    Test invalid API key scenario specifically.
-
-    EXPECTED ON UNFIXED CODE: FAILS
-    - bailian_diag missing status_code=401, code="InvalidApiKey", specific_hint
-    - action_hint is generic like "百炼失败：未知错误" instead of "百炼失败：API key 无效或已过期"
-    """
-    import app.api.tryon_v2 as tryon_v2_api
-    import app.services.bailian_tryon_client as bailian_client
-    import app.services.tryon_v2.warp_engine as warp_engine
-    import app.services.vton_remote_client as vton_client
-
-    # Mock composition engine to fail so we exercise the Bailian fallback path
-    def mock_warp_fail(*args, **kwargs):
-        raise RuntimeError("composition_test_stub")
-
-    monkeypatch.setattr(warp_engine, "tryon_top_warp", mock_warp_fail)
-    monkeypatch.setattr(warp_engine, "tryon_pants_warp", mock_warp_fail)
-    monkeypatch.setattr(warp_engine, "tryon_skirt_warp", mock_warp_fail)
-
+    """Test invalid API key scenario. Skips CatVTON so Bailian is the first engine."""
     error_response = {
         "status": "error",
         "message": "InvalidApiKey",
@@ -354,27 +336,8 @@ def test_bug_invalid_api_key_scenario(
             "function": "description_edit_with_mask",
         },
     }
+    _setup_replace_mode_mocks(monkeypatch, error_response)
 
-    # Mock Bailian as configured
-    monkeypatch.setattr(bailian_client, "_bailian_configured", lambda: True)
-
-    # Mock call_bailian_tryon to return the error response
-    async def mock_call_bailian_tryon(**kwargs):
-        return error_response
-
-    monkeypatch.setattr(bailian_client, "call_bailian_tryon", mock_call_bailian_tryon)
-
-    # Mock remote VTON as not configured
-    monkeypatch.setattr(vton_client, "_remote_url_configured", lambda: False)
-
-    # Mock check_tryon_garment_has_face
-    monkeypatch.setattr(
-        tryon_v2_api,
-        "check_tryon_garment_has_face",
-        lambda _img: False,
-    )
-
-    # Prepare request
     garment_bytes = _jpeg_bytes(color=(245, 245, 245))
     person_bytes = _jpeg_bytes(size=(300, 500), color=(220, 220, 220))
     files = {
@@ -382,7 +345,6 @@ def test_bug_invalid_api_key_scenario(
         "person_file": ("person.jpg", person_bytes, "image/jpeg"),
     }
 
-    # Call the endpoint
     res = client.post(
         "/api/v2/tryon/garment",
         headers=auth_headers,
@@ -394,38 +356,19 @@ def test_bug_invalid_api_key_scenario(
         },
     )
 
-    # Assert HTTP 503
     assert res.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
     body = res.json()
-    # The error handler wraps the response in error.details
     error = body.get("error", {})
     detail = error.get("details", {})
-
-    # Extract diagnostics
-    replace_debug = detail.get("replace_debug", {})
-    bailian_diag = replace_debug.get("bailian", {})
+    bailian_diag = detail.get("replace_debug", {}).get("bailian", {})
     action_hint = detail.get("action_hint", "")
 
-    # BUG ASSERTIONS (FAIL on unfixed code)
-    assert (
-        "status_code" in bailian_diag
-    ), f"BUG: bailian_diag missing 'status_code'. Got: {bailian_diag}"
-    assert bailian_diag["status_code"] == 401
-
-    assert "code" in bailian_diag, f"BUG: bailian_diag missing 'code'. Got: {bailian_diag}"
-    assert bailian_diag["code"] == "InvalidApiKey"
-
-    assert "model" in bailian_diag, f"BUG: bailian_diag missing 'model'. Got: {bailian_diag}"
-    assert bailian_diag["model"] == "wanx2.1-imageedit"
-
-    assert "function" in bailian_diag, f"BUG: bailian_diag missing 'function'. Got: {bailian_diag}"
-    assert bailian_diag["function"] == "description_edit_with_mask"
-
-    # Assert specific hint in action_hint
-    assert (
-        "API key 无效或已过期" in action_hint
-    ), f"BUG: action_hint missing specific error. Got: '{action_hint}'"
+    assert bailian_diag.get("status_code") == 401
+    assert bailian_diag.get("code") == "InvalidApiKey"
+    assert bailian_diag.get("model") == "wanx2.1-imageedit"
+    assert bailian_diag.get("function") == "description_edit_with_mask"
+    assert "API key 无效或已过期" in action_hint
 
 
 def test_bug_quota_exceeded_scenario(
@@ -433,26 +376,7 @@ def test_bug_quota_exceeded_scenario(
     auth_headers: dict,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """
-    Test quota exceeded scenario specifically.
-
-    EXPECTED ON UNFIXED CODE: FAILS
-    - bailian_diag missing code="QuotaExceeded", status_code=429
-    - action_hint is generic instead of "百炼失败：API 额度不足或超出限制"
-    """
-    import app.api.tryon_v2 as tryon_v2_api
-    import app.services.bailian_tryon_client as bailian_client
-    import app.services.tryon_v2.warp_engine as warp_engine
-    import app.services.vton_remote_client as vton_client
-
-    # Mock composition engine to fail so we exercise the Bailian fallback path
-    def mock_warp_fail(*args, **kwargs):
-        raise RuntimeError("composition_test_stub")
-
-    monkeypatch.setattr(warp_engine, "tryon_top_warp", mock_warp_fail)
-    monkeypatch.setattr(warp_engine, "tryon_pants_warp", mock_warp_fail)
-    monkeypatch.setattr(warp_engine, "tryon_skirt_warp", mock_warp_fail)
-
+    """Test quota exceeded scenario."""
     error_response = {
         "status": "error",
         "message": "QuotaExceeded",
@@ -467,18 +391,8 @@ def test_bug_quota_exceeded_scenario(
             "function": "description_edit_with_mask",
         },
     }
+    _setup_replace_mode_mocks(monkeypatch, error_response)
 
-    # Setup mocks
-    monkeypatch.setattr(bailian_client, "_bailian_configured", lambda: True)
-
-    async def mock_call_bailian_tryon(**kwargs):
-        return error_response
-
-    monkeypatch.setattr(bailian_client, "call_bailian_tryon", mock_call_bailian_tryon)
-    monkeypatch.setattr(vton_client, "_remote_url_configured", lambda: False)
-    monkeypatch.setattr(tryon_v2_api, "check_tryon_garment_has_face", lambda _img: False)
-
-    # Prepare request
     garment_bytes = _jpeg_bytes()
     person_bytes = _jpeg_bytes(size=(300, 500))
     files = {
@@ -486,7 +400,6 @@ def test_bug_quota_exceeded_scenario(
         "person_file": ("person.jpg", person_bytes, "image/jpeg"),
     }
 
-    # Call endpoint
     res = client.post(
         "/api/v2/tryon/garment",
         headers=auth_headers,
@@ -494,7 +407,6 @@ def test_bug_quota_exceeded_scenario(
         data={"garment_category": "top", "mode": "replace", "model_gender": "neutral"},
     )
 
-    # Assert
     assert res.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
     body = res.json()
@@ -503,16 +415,9 @@ def test_bug_quota_exceeded_scenario(
     bailian_diag = detail.get("replace_debug", {}).get("bailian", {})
     action_hint = detail.get("action_hint", "")
 
-    # BUG ASSERTIONS
-    assert (
-        "code" in bailian_diag and bailian_diag["code"] == "QuotaExceeded"
-    ), f"BUG: bailian_diag missing or incorrect 'code'. Got: {bailian_diag}"
-    assert (
-        "status_code" in bailian_diag and bailian_diag["status_code"] == 429
-    ), f"BUG: bailian_diag missing or incorrect 'status_code'. Got: {bailian_diag}"
-    assert (
-        "API 额度不足或超出限制" in action_hint
-    ), f"BUG: action_hint missing specific error. Got: '{action_hint}'"
+    assert bailian_diag.get("code") == "QuotaExceeded"
+    assert bailian_diag.get("status_code") == 429
+    assert "API 额度不足或超出限制" in action_hint
 
 
 def test_bug_network_timeout_scenario(
@@ -520,26 +425,7 @@ def test_bug_network_timeout_scenario(
     auth_headers: dict,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """
-    Test network timeout scenario specifically.
-
-    EXPECTED ON UNFIXED CODE: FAILS
-    - bailian_diag missing exception_message, error_type="TimeoutException"
-    - action_hint is generic instead of "百炼失败：网络超时"
-    """
-    import app.api.tryon_v2 as tryon_v2_api
-    import app.services.bailian_tryon_client as bailian_client
-    import app.services.tryon_v2.warp_engine as warp_engine
-    import app.services.vton_remote_client as vton_client
-
-    # Mock composition engine to fail so we exercise the Bailian fallback path
-    def mock_warp_fail(*args, **kwargs):
-        raise RuntimeError("composition_test_stub")
-
-    monkeypatch.setattr(warp_engine, "tryon_top_warp", mock_warp_fail)
-    monkeypatch.setattr(warp_engine, "tryon_pants_warp", mock_warp_fail)
-    monkeypatch.setattr(warp_engine, "tryon_skirt_warp", mock_warp_fail)
-
+    """Test network timeout scenario."""
     error_response = {
         "status": "error",
         "message": "网络超时",
@@ -553,18 +439,8 @@ def test_bug_network_timeout_scenario(
             "function": "description_edit_with_mask",
         },
     }
+    _setup_replace_mode_mocks(monkeypatch, error_response)
 
-    # Setup mocks
-    monkeypatch.setattr(bailian_client, "_bailian_configured", lambda: True)
-
-    async def mock_call_bailian_tryon(**kwargs):
-        return error_response
-
-    monkeypatch.setattr(bailian_client, "call_bailian_tryon", mock_call_bailian_tryon)
-    monkeypatch.setattr(vton_client, "_remote_url_configured", lambda: False)
-    monkeypatch.setattr(tryon_v2_api, "check_tryon_garment_has_face", lambda _img: False)
-
-    # Prepare request
     garment_bytes = _jpeg_bytes()
     person_bytes = _jpeg_bytes(size=(300, 500))
     files = {
@@ -572,7 +448,6 @@ def test_bug_network_timeout_scenario(
         "person_file": ("person.jpg", person_bytes, "image/jpeg"),
     }
 
-    # Call endpoint
     res = client.post(
         "/api/v2/tryon/garment",
         headers=auth_headers,
@@ -580,7 +455,6 @@ def test_bug_network_timeout_scenario(
         data={"garment_category": "top", "mode": "replace", "model_gender": "neutral"},
     )
 
-    # Assert
     assert res.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
     body = res.json()
@@ -589,20 +463,9 @@ def test_bug_network_timeout_scenario(
     bailian_diag = detail.get("replace_debug", {}).get("bailian", {})
     action_hint = detail.get("action_hint", "")
 
-    # BUG ASSERTIONS
-    assert (
-        "exception_message" in bailian_diag
-    ), f"BUG: bailian_diag missing 'exception_message'. Got: {bailian_diag}"
-    assert bailian_diag["exception_message"] == "Request timed out"
-
-    assert (
-        "error_type" in bailian_diag
-    ), f"BUG: bailian_diag missing 'error_type'. Got: {bailian_diag}"
-    assert bailian_diag["error_type"] == "TimeoutException"
-
-    assert (
-        "网络超时" in action_hint
-    ), f"BUG: action_hint missing specific error. Got: '{action_hint}'"
+    assert bailian_diag.get("exception_message") == "Request timed out"
+    assert bailian_diag.get("error_type") == "TimeoutException"
+    assert "网络超时" in action_hint
 
 
 def test_bug_success_no_image_scenario(
@@ -610,26 +473,7 @@ def test_bug_success_no_image_scenario(
     auth_headers: dict,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """
-    Test success but no result_image scenario specifically.
-
-    EXPECTED ON UNFIXED CODE: FAILS
-    - bailian_diag missing model, function fields
-    - action_hint doesn't mention "百炼返回成功但缺少结果图"
-    """
-    import app.api.tryon_v2 as tryon_v2_api
-    import app.services.bailian_tryon_client as bailian_client
-    import app.services.tryon_v2.warp_engine as warp_engine
-    import app.services.vton_remote_client as vton_client
-
-    # Mock composition engine to fail so we exercise the Bailian fallback path
-    def mock_warp_fail(*args, **kwargs):
-        raise RuntimeError("composition_test_stub")
-
-    monkeypatch.setattr(warp_engine, "tryon_top_warp", mock_warp_fail)
-    monkeypatch.setattr(warp_engine, "tryon_pants_warp", mock_warp_fail)
-    monkeypatch.setattr(warp_engine, "tryon_skirt_warp", mock_warp_fail)
-
+    """Test success but no result_image scenario."""
     error_response = {
         "status": "success",
         "message": "百炼试衣完成",
@@ -640,18 +484,8 @@ def test_bug_success_no_image_scenario(
             "function": "description_edit_with_mask",
         },
     }
+    _setup_replace_mode_mocks(monkeypatch, error_response)
 
-    # Setup mocks
-    monkeypatch.setattr(bailian_client, "_bailian_configured", lambda: True)
-
-    async def mock_call_bailian_tryon(**kwargs):
-        return error_response
-
-    monkeypatch.setattr(bailian_client, "call_bailian_tryon", mock_call_bailian_tryon)
-    monkeypatch.setattr(vton_client, "_remote_url_configured", lambda: False)
-    monkeypatch.setattr(tryon_v2_api, "check_tryon_garment_has_face", lambda _img: False)
-
-    # Prepare request
     garment_bytes = _jpeg_bytes()
     person_bytes = _jpeg_bytes(size=(300, 500))
     files = {
@@ -659,7 +493,6 @@ def test_bug_success_no_image_scenario(
         "person_file": ("person.jpg", person_bytes, "image/jpeg"),
     }
 
-    # Call endpoint
     res = client.post(
         "/api/v2/tryon/garment",
         headers=auth_headers,
@@ -667,23 +500,14 @@ def test_bug_success_no_image_scenario(
         data={"garment_category": "top", "mode": "replace", "model_gender": "neutral"},
     )
 
-    # Assert
     assert res.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
     body = res.json()
     error = body.get("error", {})
     detail = error.get("details", {})
     bailian_diag = detail.get("replace_debug", {}).get("bailian", {})
-
-    # BUG ASSERTIONS
-    assert "model" in bailian_diag, f"BUG: bailian_diag missing 'model'. Got: {bailian_diag}"
-    assert bailian_diag["model"] == "wanx2.1-imageedit"
-
-    assert "function" in bailian_diag, f"BUG: bailian_diag missing 'function'. Got: {bailian_diag}"
-    assert bailian_diag["function"] == "description_edit_with_mask"
-
-    # Assert action_hint mentions the specific scenario
     action_hint = detail.get("action_hint", "")
-    assert "百炼返回成功但缺少结果图" in action_hint, (
-        f"BUG: action_hint missing specific success-no-image hint. " f"Got: '{action_hint}'"
-    )
+
+    assert bailian_diag.get("model") == "wanx2.1-imageedit"
+    assert bailian_diag.get("function") == "description_edit_with_mask"
+    assert "百炼返回成功但缺少结果图" in action_hint

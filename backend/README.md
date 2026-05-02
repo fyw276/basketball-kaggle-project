@@ -1,5 +1,7 @@
 # Smart Outfit Assistant - Backend
 
+更新时间：2026-05-02
+
 FastAPI 后端服务，提供智能穿搭助手的核心功能。
 
 ## 🚀 快速开始
