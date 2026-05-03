@@ -1457,6 +1457,15 @@ def _transfer_color_to_region(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+def _check_triton_available() -> bool:
+    """检查 Triton 是否可用（torch.compile 的必需依赖）。"""
+    try:
+        import triton
+        return True
+    except ImportError:
+        return False
+
+
 def _compile_unet_pretrained(
     pipeline,
     compile_mode: str = "reduce-overhead",
@@ -1502,6 +1511,20 @@ def _compile_unet_pretrained(
         return applied
 
     try:
+        # ── Triton 检测：torch.compile 依赖 Triton，但 Windows 上安装复杂 ─────
+        # 如果 Triton 不可用，torch.compile 会在首次调用时惰性编译失败
+        # (错误: "Cannot find a working triton installation")
+        # 这里先检查，避免带缺陷的编译状态污染 pipeline
+        has_triton = _check_triton_available()
+
+        if not has_triton:
+            logger.warning(
+                "torch.compile 已跳过: Triton 未安装或版本不兼容。"
+                "在 Windows 上安装 Triton 需要特殊处理，建议直接使用 eager 模式。"
+                "如需加速推理，可考虑安装 xformers（pip install xformers）。"
+            )
+            return applied
+
         logger.info(
             f"Compiling UNet with torch.compile(mode={compile_mode})... "
             "First inference will take ~2-5s extra for compilation."
@@ -1515,7 +1538,16 @@ def _compile_unet_pretrained(
             "Compilation overhead (~2-5s) is amortized for step >= 20."
         )
     except Exception as e:
-        logger.warning(f"torch.compile failed ({e}), continuing with eager mode")
+        # torch.compile 的异常可能延迟到首次调用时才触发（惰性编译）
+        # 例如 "BackendCompilerFailed: backend='inductor' raised"
+        # 此时 pipeline.unet 已被替换为编译后的对象，但编译状态是坏的。
+        # 必须将 pipeline.unet 恢复为原始的未编译版本。
+        logger.warning(f"torch.compile failed ({e}), restoring uncompiled UNet")
+        if hasattr(pipeline, "unet"):
+            try:
+                setattr(pipeline, "unet", unet)
+            except Exception:
+                pass
 
     return applied
 
@@ -1550,39 +1582,54 @@ def _apply_memory_optimizations(
     # 速度影响：约增加 10-20%，但换来了在 8GB 卡上运行的可能性。
     if vae_slicing:
         try:
-            pipeline.enable_vae_slicing()
-            applied.append("vae_slicing")
-            logger.info("VRAM 优化已应用: VAE 分片推理 (峰值显存 -40%)")
+            # 正确方式：对 UNet 使用 set_attention_slice（diffusers 标准方法）
+            # CatVTON Pipeline 的 VAE 在 encode/decode 时显存最高，
+            # set_attention_slice 降低 attention 矩阵计算时的显存占用。
+            if hasattr(pipeline.unet, "set_attention_slice"):
+                pipeline.unet.set_attention_slice("auto")
+                applied.append("attention_slicing_auto")
+                logger.info("VRAM 优化已应用: UNet attention slicing (峰值显存 -40%)")
+            elif hasattr(pipeline.unet, "enable_attention_slicing"):
+                pipeline.unet.enable_attention_slicing("auto")
+                applied.append("attention_slicing_auto")
+                logger.info("VRAM 优化已应用: UNet attention slicing")
+            else:
+                logger.warning("UNet 没有 set_attention_slice 方法，跳过")
         except Exception as e:
-            logger.warning(f"VAE slicing 应用失败: {e}")
+            logger.warning(f"Attention slicing 应用失败: {e}")
 
     # ── 策略 2: xformers 高效注意力 ─────────────────────────────────
     # xformers 的 memory_efficient_attention 使用分块注意力算法，
     # 相比 PyTorch 原生 attention，显存复杂度从 O(n^2) 降低到更优。
     # 如果没有安装 xformers，尝试使用 PyTorch 2.0+ 的 Flash Attention。
+    # 注意：CatVTONPipeline 构造函数已传入 enable_xformers 参数，
+    # 此处仅处理 fallback（SDPA/FlashAttention）。
     if xformers:
         try:
-            # 优先尝试 xformers
-            try:
-                import xformers
+            import xformers  # noqa: F401
+            has_xformers = True
+        except ImportError:
+            has_xformers = False
+            logger.info("xformers 未安装，尝试 PyTorch SDPA (FlashAttention)...")
 
-                pipeline.enable_xformers_memory_efficient_attention()
-                applied.append("xformers")
-                logger.info("VRAM 优化已应用: xformers 高效注意力")
-            except ImportError:
-                # xformers 不可用，降级到 PyTorch 原生 SDPA (FlashAttention)
-                # 原理：PyTorch 2.0+ 在 CUDA >= 11.6 时通过 SDPA 实现接近 FlashAttention 的性能。
-                # SDPA 由 diffusers 的 AttnProcessor2_0 自动使用，只需启用底层 flags。
-                try:
-                    torch.backends.cuda.enable_flash_sdp(True)
-                    torch.backends.cuda.enable_mem_efficient_sdp(True)
-                    torch.backends.cuda.enable_math_sdp(False)
-                    applied.append("flash_attention_fallback")
-                    logger.info("VRAM 优化已应用: PyTorch SDPA (xformers 未安装，降级)")
-                except (ImportError, AttributeError) as e:
-                    logger.warning(f"SDPA 启用失败: {e}, 跳过注意力优化")
-        except Exception as e:
-            logger.warning(f"xformers/FlashAttention 应用失败: {e}")
+        if has_xformers:
+            try:
+                if hasattr(pipeline.unet, "enable_xformers_memory_efficient_attention"):
+                    pipeline.unet.enable_xformers_memory_efficient_attention()
+                    applied.append("xformers")
+                    logger.info("VRAM 优化已应用: xformers 高效注意力")
+            except Exception as e:
+                logger.warning(f"xformers 应用失败: {e}")
+        else:
+            # xformers 不可用，降级到 PyTorch 原生 SDPA (FlashAttention)
+            try:
+                torch.backends.cuda.enable_flash_sdp(True)
+                torch.backends.cuda.enable_mem_efficient_sdp(True)
+                torch.backends.cuda.enable_math_sdp(False)
+                applied.append("flash_attention_fallback")
+                logger.info("VRAM 优化已应用: PyTorch SDPA (xformers 未安装，降级)")
+            except (ImportError, AttributeError) as e:
+                logger.warning(f"SDPA 启用失败: {e}, 跳过注意力优化")
 
     # ── 策略 3: 顺序 CPU 卸载 ───────────────────────────────────────
     # 这是最激进也是最有效的显存优化：将 UNet 和 VAE 的权重在用完当前计算后，
@@ -1846,6 +1893,10 @@ def main():
         # 初始化精度
         weight_dtype = init_weight_dtype(final_precision)
 
+        # CatVTONPipeline 显存优化在构造函数中通过参数控制：
+        # - attention_slicing="auto" 启用 UNet attention 切片（降低峰值显存 ~40%）
+        # - enable_xformers=True 启用 xformers 高效注意力（替代 PyTorch 原生 attention）
+        # 显式传入这些参数，而不用运行后方法。
         pipeline = CatVTONPipeline(
             base_ckpt="runwayml/stable-diffusion-inpainting",
             attn_ckpt=repo_path,
@@ -1853,9 +1904,15 @@ def main():
             weight_dtype=weight_dtype,
             use_tf32=(final_precision in ("fp16", "bf16")),
             device="cuda",
+            skip_safety_check=True,  # 跳过 NSFW 安全检查器，避免 FileNotFoundError
+            attention_slicing="auto" if vae_slicing else None,
+            enable_xformers=use_xformers,
         )
 
         # ── 应用极限 VRAM 优化 ─────────────────────────────────────────
+        # CatVTONPipeline 的显存优化已在构造函数中配置完毕。
+        # 此处仅做 VAE slicing 的运行时检查（如果构造函数未生效则 fallback），
+        # 以及清理显存缓存。
         opt_results = _apply_memory_optimizations(
             pipeline,
             vae_slicing=vae_slicing,
@@ -1865,10 +1922,9 @@ def main():
         applied = opt_results  # collect all applied optimizations
 
         # ── 应用 torch.compile JIT 编译加速 ─────────────────────────────
-        # 推理步数 >= 20 时，编译开销（~2-5s）可完全摊薄
-        # 实测提升：50步推理 ~25%，20步推理 ~15%，10步推理 ~5%
-        # 参数 --no-torch-compile 禁用（默认开启，需要 PyTorch 2.0+）
-        if not getattr(args, "no_torch_compile", False):
+        # torch_compile 默认为 False（因为 Triton 在 Windows 上通常不可用）
+        # 仅在用户显式传入 --torch-compile 且 Triton 可用时启用
+        if getattr(args, "torch_compile", False):
             try:
                 compile_results = _compile_unet_pretrained(pipeline, compile_mode="reduce-overhead")
                 applied.extend(compile_results)

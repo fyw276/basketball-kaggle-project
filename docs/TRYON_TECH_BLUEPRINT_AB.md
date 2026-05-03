@@ -15,11 +15,12 @@
 - Warp 引擎：`backend/app/services/tryon_v2/warp_engine.py`（分段仿射 + TPS，几何贴合保留身份）
 
 **扩展模式**
-- `replace` 模式：融合 CatVTON / 百炼 / Warp / Diffusion 多引擎 AI 生成式合成（`tryon_engine_selector.py`）
+- `replace` 模式：融合 Warp / 百炼 / 远程 VTON / CatVTON / Diffusion 多引擎 AI 生成式合成（引擎优先级可配置：`TRYON_V2_REPLACE_ENGINE_PRIORITY`，默认 `warp,bailian,remote,catvton,diffusion`）
 - `realistic` 模式：CatVTON 深度学习 + 边缘感知 + 光照匹配 + Poisson 融合（`realism_engine.py`）
 - `professional` 模式：多步管线（分割 + 姿态 + 消除 + 贴合 + 光照 + 验证）（`professional_tryon.py`）
 - CatVTON 本地引擎：subprocess 调用 `vton_inference_service/catvton_runner.py`，MediaPipe PoseLandmarker 替代 SCHP/DensePose（`catvton_engine_client.py`）
 - 后处理流水线：边缘融合、颜色匹配、细节增强、去噪、接缝消除（`postprocess.py`）
+- `hybrid` 模式：Warp 保真 + CatVTON 真实感，饱和度感知 alpha 混合（`warp_engine.py` 中 `tryon_hybrid_warp_catvton`）
 
 **集成与客户端**
 - 移动端接入：预检面板、失败码可视化、action_hint 展示、多模式选择、v2 不可用自动回退 v1（`virtual_tryon_screen.dart`）

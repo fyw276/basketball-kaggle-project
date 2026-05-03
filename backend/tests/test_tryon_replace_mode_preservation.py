@@ -10,9 +10,9 @@ These tests verify that the replace mode fix does NOT break existing behavior:
 - Replace mode falls back to remote VTON when Bailian fails
 - Replace mode falls back to local diffusion when all upstream engines fail
 
-Key insight: the replace mode engine priority is [catvton, bailian, remote, warp, diffusion].
-Since CatVTON is configured in this test environment, CatVTON runs first and will
-actually execute the subprocess unless we mock _catvton_configured() to False.
+Key insight: the replace mode engine priority is [warp, bailian, remote, catvton, diffusion].
+Since CatVTON is configured in this test environment, tests mock _catvton_configured()
+to False to exercise the Bailian/remote/diffusion paths.
 """
 
 from __future__ import annotations

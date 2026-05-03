@@ -1241,7 +1241,7 @@ def tryon_hybrid_warp_catvton(
     Warp + CatVTON 两阶段混合试衣。
 
     策略：
-      1. Stage 1 (Warp): tryon_top_warp_preserve / tryon_pants_warp
+      1. Stage 1 (Warp): tryon_top_warp / tryon_pants_warp
          → 像素级保真的衣服贴在人物身上
       2. Stage 3 (Blend): overlay_draping_from_ai
          → 将 CatVTON 产生的真实光影/阴影/褶皱叠加到 Warp 结果上

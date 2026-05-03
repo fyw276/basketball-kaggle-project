@@ -47,7 +47,7 @@
 |------|------|---------|
 | `strict`（默认） | 方案 A 几何贴合 + QC 门禁，平衡速度与质量 | 日常使用 |
 | `balanced` | 宽松 QC，更易通过验证 | 快速预览 |
-| `replace` | AI 生成式合成，引擎优先级：catvton → bailian → remote → warp → diffusion | 需要真实感时 |
+| `replace` | AI 生成式合成，引擎优先级：warp → bailian → remote → catvton → diffusion（可通过 `TRYON_V2_REPLACE_ENGINE_PRIORITY` 配置） | 需要真实感时 |
 | `realistic` | CatVTON 深度学习，100% 保留商品细节 + 真实褶皱和光照 | 商品展示 |
 | `professional` | CatVTON + 后处理 + 质量评分 | 专业应用 |
 | `hybrid` | Warp 保真 + CatVTON 真实感，智能饱和度感知 alpha 调节 | 彩色高饱和度衣物 |
