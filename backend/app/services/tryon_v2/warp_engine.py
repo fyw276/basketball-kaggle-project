@@ -1185,6 +1185,14 @@ def overlay_top_onto_ai_result(
         a_ch = ImageChops.multiply(a_ch, protect)
         layer = Image.merge("RGBA", (r_ch, g_ch, b_ch, a_ch))
 
+        # Step 3b: detect near-zero alpha (rembg fails on solid-color test images)
+        layer_alpha_check = np.array(a_ch, dtype=np.float32) / 255.0
+        if layer_alpha_check.max() < 0.05:
+            return ai_result, {
+                "engine": "ai_only",
+                "reason": "garment alpha too low after feathering",
+            }
+
         # ── Step 4: Absolute alpha blend ─────────────────────────────────────────
         # result = garment * (alpha * garment_alpha) + ai * (1 - alpha * garment_alpha)
         layer_arr = np.array(layer, dtype=np.float32)

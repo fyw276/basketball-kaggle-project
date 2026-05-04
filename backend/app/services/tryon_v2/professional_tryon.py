@@ -463,6 +463,9 @@ def remove_original_clothing(
     """
     擦除人像上原有的衣物区域。
 
+    改进（v2）：使用 polygon fillPoly 替代 cv2.rectangle，
+    更贴合人体轮廓，擦除效果更自然。
+
     Args:
         person_image: 人物原图
         garment_category: 衣物类别 (top/bottom/skirt)
@@ -477,51 +480,71 @@ def remove_original_clothing(
     h, w = arr.shape[:2]
     pw, ph = w, h
 
-    # 创建衣物区域掩码
     mask = np.zeros((h, w), dtype=np.uint8)
 
     if garment_category in ("top", "outfit"):
-        # 上装区域: 颈部到臀部
-        neck_kpts = [keypoints.get("left_shoulder"), keypoints.get("right_shoulder")]
-        hip_kpts = [keypoints.get("left_hip"), keypoints.get("right_hip")]
+        ls = keypoints.get("left_shoulder")
+        rs = keypoints.get("right_shoulder")
+        lh = keypoints.get("left_hip")
+        rh = keypoints.get("right_hip")
+        le = keypoints.get("left_elbow")
+        re = keypoints.get("right_elbow")
 
-        if all(neck_kpts) and all(hip_kpts):
-            neck_y = int((neck_kpts[0][1] + neck_kpts[1][1]) / 2 * ph)
-            hip_y = int((hip_kpts[0][1] + hip_kpts[1][1]) / 2 * ph)
+        if all([ls, rs, lh, rh]):
+            pts: list[tuple[int, int]] = [
+                (max(0, min(pw - 1, int(ls[0] * pw))), max(0, min(ph - 1, int(ls[1] * ph)))),
+                (max(0, min(pw - 1, int(rs[0] * pw))), max(0, min(ph - 1, int(rs[1] * ph)))),
+                (max(0, min(pw - 1, int(rh[0] * pw))), max(0, min(ph - 1, int(rh[1] * ph)))),
+                (max(0, min(pw - 1, int(lh[0] * pw))), max(0, min(ph - 1, int(lh[1] * ph)))),
+            ]
+            if le:
+                sleeve_l = (
+                    max(0, min(pw - 1, int((le[0] * 0.65 + ls[0] * 0.35) * pw))),
+                    max(0, min(ph - 1, int((le[1] * 0.65 + ls[1] * 0.35) * ph))),
+                )
+                pts.insert(1, sleeve_l)
+            if re:
+                sleeve_r = (
+                    max(0, min(pw - 1, int((re[0] * 0.65 + rs[0] * 0.35) * pw))),
+                    max(0, min(ph - 1, int((re[1] * 0.65 + rs[1] * 0.35) * ph))),
+                )
+                pts.insert(len(pts) - 1, sleeve_r)
 
-            # 扩展区域
-            y0 = max(0, int(neck_y - ph * 0.05))
-            y1 = min(ph, int(hip_y + ph * 0.05))
-
-            # 肩宽
-            shoulder_x0 = min(neck_kpts[0][0], neck_kpts[1][0]) * pw
-            shoulder_x1 = max(neck_kpts[0][0], neck_kpts[1][0]) * pw
-            x0 = max(0, int(shoulder_x0 - pw * 0.08))
-            x1 = min(pw, int(shoulder_x1 + pw * 0.08))
-
-            cv2.rectangle(mask, (x0, y0), (x1, y1), 255, -1)
+            if len(pts) >= 3:
+                cv2.fillPoly(mask, [np.array(pts, dtype=np.int32)], 255)
 
     if garment_category in ("bottom", "skirt", "outfit"):
-        # 下装区域: 臀部到脚踝
-        hip_kpts = [keypoints.get("left_hip"), keypoints.get("right_hip")]
-        ankle_kpts = [keypoints.get("left_ankle"), keypoints.get("right_ankle")]
+        lh = keypoints.get("left_hip")
+        rh = keypoints.get("right_hip")
+        la = keypoints.get("left_ankle")
+        ra = keypoints.get("right_ankle")
+        lk = keypoints.get("left_knee")
+        rk = keypoints.get("right_knee")
 
-        if all(hip_kpts):
-            hip_y = int((hip_kpts[0][1] + hip_kpts[1][1]) / 2 * ph)
-            y0 = max(0, int(hip_y - ph * 0.02))
+        if all([lh, rh]):
+            pts: list[tuple[int, int]] = [
+                (max(0, min(pw - 1, int(lh[0] * pw))), max(0, min(ph - 1, int(lh[1] * ph)))),
+                (max(0, min(pw - 1, int(rh[0] * pw))), max(0, min(ph - 1, int(rh[1] * ph)))),
+            ]
+            if ra:
+                pts.append(
+                    (max(0, min(pw - 1, int(ra[0] * pw))), max(0, min(ph - 1, int(ra[1] * ph))))
+                )
+            if la:
+                pts.append(
+                    (max(0, min(pw - 1, int(la[0] * pw))), max(0, min(ph - 1, int(la[1] * ph))))
+                )
+            if lk:
+                pts.append(
+                    (max(0, min(pw - 1, int(lk[0] * pw))), max(0, min(ph - 1, int(lk[1] * ph))))
+                )
+            if rk:
+                pts.append(
+                    (max(0, min(pw - 1, int(rk[0] * pw))), max(0, min(ph - 1, int(rk[1] * ph))))
+                )
 
-            if all(ankle_kpts):
-                ankle_y = int((ankle_kpts[0][1] + ankle_kpts[1][1]) / 2 * ph)
-                y1 = min(ph, int(ankle_y + ph * 0.02))
-            else:
-                y1 = min(ph, int(hip_y + ph * 0.55))
-
-            hip_x0 = min(hip_kpts[0][0], hip_kpts[1][0]) * pw
-            hip_x1 = max(hip_kpts[0][0], hip_kpts[1][0]) * pw
-            x0 = max(0, int(hip_x0 - pw * 0.05))
-            x1 = min(pw, int(hip_x1 + pw * 0.05))
-
-            cv2.rectangle(mask, (x0, y0), (x1, y1), 255, -1)
+            if len(pts) >= 3:
+                cv2.fillPoly(mask, [np.array(pts, dtype=np.int32)], 255)
 
     # 使用 inpaint 擦除
     try:

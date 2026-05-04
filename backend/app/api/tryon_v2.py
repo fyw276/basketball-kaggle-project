@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -22,7 +23,6 @@ from app.services.tryon_v2 import run_pipeline_a
 from app.services.tryon_v2.input_gate import evaluate_input_gate
 from app.services.tryon_v2.postprocess import enhance_tryon_result
 from app.services.tryon_v2.preprocess import preprocess_garment_image
-from app.services.tryon_v2.professional_tryon import professional_tryon
 from app.services.virtual_tryon import check_tryon_garment_has_face
 
 logger = logging.getLogger(__name__)
@@ -941,115 +941,131 @@ async def tryon_garment_v2(
 
         cat = (garment_category or "").strip().lower()
 
-        try:
-            if _catvton_configured():
-                # 使用 CatVTON 深度学习模型
-                cloth_type = "upper"
-                if any(k in cat for k in ("bottom", "下装", "裤")):
-                    cloth_type = "lower"
-                elif any(k in cat for k in ("skirt", "裙", "连衣裙", "dress")):
-                    cloth_type = "overall"
+        cloth_type = "upper"
+        if any(k in cat for k in ("bottom", "下装", "裤")):
+            cloth_type = "lower"
+        elif any(k in cat for k in ("skirt", "裙", "连衣裙", "dress")):
+            cloth_type = "overall"
 
-                logger.info(f"Realistic mode: calling CatVTON with cloth_type={cloth_type}")
+        # ── CatVTON 调用：最多重试 2 次（瞬时错误 / VRAM OOM / CUDA 抖动）───
+        max_retries = 2
+        last_upstream = None
+        last_err_reason = None
 
-                # 调用 CatVTON
-                upstream = await call_local_catvton(
-                    garment_bytes=garment_jpg,
-                    person_bytes=person_jpg,
-                    garment_category=cloth_type,
-                    debug_dir=debug_session_dir,
-                    preprocess_only=(debug_mode == "preprocess_only"),
+        for attempt in range(max_retries + 1):
+            if attempt > 0:
+                wait_s = 2 ** (attempt - 1)
+                logger.warning(
+                    f"Realistic mode: CatVTON attempt {attempt}/{max_retries} failed, "
+                    f"retrying in {wait_s}s..."
+                )
+                await asyncio.sleep(wait_s)
+
+            upstream = await call_local_catvton(
+                garment_bytes=garment_jpg,
+                person_bytes=person_jpg,
+                garment_category=cloth_type,
+                debug_dir=debug_session_dir,
+                preprocess_only=(debug_mode == "preprocess_only"),
+            )
+            last_upstream = upstream
+
+            # ─── 预处理模式：直接返回中间产物 ─────────────────────────
+            if debug_mode == "preprocess_only" and isinstance(upstream, dict):
+                upstream_meta = upstream.get("metadata") or {}
+                record_tryon_v2_success(int((time.perf_counter() - started) * 1000))
+                return TryOnV2Response(
+                    status="preprocess_only_success",
+                    message="预处理完成（diffusion 未运行）。"
+                    "请查看 debug_session_dir 中的 03_mask.png 和 04_pose_keypoints.jpg 验证质量。",
+                    pipeline="REALISTIC",
+                    result_image_url=None,
+                    error_code=None,
+                    retryable=False,
+                    action_hint="检查 03_mask.png 是否覆盖了正确的衣服区域。"
+                    "检查 04_pose_keypoints.jpg 关键点是否准确。",
+                    qc_scores=upstream.get("qc_scores") or {},
+                    metadata={
+                        **upstream_meta,
+                        "mode": "preprocess_only",
+                        "engine": "catvton",
+                        "catvton_category": cloth_type,
+                    },
+                    debug_session_dir=debug_session_dir,
                 )
 
-                # ─── 预处理模式：直接返回中间产物 ─────────────────────────
-                if debug_mode == "preprocess_only" and isinstance(upstream, dict):
-                    upstream_meta = upstream.get("metadata") or {}
-                    record_tryon_v2_success(int((time.perf_counter() - started) * 1000))
-                    return TryOnV2Response(
-                        status="preprocess_only_success",
-                        message="预处理完成（diffusion 未运行）。"
-                        "请查看 debug_session_dir 中的 03_mask.png 和 04_pose_keypoints.jpg 验证质量。",
-                        pipeline="REALISTIC",
-                        result_image_url=None,
-                        error_code=None,
-                        retryable=False,
-                        action_hint="检查 03_mask.png 是否覆盖了正确的衣服区域。"
-                        "检查 04_pose_keypoints.jpg 关键点是否准确。",
-                        qc_scores=upstream.get("qc_scores") or {},
-                        metadata={
-                            **upstream_meta,
-                            "mode": "preprocess_only",
-                            "engine": "catvton",
-                            "catvton_category": cloth_type,
-                        },
-                        debug_session_dir=debug_session_dir,
-                    )
-
-                if (
-                    isinstance(upstream, dict)
-                    and str(upstream.get("status") or "").lower() == "success"
-                    and upstream.get("result_image") is not None
-                ):
-                    result_img = upstream.get("result_image")
-                    result = {
-                        "status": "success",
-                        "message": "CatVTON 深度学习试衣完成（真实贴合 + 细节保真）",
-                        "result_image": result_img,
-                        "qc_scores": {
-                            "fidelity_score": 0.85,
-                            "realism_score": 0.90,
-                        },
-                        "metadata": {
-                            "pipeline": "REALISTIC",
-                            "engine": "catvton",
-                            "catvton_category": cloth_type,
-                            "method": "deep_learning",
-                        },
-                    }
-                    logger.info("Realistic mode: CatVTON succeeded")
-                else:
-                    # CatVTON 失败，fallback 到 warp
-                    raise RuntimeError("CatVTON returned no image")
-
-            else:
-                # CatVTON 未配置，fallback 到 warp
-                raise RuntimeError("CatVTON not configured")
-
-        except Exception as realistic_err:
-            logger.warning("Realistic mode CatVTON failed, falling back to warp: %s", realistic_err)
-
-            # Fallback: 使用 warp 方法（几何粘贴，保真但不平滑）
-            try:
-                if any(k in cat for k in ("top", "上装", "上衣", "outfit", "套装")):
-                    result_img, warp_meta = tryon_top_warp_preserve(person_image, garment_image)
-                    if any(k in cat for k in ("outfit", "套装")) and garment_image_2 is not None:
-                        result_img2, _ = tryon_top_warp_preserve(result_img, garment_image_2)
-                        result_img = result_img2
-                elif any(k in cat for k in ("skirt", "裙", "连衣裙")):
-                    result_img, warp_meta = tryon_skirt_warp(person_image, garment_image)
-                else:
-                    result_img, warp_meta = tryon_pants_warp(person_image, garment_image)
-
+            # 检查 CatVTON 成功条件
+            if (
+                isinstance(upstream, dict)
+                and str(upstream.get("status") or "").lower() == "success"
+                and upstream.get("result_image") is not None
+            ):
+                result_img = upstream.get("result_image")
                 result = {
                     "status": "success",
-                    "message": "Warp 几何粘贴完成（保真但贴合感较弱）",
+                    "message": "CatVTON 深度学习试衣完成（真实贴合 + 细节保真）",
                     "result_image": result_img,
                     "qc_scores": {
-                        "fidelity_score": 0.95,
-                        "realism_score": 0.50,
+                        "fidelity_score": 0.85,
+                        "realism_score": 0.90,
                     },
                     "metadata": {
                         "pipeline": "REALISTIC",
-                        "engine": warp_meta.engine,
-                        "method": "warp_fallback",
+                        "engine": "catvton",
+                        "catvton_category": cloth_type,
+                        "method": "deep_learning",
+                        "attempts": attempt + 1,
                     },
                 }
-            except Exception as warp_err:
-                logger.error("Realistic mode fallback also failed: %s", warp_err)
-                raise RuntimeError(
-                    f"Realistic 模式失败: CatVTON不可用 ({realistic_err}), "
-                    f"Warp 也失败 ({warp_err})"
+                logger.info(f"Realistic mode: CatVTON succeeded on attempt {attempt + 1}")
+                break
+
+            # 记录失败原因用于诊断
+            if isinstance(upstream, dict):
+                last_err_reason = (
+                    f"status={upstream.get('status')}, "
+                    f"message={upstream.get('message')}, "
+                    f"reason={upstream.get('metadata', {}).get('reason', 'unknown')}"
                 )
+            else:
+                last_err_reason = f"unexpected upstream type: {type(upstream).__name__}"
+
+            logger.warning(
+                f"Realistic mode: CatVTON attempt {attempt + 1} returned: {last_err_reason}"
+            )
+
+            # 永久性错误（不需要重试）
+            if isinstance(upstream, dict):
+                reason = upstream.get("metadata", {}).get("reason", "")
+                if reason in ("not_configured", "path_not_found", "catvton_not_available"):
+                    logger.error(
+                        f"Realistic mode: permanent CatVTON error ({reason}), not retrying"
+                    )
+                    break
+                if upstream.get("status") == "timeout":
+                    logger.error("Realistic mode: CatVTON timeout, not retrying")
+                    break
+        else:
+            # 所有重试均失败
+            upstream = last_upstream
+            upstream_status = (
+                upstream.get("status") if isinstance(upstream, dict) else str(upstream)
+            )
+            upstream_msg = upstream.get("message") if isinstance(upstream, dict) else ""
+            upstream_meta = upstream.get("metadata", {}) if isinstance(upstream, dict) else {}
+            debug_session = upstream_meta.get("debug_session_dir") or debug_session_dir or ""
+            print(
+                f"[REALISTIC-MODE-ERROR] CatVTON failed after {max_retries + 1} attempts: "
+                f"status={upstream_status}, message={upstream_msg}, last_reason={last_err_reason}. "
+                f"Debug dir: {debug_session}",
+                flush=True,
+            )
+            raise RuntimeError(
+                f"Realistic 模式失败: CatVTON 多次重试后仍不可用 "
+                f"(status={upstream_status}, message={upstream_msg}). "
+                f"请检查 {debug_session} 下的中间产物或运行预处理模式 debug。 "
+                f"如需降级到 warp 试衣，请使用 mode=warp。"
+            )
     elif mode == "professional":
         # ── Professional Mode: 使用 CatVTON + 后处理 ────────────────────────────
         # 优先使用 CatVTON 深度学习模型
@@ -1065,15 +1081,20 @@ async def tryon_garment_v2(
         elif any(k in cat for k in ("skirt", "裙", "连衣裙", "dress")):
             cloth_type = "overall"
 
-        garment_cat = "top"
-        if any(k in cat for k in ("skirt", "裙", "连衣裙")):
-            garment_cat = "skirt"
-        elif any(k in cat for k in ("bottom", "下装", "裤")):
-            garment_cat = "bottom"
+        # ── CatVTON 调用：最多重试 2 次（瞬时错误 / VRAM OOM / CUDA 抖动）───
+        max_retries = 2
+        last_upstream = None
+        last_err_reason = None
 
-        # 尝试使用 CatVTON
-        if _catvton_configured():
-            logger.info(f"Professional mode: calling CatVTON with cloth_type={cloth_type}")
+        for attempt in range(max_retries + 1):
+            if attempt > 0:
+                wait_s = 2 ** (attempt - 1)
+                logger.warning(
+                    f"Professional mode: CatVTON attempt {attempt}/{max_retries} failed, "
+                    f"retrying in {wait_s}s..."
+                )
+                await asyncio.sleep(wait_s)
+
             upstream = await call_local_catvton(
                 garment_bytes=garment_jpg,
                 person_bytes=person_jpg,
@@ -1081,6 +1102,7 @@ async def tryon_garment_v2(
                 debug_dir=debug_session_dir,
                 preprocess_only=(debug_mode == "preprocess_only"),
             )
+            last_upstream = upstream
 
             # ─── 预处理模式：直接返回中间产物 ─────────────────────────
             if debug_mode == "preprocess_only" and isinstance(upstream, dict):
@@ -1106,6 +1128,7 @@ async def tryon_garment_v2(
                     debug_session_dir=debug_session_dir,
                 )
 
+            # 检查 CatVTON 成功条件
             if (
                 isinstance(upstream, dict)
                 and str(upstream.get("status") or "").lower() == "success"
@@ -1124,96 +1147,58 @@ async def tryon_garment_v2(
                         "pipeline": "PROFESSIONAL",
                         "engine": "catvton",
                         "method": "deep_learning",
+                        "attempts": attempt + 1,
                     },
                 }
-                logger.info("Professional mode: CatVTON succeeded")
+                logger.info(f"Professional mode: CatVTON succeeded on attempt {attempt + 1}")
+                break
+
+            # 记录失败原因用于诊断
+            if isinstance(upstream, dict):
+                last_err_reason = (
+                    f"status={upstream.get('status')}, "
+                    f"message={upstream.get('message')}, "
+                    f"reason={upstream.get('metadata', {}).get('reason', 'unknown')}"
+                )
             else:
-                # CatVTON 返回失败，尝试 professional_tryon
-                logger.warning(
-                    "Professional mode: CatVTON returned no image, trying professional_tryon"
-                )
-                tryon_result = professional_tryon(
-                    person_image=person_image,
-                    garment_image=garment_image,
-                    garment_category=garment_cat,
-                    auto_validate=True,
-                )
+                last_err_reason = f"unexpected upstream type: {type(upstream).__name__}"
 
-                if tryon_result.success and tryon_result.result_image is not None:
-                    pipeline_steps = []
-                    for log in tryon_result.pipeline_log or []:
-                        pipeline_steps.append(
-                            {
-                                "step": log.step.value,
-                                "success": log.success,
-                                "message": log.message,
-                            }
-                        )
-
-                    result = {
-                        "status": "success",
-                        "message": "专业模式 - professional_tryon 完成",
-                        "result_image": tryon_result.result_image,
-                        "qc_scores": {
-                            "pipeline_score": float(len(pipeline_steps)) / 6.0,
-                        },
-                        "metadata": {
-                            "pipeline": "PROFESSIONAL",
-                            "engine": "professional_tryon_v1",
-                            "fallback": "catvton_failed",
-                        },
-                    }
-                else:
-                    error_msg = tryon_result.error_message or "专业试衣流程失败"
-                    result = {
-                        "status": "error",
-                        "message": error_msg,
-                        "error_code": "PROFESSIONAL_TRYON_FAILED",
-                        "retryable": True,
-                        "action_hint": "请检查图片质量后重试",
-                    }
-        else:
-            # CatVTON 未配置，直接使用 professional_tryon
-            logger.info("Professional mode: CatVTON not configured, using professional_tryon")
-            tryon_result = professional_tryon(
-                person_image=person_image,
-                garment_image=garment_image,
-                garment_category=garment_cat,
-                auto_validate=True,
+            logger.warning(
+                f"Professional mode: CatVTON attempt {attempt + 1} returned: {last_err_reason}"
             )
 
-            if tryon_result.success and tryon_result.result_image is not None:
-                pipeline_steps = []
-                for log in tryon_result.pipeline_log or []:
-                    pipeline_steps.append(
-                        {
-                            "step": log.step.value,
-                            "success": log.success,
-                            "message": log.message,
-                        }
+            # 永久性错误（不需要重试）
+            if isinstance(upstream, dict):
+                reason = upstream.get("metadata", {}).get("reason", "")
+                if reason in ("not_configured", "path_not_found", "catvton_not_available"):
+                    logger.error(
+                        f"Professional mode: permanent CatVTON error ({reason}), not retrying"
                     )
-
-                result = {
-                    "status": "success",
-                    "message": "专业模式 - professional_tryon 完成",
-                    "result_image": tryon_result.result_image,
-                    "qc_scores": {
-                        "pipeline_score": float(len(pipeline_steps)) / 6.0,
-                    },
-                    "metadata": {
-                        "pipeline": "PROFESSIONAL",
-                        "engine": "professional_tryon_v1",
-                    },
-                }
-            else:
-                error_msg = tryon_result.error_message or "专业试衣流程失败"
-                result = {
-                    "status": "error",
-                    "message": error_msg,
-                    "error_code": "PROFESSIONAL_TRYON_FAILED",
-                    "retryable": True,
-                    "action_hint": "请检查图片质量后重试",
-                }
+                    break
+                if upstream.get("status") == "timeout":
+                    logger.error("Professional mode: CatVTON timeout, not retrying")
+                    break
+        else:
+            # 所有重试均失败
+            upstream = last_upstream
+            upstream_status = (
+                upstream.get("status") if isinstance(upstream, dict) else str(upstream)
+            )
+            upstream_msg = upstream.get("message") if isinstance(upstream, dict) else ""
+            upstream_meta = upstream.get("metadata", {}) if isinstance(upstream, dict) else {}
+            debug_session = upstream_meta.get("debug_session_dir") or debug_session_dir or ""
+            print(
+                f"[PROFESSIONAL-MODE-ERROR] CatVTON failed after {max_retries + 1} attempts: "
+                f"status={upstream_status}, message={upstream_msg}, last_reason={last_err_reason}. "
+                f"Debug dir: {debug_session}",
+                flush=True,
+            )
+            raise RuntimeError(
+                f"Professional 模式失败: CatVTON 多次重试后仍不可用 "
+                f"(status={upstream_status}, message={upstream_msg}). "
+                f"请检查 {debug_session} 下的中间产物或运行预处理模式 debug。 "
+                f"如需降级，请使用 mode=realistic 或 mode=warp。"
+            )
     elif mode == "hybrid":
         # ── Hybrid Mode: Warp + CatVTON 两阶段混合 ──────────────────────────────
         # Stage 1: tryon_top_warp_preserve — 像素级衣服保真（100% 原始颜色/图案）
@@ -1250,35 +1235,86 @@ async def tryon_garment_v2(
 
             logger.info(f"Hybrid mode: calling CatVTON cloth_type={cloth_type}")
 
-            upstream = await call_local_catvton(
-                garment_bytes=garment_jpg,
-                person_bytes=person_jpg,
-                garment_category=cloth_type,
-                debug_dir=debug_session_dir,
-                preprocess_only=(debug_mode == "preprocess_only"),
-            )
+            upstream = None
+            max_retries = 2
+            for attempt in range(max_retries + 1):
+                if attempt > 0:
+                    wait_s = 2 ** (attempt - 1)
+                    logger.warning(
+                        f"Hybrid mode: CatVTON attempt {attempt}/{max_retries} failed, "
+                        f"retrying in {wait_s}s..."
+                    )
+                    await asyncio.sleep(wait_s)
 
-            if debug_mode == "preprocess_only" and isinstance(upstream, dict):
-                upstream_meta = upstream.get("metadata") or {}
-                record_tryon_v2_success(int((time.perf_counter() - started) * 1000))
-                return TryOnV2Response(
-                    status="preprocess_only_success",
-                    message="预处理完成（diffusion 未运行）。"
-                    "请查看 debug_session_dir 中的 03_mask.png 和 04_pose_keypoints.jpg 验证质量。",
-                    pipeline="HYBRID",
-                    result_image_url=None,
-                    error_code=None,
-                    retryable=False,
-                    action_hint="检查 03_mask.png 是否覆盖了正确的衣服区域。"
-                    "检查 04_pose_keypoints.jpg 关键点是否准确。",
-                    qc_scores={},
-                    metadata={
-                        **upstream_meta,
-                        "mode": "hybrid_preprocess_only",
-                        "engine": "catvton",
-                        "catvton_category": cloth_type,
+                upstream = await call_local_catvton(
+                    garment_bytes=garment_jpg,
+                    person_bytes=person_jpg,
+                    garment_category=cloth_type,
+                    debug_dir=debug_session_dir,
+                    preprocess_only=(debug_mode == "preprocess_only"),
+                )
+
+                if debug_mode == "preprocess_only" and isinstance(upstream, dict):
+                    upstream_meta = upstream.get("metadata") or {}
+                    record_tryon_v2_success(int((time.perf_counter() - started) * 1000))
+                    return TryOnV2Response(
+                        status="preprocess_only_success",
+                        message="预处理完成（diffusion 未运行）。"
+                        "请查看 debug_session_dir 中的 03_mask.png 和 04_pose_keypoints.jpg 验证质量。",
+                        pipeline="HYBRID",
+                        result_image_url=None,
+                        error_code=None,
+                        retryable=False,
+                        action_hint="检查 03_mask.png 是否覆盖了正确的衣服区域。"
+                        "检查 04_pose_keypoints.jpg 关键点是否准确。",
+                        qc_scores={},
+                        metadata={
+                            **upstream_meta,
+                            "mode": "hybrid_preprocess_only",
+                            "engine": "catvton",
+                            "catvton_category": cloth_type,
+                        },
+                        debug_session_dir=debug_session_dir,
+                    )
+
+                # 永久性错误（不需要重试）
+                if isinstance(upstream, dict):
+                    reason = upstream.get("metadata", {}).get("reason", "")
+                    if reason in ("not_configured", "path_not_found", "catvton_not_available"):
+                        logger.error(
+                            f"Hybrid mode: permanent CatVTON error ({reason}), not retrying"
+                        )
+                        break
+                    if upstream.get("status") == "timeout":
+                        logger.error("Hybrid mode: CatVTON timeout, not retrying")
+                        break
+
+                if (
+                    isinstance(upstream, dict)
+                    and str(upstream.get("status") or "").lower() == "success"
+                    and upstream.get("result_image") is not None
+                ):
+                    break
+            else:
+                # All retries exhausted
+                upstream_status = (
+                    upstream.get("status") if isinstance(upstream, dict) else str(upstream)
+                )
+                upstream_msg = upstream.get("message") if isinstance(upstream, dict) else ""
+                upstream_meta = upstream.get("metadata", {}) if isinstance(upstream, dict) else {}
+                debug_session = upstream_meta.get("debug_session_dir") or debug_session_dir or ""
+                logger.error(
+                    f"Hybrid mode: CatVTON failed after {max_retries + 1} attempts: "
+                    f"status={upstream_status}, message={upstream_msg}, debug_dir={debug_session}"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail={
+                        "message": f"Hybrid 模式失败：CatVTON 多次重试后仍不可用 (status={upstream_status})",
+                        "error_code": "HYBRID_CATVTON_FAILED",
+                        "retryable": True,
+                        "action_hint": f"请检查 {debug_session} 下的中间产物或运行预处理模式 debug",
                     },
-                    debug_session_dir=debug_session_dir,
                 )
 
             if (
@@ -1344,8 +1380,6 @@ async def tryon_garment_v2(
                     },
                 }
                 logger.info("Hybrid mode: Warp + CatVTON + drape overlay succeeded")
-            else:
-                raise RuntimeError("CatVTON returned no image")
 
         except HTTPException:
             raise

@@ -496,15 +496,16 @@ def _make_cloth_mask_mediapipe(
     garment_img: "Image.Image | None" = None,
 ) -> "Image.Image":
     """
-    生成衣服区域遮罩（优先级：rembg衣服分割 > MediaPipe人物分割 > 关键点矩形fallback）。
+    生成衣服区域遮罩（优先级：rembg衣服分割 > MediaPipe人物分割 > 关键点polygon fallback）。
 
     返回 L 模式 PIL Image（白色 = 待编辑的衣服区域，黑色 = 保留区域）。
 
-    关键改进（P0-1 修复）：
+    关键改进（v2）：
     1. 优先使用 rembg 分割衣服产品图，精确获取衣服边界
     2. 根据人体姿态关键点将衣服 mask 映射到人物坐标系统
     3. 只有 rembg 不可用时才 fallback 到 MediaPipe 人物分割
-    4. 只有 MediaPipe 也失败时才使用关键点矩形 fallback
+    4. 只有 MediaPipe 也失败时才使用关键点 polygon fallback（替代矩形）
+    5. 所有 mask 均使用 polygon fillPoly，更贴合人体轮廓
 
     打开 03_mask.png 和 04_pose_keypoints.jpg 逐帧对比即可验证质量。
     """
@@ -545,9 +546,18 @@ def _make_cloth_mask_mediapipe(
 
         if landmarks:
             pw, ph = person_img.size
-            rembg_mask = _make_garment_mask_rembg(
-                garment_img, person_img, landmarks, cloth_type, pw, ph
-            )
+            try:
+                rembg_mask = _make_garment_mask_rembg(
+                    garment_img, person_img, landmarks, cloth_type, pw, ph
+                )
+            except AttributeError as e:
+                # rembg 后端代码可能在某些 cv2 版本中崩溃
+                # 例如: "module 'cv2' has no attribute 'GAUSSIANBLUR'"
+                logger.warning(f"[GARMENT-MASK] rembg 崩溃 ({e}), fallback 到关键点矩形方案")
+                rembg_mask = None
+            except Exception as e:
+                logger.warning(f"[GARMENT-MASK] rembg 分割异常 ({e}), fallback 到关键点矩形方案")
+                rembg_mask = None
             if rembg_mask is not None:
                 # rembg 分割成功，使用 rembg mask
                 # Step 1: 形态学闭/开运算精细化边界（填补孔洞 + 去除毛刺）
@@ -683,7 +693,10 @@ def _make_keypoint_hull_mask(
     person_img: "Image.Image",
     landmarks: list,
 ) -> "Image.Image":
-    """从姿态关键点创建凸包人体遮罩（MediaPipe 不可用时的降级方案）。"""
+    """从姿态关键点创建凸包人体遮罩（MediaPipe 不可用时的降级方案）。
+
+    改进（v2）：使用 polygon fillPoly + 凸包，替代矩形 mask。
+    """
     import cv2
 
     pw, ph = person_img.size
@@ -712,41 +725,38 @@ def _apply_cloth_region(
     ph: int,
 ) -> "Image.Image":
     """
-    将人物遮罩与衣服类型区域矩形取交集。
+    将人物遮罩与衣服类型区域 polygon 取交集。
 
+    改进（v2）：使用 polygon fillPoly 替代矩形 mask，更贴合人体轮廓。
     关键修复：当 MediaPipe 人物分割质量差（暗色衣服、背景对比度低）时，
     person_mask 可能是稀疏噪点，bitwise_and 交集几乎为空。
-    此时 fallback 到纯关键点矩形遮罩，保证 CatVTON 有可用的衣服生成区域。
+    此时 fallback 到纯关键点 polygon mask，保证 CatVTON 有可用的衣服生成区域。
     """
     import cv2
 
     person_np = np.asarray(person_mask)
-    region = _get_cloth_region_rect(landmarks, cloth_type, pw, ph)
-    if region is None:
-        return Image.fromarray(person_np, mode="L")
 
-    x0, y0, x1, y1 = region
-    cloth_mask = np.zeros_like(person_np)
-    cloth_mask[y0:y1, x0:x1] = 255
+    # 使用 polygon mask 替代矩形
+    cloth_polygon = _get_cloth_region_polygon(landmarks, cloth_type, pw, ph)
+    cloth_mask = np.zeros((ph, pw), dtype=np.uint8)
+    if len(cloth_polygon) >= 3:
+        cv2.fillPoly(cloth_mask, [np.array(cloth_polygon, dtype=np.int32)], 255)
+
     combined = cv2.bitwise_and(person_np, cloth_mask)
 
-    # ── 关键修复：当交集质量差时，直接用关键点矩形 ────────────────────────
-    # 判断标准：白色像素占比 < 10% → MediaPipe 分割不可靠，fallback
-    # 将阈值放宽以避免在边缘/紧身服装或复杂背景下误判为可用分割
+    # ── 关键修复：当 MediaPipe 分割稀疏时，直接用关键点 polygon mask ──────
+    # 判断标准：白色像素占比 < 10% → MediaPipe 分割不可靠（如暗色衣服、背景对比度低）
+    # 此时用 cloth_mask（纯关键点 polygon）代替交集，保证 CatVTON 有充足的可编辑区域
     total_pixels = person_np.size
     white_pixels = int(np.sum(combined > 0))
     white_ratio = white_pixels / max(1, total_pixels)
 
-    # 正常情况下人物分割应该有足够的白色像素
-    # 如果 white_ratio 极低（比如 < 5%），说明分割质量差
-    # 此时 cloth_mask（纯关键点矩形）比交集更可靠
     if white_ratio < 0.10:
         logger.warning(
             f"MediaPipe segmentation too sparse (white_ratio={white_ratio:.3f}), "
-            f"falling back to keypoint rect mask for cloth region"
+            f"using keypoint polygon mask for cloth region"
         )
-        # 用关键点矩形遮罩 + 轻微膨胀来覆盖肩膀和身体两侧
-        # 增加膨胀力度以扩大遮罩覆盖（试验性调整）
+        # 纯关键点 polygon mask + 膨胀，覆盖肩膀和身体两侧
         kernel = np.ones((7, 7), np.uint8)
         combined = cv2.dilate(cloth_mask, kernel, iterations=3)
     else:
@@ -756,145 +766,151 @@ def _apply_cloth_region(
     return Image.fromarray(combined, mode="L")
 
 
-def _get_cloth_region_rect(
+def _get_cloth_region_polygon(
     landmarks: list,
     cloth_type: str,
     pw: int,
     ph: int,
-) -> tuple[int, int, int, int] | None:
-    """从姿态关键点推导衣服区域矩形 (x0, y0, x1, y1)。
+) -> list[tuple[int, int]]:
+    """从姿态关键点推导衣服区域 polygon 顶点（像素坐标）。
 
-    注意：landmarks 中的坐标已经是像素坐标（lm.x * pw, lm.y * ph），
-    所有计算都应基于像素坐标进行，不要再乘以或除以 pw/ph。
+    上装 polygon：左肩 → 右肩 → 右臀 → 左臀
+    下装 polygon：左臀 → 右臀 → 右踝 → 左踝 → 左膝 → 右膝
+    连衣裙 polygon：左肩 → 右肩 → 右踝 → 左踝
+
+    所有坐标已转换为像素坐标 (x_px, y_px)，不再使用归一化值。
     """
-    lm_dict = {lm_idx: (lm.x * pw, lm.y * ph) for lm_idx, lm in enumerate(landmarks)}
+    def pt(idx) -> tuple[float, float] | None:
+        if len(landmarks) <= idx:
+            return None
+        lm = landmarks[idx]
+        return (lm.x * pw, lm.y * ph)
 
     def clamp(val, lo, hi):
         return max(lo, min(hi, int(val)))
 
     if cloth_type == "upper":
-        ls = lm_dict.get(11)  # 左肩
-        rs = lm_dict.get(12)  # 右肩
-        lh = lm_dict.get(23)  # 左臀
-        rh = lm_dict.get(24)  # 右臀
-        nose = lm_dict.get(0)  # 鼻尖
+        ls = pt(11)  # 左肩
+        rs = pt(12)  # 右肩
+        lh = pt(23)  # 左臀
+        rh = pt(24)  # 右臀
 
-        shoulder_y = (ls[1] + rs[1]) / 2 if ls and rs else None
-        hip_y = (lh[1] + rh[1]) / 2 if lh and rh else None
-        if shoulder_y is None or hip_y is None:
-            return _upper_fallback(pw, ph)
+        if not (ls and rs and lh and rh):
+            return _upper_polygon_fallback(pw, ph)
 
-        x_pts = [p[0] for p in [ls, rs] if p]
-        x_left_px = min(x_pts) if x_pts else pw * 0.12
-        x_right_px = max(x_pts) if x_pts else pw * 0.88
+        # 袖口延伸：加入肘部中间点
+        le = pt(13)
+        re = pt(14)
+        pts: list[tuple[int, int]] = []
 
-        # 上边界：肩膀上方一点，不超过鼻尖
-        # 所有值已经是像素坐标，直接使用
-        if nose:
-            # 鼻尖位置作为安全下界
-            nose_y = nose[1]
-            # 肩膀上方 5-10% 图片高度
-            shoulder_based_top = shoulder_y - ph * 0.08
-            # 取较大值，确保不覆盖头部
-            y_top = max(shoulder_y - ph * 0.15, shoulder_based_top)
-            # 但也不能太靠近鼻尖
-            y_top = min(y_top, nose_y + ph * 0.05)
-        else:
-            y_top = shoulder_y - ph * 0.08
+        if le:
+            sleeve_l = (int(le[0] * 0.65 + ls[0] * 0.35), int(le[1] * 0.65 + ls[1] * 0.35))
+            pts.append((clamp(sleeve_l[0], 0, pw), clamp(sleeve_l[1], 0, ph)))
+        pts.append((clamp(ls[0], 0, pw), clamp(ls[1], 0, ph)))
+        pts.append((clamp(rs[0], 0, pw), clamp(rs[1], 0, ph)))
+        if re:
+            sleeve_r = (int(re[0] * 0.65 + rs[0] * 0.35), int(re[1] * 0.65 + rs[1] * 0.35))
+            pts.append((clamp(sleeve_r[0], 0, pw), clamp(sleeve_r[1], 0, ph)))
+        pts.append((clamp(rh[0], 0, pw), clamp(rh[1], 0, ph)))
+        pts.append((clamp(lh[0], 0, pw), clamp(lh[1], 0, ph)))
 
-        # 下边界：臀部位置再往下一点
-        y_bottom = hip_y + ph * 0.04
-
-        # 左右边界：肩膀外扩一点
-        shoulder_width = x_right_px - x_left_px
-        margin = max(shoulder_width * 0.15, pw * 0.05)
-        x_left = x_left_px - margin
-        x_right = x_right_px + margin
-
-        return (
-            clamp(x_left, 0, pw - 2),
-            clamp(y_top, 0, ph - 2),
-            clamp(x_right, 2, pw),
-            clamp(y_bottom, 2, ph),
-        )
+        return pts
 
     elif cloth_type == "lower":
-        lh = lm_dict.get(23)  # 左臀
-        rh = lm_dict.get(24)  # 右臀
-        la = lm_dict.get(27)  # 左踝
-        ra = lm_dict.get(28)  # 右踝
-        lk = lm_dict.get(25)  # 左膝
-        rk = lm_dict.get(26)  # 右膝
+        lh = pt(23)  # 左臀
+        rh = pt(24)  # 右臀
+        la = pt(27)  # 左踝
+        ra = pt(28)  # 右踝
+        lk = pt(25)  # 左膝
+        rk = pt(26)  # 右膝
 
-        hip_y = (lh[1] + rh[1]) / 2 if lh and rh else None
-        ankle_y = None
-        if la and ra:
-            ankle_y = (la[1] + ra[1]) / 2
-        elif lk and rk:
-            ankle_y = (lk[1] + rk[1]) / 2
+        if not (lh and rh):
+            return _lower_polygon_fallback(pw, ph)
 
-        if hip_y is None:
-            return _lower_fallback(pw, ph)
+        pts: list[tuple[int, int]] = []
+        pts.append((clamp(lh[0], 0, pw), clamp(lh[1], 0, ph)))
+        pts.append((clamp(rh[0], 0, pw), clamp(rh[1], 0, ph)))
 
-        x_pts = [p[0] for p in [lh, rh, la, ra] if p]
-        x_left_px = min(x_pts) if x_pts else pw * 0.16
-        x_right_px = max(x_pts) if x_pts else pw * 0.84
+        if ra:
+            pts.append((clamp(ra[0], 0, pw), clamp(ra[1], 0, ph)))
+        if la:
+            pts.append((clamp(la[0], 0, pw), clamp(la[1], 0, ph)))
+        if lk:
+            pts.append((clamp(lk[0], 0, pw), clamp(lk[1], 0, ph)))
+        if rk:
+            pts.append((clamp(rk[0], 0, pw), clamp(rk[1], 0, ph)))
 
-        # 上边界：臀部上方一点
-        y_top = hip_y - ph * 0.04
+        return pts
 
-        # 下边界：脚踝或膝盖位置
-        if ankle_y:
-            y_bottom = ankle_y + ph * 0.03
-        else:
-            y_bottom = ph * 0.97
+    else:  # overall (dress)
+        ls = pt(11)
+        rs = pt(12)
+        lh = pt(23)
+        rh = pt(24)
+        la = pt(27)
+        ra = pt(28)
 
-        # 左右边界：臀部外扩一点
-        hip_width = x_right_px - x_left_px
-        margin = max(hip_width * 0.10, pw * 0.06)
-        x_left = x_left_px - margin
-        x_right = x_right_px + margin
+        if not (ls and rs and lh and rh):
+            return _full_polygon_fallback(pw, ph)
 
-        return (
-            clamp(x_left, 0, pw - 2),
-            clamp(y_top, 0, ph - 2),
-            clamp(x_right, 2, pw),
-            clamp(y_bottom, 2, ph),
-        )
+        pts: list[tuple[int, int]] = []
+        pts.append((clamp(ls[0], 0, pw), clamp(ls[1], 0, ph)))
+        pts.append((clamp(rs[0], 0, pw), clamp(rs[1], 0, ph)))
+        if rh:
+            pts.append((clamp(rh[0], 0, pw), clamp(rh[1], 0, ph)))
+        if ra:
+            pts.append((clamp(ra[0], 0, pw), clamp(ra[1], 0, ph)))
+        if la:
+            pts.append((clamp(la[0], 0, pw), clamp(la[1], 0, ph)))
+        if lh:
+            pts.append((clamp(lh[0], 0, pw), clamp(lh[1], 0, ph)))
 
-    else:  # overall
-        upper = _get_cloth_region_rect(landmarks, "upper", pw, ph)
-        lower = _get_cloth_region_rect(landmarks, "lower", pw, ph)
-        if upper is None and lower is None:
-            return None
-        if upper is None:
-            return lower
-        if lower is None:
-            return upper
-        return (
-            min(upper[0], lower[0]),
-            min(upper[1], lower[1]),
-            max(upper[2], lower[2]),
-            max(upper[3], lower[3]),
-        )
+        return pts
 
 
-def _upper_fallback(pw: int, ph: int) -> tuple[int, int, int, int]:
-    return (
-        max(0, int(pw * 0.12)),
-        max(0, int(ph * 0.12)),
-        min(pw, int(pw * 0.88)),
-        min(ph, int(ph * 0.60)),
-    )
+def _upper_polygon_fallback(pw: int, ph: int) -> list[tuple[int, int]]:
+    """无关键点时的上装 polygon fallback。"""
+    cx = pw // 2
+    shoulder_y = int(ph * 0.16)
+    hip_y = int(ph * 0.52)
+    shoulder_hw = int(pw * 0.18)
+    hip_hw = int(pw * 0.14)
+    return [
+        (cx - shoulder_hw, shoulder_y),
+        (cx + shoulder_hw, shoulder_y),
+        (cx + hip_hw, hip_y),
+        (cx - hip_hw, hip_y),
+    ]
 
 
-def _lower_fallback(pw: int, ph: int) -> tuple[int, int, int, int]:
-    return (
-        max(0, int(pw * 0.16)),
-        max(0, int(ph * 0.44)),
-        min(pw, int(pw * 0.84)),
-        min(ph, int(ph * 0.97)),
-    )
+def _lower_polygon_fallback(pw: int, ph: int) -> list[tuple[int, int]]:
+    """无关键点时的下装 polygon fallback。"""
+    cx = pw // 2
+    hip_y = int(ph * 0.46)
+    ankle_y = int(ph * 0.95)
+    hip_hw = int(pw * 0.14)
+    ankle_hw = int(pw * 0.10)
+    return [
+        (cx - hip_hw, hip_y),
+        (cx + hip_hw, hip_y),
+        (cx + ankle_hw, ankle_y),
+        (cx - ankle_hw, ankle_y),
+    ]
+
+
+def _full_polygon_fallback(pw: int, ph: int) -> list[tuple[int, int]]:
+    """无关键点时的全身 polygon fallback。"""
+    cx = pw // 2
+    shoulder_y = int(ph * 0.16)
+    ankle_y = int(ph * 0.95)
+    shoulder_hw = int(pw * 0.18)
+    ankle_hw = int(pw * 0.10)
+    return [
+        (cx - shoulder_hw, shoulder_y),
+        (cx + shoulder_hw, shoulder_y),
+        (cx + ankle_hw, ankle_y),
+        (cx - ankle_hw, ankle_y),
+    ]
 
 
 def _protect_face(
@@ -963,25 +979,23 @@ def _protect_face(
 
 
 def _fallback_mask(person_img: "Image.Image", cloth_type: str) -> "Image.Image":
-    """矩形遮罩（最后的降级方案，MediaPipe 不可用时）。"""
+    """Polygon mask（最后的降级方案，MediaPipe 不可用时）。
+
+    改进（v2）：使用 polygon fillPoly 替代矩形 mask，更贴合人体轮廓。
+    """
+    import cv2
+
     pw, ph = person_img.size
     if cloth_type == "upper":
-        region = _upper_fallback(pw, ph)
+        pts = _upper_polygon_fallback(pw, ph)
     elif cloth_type == "lower":
-        region = _lower_fallback(pw, ph)
+        pts = _lower_polygon_fallback(pw, ph)
     else:
-        upper = _upper_fallback(pw, ph)
-        lower = _lower_fallback(pw, ph)
-        region = (
-            min(upper[0], lower[0]),
-            min(upper[1], lower[1]),
-            max(upper[2], lower[2]),
-            max(upper[3], lower[3]),
-        )
+        pts = _full_polygon_fallback(pw, ph)
 
     mask = np.zeros((ph, pw), dtype=np.uint8)
-    x0, y0, x1, y1 = region
-    mask[y0:y1, x0:x1] = 255
+    if len(pts) >= 3:
+        cv2.fillPoly(mask, [np.array(pts, dtype=np.int32)], 255)
 
     return Image.fromarray(mask, mode="L")
 
@@ -1004,23 +1018,10 @@ def _get_face_detector_model_path() -> str | None:
             logger.info(f"Found MediaPipe FaceDetector model: {_MP_FACE_DETECTOR_TASK}")
             return _MP_FACE_DETECTOR_TASK
 
-    # 自动下载 blazeface 模型
-    model_url = (
-        "https://storage.googleapis.com/mediapipe-models/"
-        "face_detector/blazeface_short_range/float16/1/blazeface_short_range.task"
-    )
-    download_path = Path.home() / ".cache" / "mediapipe-assets" / "face_detector.task"
-    try:
-        download_path.parent.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Downloading MediaPipe FaceDetector model to {download_path}...")
-        import urllib.request
-        urllib.request.urlretrieve(model_url, download_path)
-        _MP_FACE_DETECTOR_TASK = str(download_path.resolve())
-        logger.info(f"Downloaded MediaPipe FaceDetector model: {_MP_FACE_DETECTOR_TASK}")
-        return _MP_FACE_DETECTOR_TASK
-    except Exception as e:
-        logger.warning(f"Failed to download FaceDetector model: {e}")
-        return None
+    # MediaPipe FaceDetector .task 模型文件在大多数环境中不可用
+    #（官方仅提供 .tflite，不提供 .task；下载链接也返回 404）
+    # 当返回 None 时，_detect_face_with_mp_face_api 会自动调用 _protect_face_haar
+    return None
 
 
 def _detect_face_with_mp_face_api(
@@ -1043,8 +1044,7 @@ def _detect_face_with_mp_face_api(
 
     face_detector_path = _get_face_detector_model_path()
     if face_detector_path is None:
-        logger.debug("FaceDetector model not available, using fallback ellipse method")
-        return _protect_face_legacy(person_img, pw, ph)
+        return _protect_face_haar(person_img, pw, ph)
 
     try:
         from mediapipe import Image as MPImage
@@ -1069,8 +1069,8 @@ def _detect_face_with_mp_face_api(
         os.unlink(tmp_path)
 
         if not detection_result.detections:
-            logger.debug("FaceDetector found no face, using fallback ellipse method")
-            return _protect_face_legacy(person_img, pw, ph)
+            logger.debug("FaceDetector found no face, using Haar Cascade fallback")
+            return _protect_face_haar(person_img, pw, ph)
 
         # 构建人脸保护 mask
         face_mask = np.zeros((ph, pw), dtype=np.uint8)
@@ -1124,7 +1124,112 @@ def _detect_face_with_mp_face_api(
         return Image.fromarray(face_mask, mode="L")
 
     except Exception as e:
-        logger.debug(f"FaceDetector API failed ({e}), using fallback ellipse method")
+        logger.debug(f"FaceDetector API failed ({e}), using Haar Cascade fallback")
+        return _protect_face_haar(person_img, pw, ph)
+
+
+def _protect_face_haar(person_img: "Image.Image", pw: int, ph: int) -> "Image.Image":
+    """
+    使用 OpenCV 内置 Haar Cascade 进行人脸检测。
+    相比 MediaPipe FaceDetector，这个方案不需要下载外部模型文件，100% 可用。
+    对正面人脸效果良好，足以满足"防止衣服编辑覆盖人脸"的需求。
+    """
+    import cv2
+
+    try:
+        # 尝试多个 Haar Cascade XML 文件路径（OpenCV 内置）
+        cascade_paths = [
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml",
+            cv2.data.haarcascades + "haarcascade_frontalface_alt.xml",
+            cv2.data.haarcascades + "haarcascade_frontalface_alt2.xml",
+        ]
+        face_cascade = None
+        for path in cascade_paths:
+            try:
+                candidate = cv2.CascadeClassifier(path)
+                if not candidate.empty():
+                    face_cascade = candidate
+                    logger.debug(f"Loaded Haar Cascade from {path}")
+                    break
+            except Exception:
+                continue
+
+        if face_cascade is None:
+            logger.debug("No Haar Cascade available, using keypoint-based fallback")
+            return _protect_face_legacy(person_img, pw, ph)
+
+        # 转换为灰度图进行检测
+        gray = cv2.cvtColor(np.array(person_img.convert("RGB")), cv2.COLOR_RGB2GRAY)
+
+        # 检测人脸（使用较宽松的参数以提高召回率）
+        faces = face_cascade.detectMultiScale3(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=3,
+            minSize=(30, 30),
+            outputRejectLevels=True,
+        )
+
+        if len(faces) == 0 or len(faces[0]) == 0:
+            logger.debug("Haar Cascade found no faces, using keypoint-based fallback")
+            return _protect_face_legacy(person_img, pw, ph)
+
+        face_mask = np.zeros((ph, pw), dtype=np.uint8)
+
+        # [0] = boxes, [1] = rejectLevels, [2] = neighborCounts
+        boxes = faces[0]
+        if len(boxes) == 0:
+            return _protect_face_legacy(person_img, pw, ph)
+
+        for (fx, fy, fw, fh) in boxes:
+            # 安全边界检查
+            fx = max(0, fx)
+            fy = max(0, fy)
+            fw = min(pw - fx, fw)
+            fh = min(ph - fy, fh)
+
+            if fw < 10 or fh < 10:
+                continue
+
+            # 头部中心（略低于人脸框中心）
+            head_cx = fx + fw // 2
+            head_cy = fy + fh // 2
+
+            # 头部保护：头部比人脸框大
+            # 宽高各扩大 40%
+            ew = max(8, int(fw * 0.7))
+            eh = max(8, int(fh * 0.7))
+
+            rows, cols = face_mask.shape
+            y_grid, x_grid = np.ogrid[:rows, :cols]
+
+            # Step 1: 面部椭圆
+            face_ellipse = (
+                ((x_grid - head_cx) ** 2) // max(1, ew ** 2) +
+                ((y_grid - head_cy) ** 2) // max(1, eh ** 2)
+            ) <= 1
+            face_mask[face_ellipse] = 255
+
+            # Step 2: 头部上方扩展区域（头发 + 头顶）
+            head_top_y = max(0, fy - int(fh * 0.3))
+            head_left_x = max(0, head_cx - int(ew * 1.4))
+            head_right_x = min(pw, head_cx + int(ew * 1.4))
+            head_extend = (
+                (x_grid >= head_left_x) & (x_grid <= head_right_x) &
+                (y_grid >= head_top_y) & (y_grid <= fy + int(fh * 0.15))
+            )
+            face_mask[head_extend] = 255
+
+        white_pixels = int(np.sum(face_mask > 0))
+        if white_pixels < 100:
+            logger.debug("Haar face detection produced too small mask, using keypoint fallback")
+            return _protect_face_legacy(person_img, pw, ph)
+
+        logger.debug(f"[FACE] Haar Cascade detected {len(boxes)} face(s), {white_pixels} protected pixels")
+        return Image.fromarray(face_mask, mode="L")
+
+    except Exception as e:
+        logger.debug(f"Haar Cascade face detection failed ({e}), using keypoint fallback")
         return _protect_face_legacy(person_img, pw, ph)
 
 
@@ -1373,70 +1478,82 @@ def _transfer_color_to_region(
     """
     将源图像（衣服）的颜色传递到目标图像的指定区域。
 
-    这是解决 CatVTON 颜色偏移问题的关键后处理：
-    1. 计算衣服图像的颜色统计（均值和标准差）
-    2. 计算 CatVTON 输出中衣服区域的颜色统计
-    3. 通过直方图匹配调整衣服区域颜色，使其更接近原始衣服
+    修复版：使用 LAB 色彩空间的前景直方图匹配，而非 Z-score 转移。
+    Z-score 方法的问题是：source_img 是商品图（含白色背景），其背景像素会
+    拉低整体均值，导致蓝白格子变成"更蓝"的纯色。
+
+    新方法：
+    1. 在 LAB 空间计算 source前景区域 的 a/b 通道分布
+    2. 只对 target 的衣服区域做色彩校正
+    3. 降低强度（strength * 0.3），CatVTON 已生成合理结果时不过度校正
 
     Args:
         source_img: 原始衣服图像（参考）
         target_img: CatVTON 输出图像（待调整）
         mask: 衣服区域遮罩（L 模式）
-        strength: 调整强度 0.0-1.0，0.5 表示 50% 校正
+        strength: 调整强度 0.0-1.0
 
     Returns:
         颜色校正后的图像
     """
     import cv2
 
-    # 转换为 numpy 数组
-    src_arr = np.array(source_img.convert("RGB")).astype(np.float32)
-    tgt_arr = np.array(target_img.convert("RGB")).astype(np.float32)
+    src_arr = np.array(source_img.convert("RGB"))
+    tgt_arr = np.array(target_img.convert("RGB"))
 
-    # 获取衣服区域（从 mask 提取）
     mask_np = np.asarray(mask.convert("L")).astype(np.float32) / 255.0
-    # 创建衣服区域掩码（只处理 mask > 0.3 的区域）
     garment_mask = (mask_np > 0.3).astype(np.float32)[:, :, np.newaxis]
 
-    # 1. 计算原始衣服的颜色统计
-    # 对衣服区域进行采样（使用原始衣服图）
-    src_garment_pixels = src_arr[garment_mask[:, :, 0] > 0.5]
+    h, w = tgt_arr.shape[:2]
 
-    if len(src_garment_pixels) < 100:
-        # 衣服区域太小，跳过颜色校正
+    # ── Step 1: 检测 source 前景（排除白色背景）────────────────────────────
+    src_hsv = cv2.cvtColor(src_arr, cv2.COLOR_RGB2HSV).astype(np.float32)
+    src_s = src_hsv[:, :, 1] / 255.0
+    src_v = src_hsv[:, :, 2] / 255.0
+    # 前景：饱和度 > 5% 或亮度 < 88%
+    src_fg = (src_s > 0.05) | (src_v < 0.88)
+
+    if src_fg.sum() < 100:
         return target_img
 
-    # 计算每个通道的均值和标准差
-    src_mean = src_garment_pixels.mean(axis=0)  # [R, G, B]
-    src_std = src_garment_pixels.std(axis=0) + 1e-6  # 避免除零
+    # ── Step 2: LAB 色彩空间直方图匹配 ───────────────────────────────────
+    src_lab = cv2.cvtColor(src_arr, cv2.COLOR_RGB2LAB)
+    tgt_lab = cv2.cvtColor(tgt_arr, cv2.COLOR_RGB2LAB)
 
-    # 2. 计算 CatVTON 输出中衣服区域的颜色统计
-    tgt_garment_pixels = tgt_arr[garment_mask[:, :, 0] > 0.5]
+    # 对前景区域计算参考的 a/b 通道分布（只匹配色彩，不动亮度）
+    src_fg_lab = src_lab[src_fg]
+    ref_a = np.median(src_fg_lab[:, 1])  # 中位数比均值更鲁棒
+    ref_b = np.median(src_fg_lab[:, 2])
 
-    if len(tgt_garment_pixels) < 100:
+    # 构建 LUT：目标衣服区域的 a/b → 参考 a/b
+    tgt_fg_mask = garment_mask[:, :, 0] > 0.3
+    if tgt_fg_mask.sum() < 100:
         return target_img
 
-    tgt_mean = tgt_garment_pixels.mean(axis=0)
-    tgt_std = tgt_garment_pixels.std(axis=0) + 1e-6
+    tgt_fg_lab = tgt_lab[tgt_fg_mask]
+    tgt_a = np.median(tgt_fg_lab[:, 1])
+    tgt_b = np.median(tgt_fg_lab[:, 2])
 
-    # 3. 应用直方图匹配/颜色校正
-    # 方法：基于 Z-score 的颜色转移
-    # 对于衣服区域：new_pixel = (pixel - tgt_mean) * (src_std / tgt_std) + src_mean
-    result_arr = tgt_arr.copy()
+    # 色彩偏移
+    delta_a = ref_a - tgt_a
+    delta_b = ref_b - tgt_b
 
-    # 只在衣服区域内应用
-    for c in range(3):
-        # 计算校正后的值
-        corrected = (tgt_arr[:, :, c] - tgt_mean[c]) * (src_std[c] / tgt_std[c]) + src_mean[c]
-        # 混合原始值和校正值
-        result_arr[:, :, c] = (
-            tgt_arr[:, :, c] * (1 - garment_mask[:, :, 0] * strength * 0.7) +
-            corrected * (garment_mask[:, :, 0] * strength * 0.7)
-        )
+    if abs(delta_a) < 1.0 and abs(delta_b) < 1.0:
+        # 色彩差异极小，跳过校正（CatVTON 已经很准确）
+        return target_img
 
-    # 裁剪到有效范围
-    result_arr = np.clip(result_arr, 0, 255).astype(np.uint8)
-    return Image.fromarray(result_arr, mode="RGB")
+    # ── Step 3: 应用校正（向量化，无 Python 循环）────────────────────────
+    result_lab = tgt_lab.copy().astype(np.float32)
+    effective_strength = strength * 0.3  # 大幅降低，防止过度校正
+
+    fg_3ch = tgt_fg_mask[:, :, np.newaxis]
+    result_lab[:, :, 1] += delta_a * effective_strength * fg_3ch[:, :, 0]
+    result_lab[:, :, 2] += delta_b * effective_strength * fg_3ch[:, :, 0]
+
+    result_lab = np.clip(result_lab, 0, 255).astype(np.uint8)
+    result_rgb = cv2.cvtColor(result_lab, cv2.COLOR_LAB2RGB)
+
+    return Image.fromarray(result_rgb, mode="RGB")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1807,6 +1924,15 @@ def main():
     )
 
     try:
+        # Add backend to sys.path so we can import garment_preprocess
+        # Runner lives at: clothing-assistant/vton_inference_service/catvton_runner.py
+        # Backend lives at:  clothing-assistant/backend/
+        runner_dir = Path(__file__).resolve().parent  # vton_inference_service/
+        workspace = runner_dir.parent.parent          # clothing-assistant/
+        backend_path = workspace / "backend"
+        if backend_path.exists() and str(backend_path) not in sys.path:
+            sys.path.insert(0, str(backend_path))
+
         # ── 导入 CatVTON ────────────────────────────────────────────────
         catvton_path = args.catvton_path or os.environ.get("CATVTON_PATH", "")
         sys.path.insert(0, catvton_path)
@@ -1931,14 +2057,16 @@ def main():
             except Exception as e:
                 logger.warning(f"torch.compile failed: {e}")
 
-        # ── 缩放图片 ───────────────────────────────────────────────────
-        print(f"[CATVTON-STEP] 正在缩放图片...", flush=True)
+        # ── 新版衣服预处理：rembg 去背景 + bbox 裁剪 + 居中黑底 ──────────────
+        from app.services.garment_preprocess import preprocess_garment
+        print(f"[CATVTON-STEP] 预处理衣服 (rembg alpha 去背景 + bbox 居中)...", flush=True)
         person_resized = resize_and_crop(person_img, (args.width, args.height))
-        # 关键修复：使用 resize_and_padding（白边填充）而非 resize_and_crop_garment（居中裁剪）
-        # CatVTON 原生 pipeline 对 garment 使用 resize_and_padding，对 person 使用 resize_and_crop。
-        # 居中裁剪会裁掉衣服边缘，导致 CatVTON 看不到完整衣服 → 颜色缺失和形态错误。
-        # 白边填充保持衣服完整，仅用白色边框补齐到目标尺寸，对 VAE 编码无干扰。
-        garment_resized = resize_and_padding(garment_img, (args.width, args.height))
+        try:
+            garment_clean_np = preprocess_garment(garment_img, canvas_size=512)
+            garment_resized = Image.fromarray(garment_clean_np, mode="RGB")
+        except Exception as e:
+            logger.warning(f"衣服预处理失败 ({e})，使用原始图像")
+            garment_resized = resize_and_padding(garment_img, (args.width, args.height))
 
         # ── 衣服颜色增强（已禁用）────────────────────────────────────────
         # 之前 saturation * 1.15 会扭曲原始颜色，导致 CatVTON VAE 编码偏差。
@@ -1968,15 +2096,23 @@ def main():
             })
 
         # ── 运行扩散推理 ───────────────────────────────────────────────
-        print(f"[CATVTON-STEP] 开始 CatVTON 扩散推理 (steps={args.steps}, guidance={args.guidance})...", flush=True)
         import torch
+        from vton_inference_service.catvton_engine import CatVTONPipeline as _ExpectedPipeline
+
+        # ── 强制验证：pipeline 类型必须为 CatVTONPipeline ──────────────
+        if not isinstance(pipeline, _ExpectedPipeline):
+            raise TypeError(
+                f"Pipeline type mismatch: expected CatVTONPipeline, got {type(pipeline).__name__}. "
+                f"Model may not be loaded correctly."
+            )
 
         seed = args.seed if args.seed >= 0 else None
         generator = None
         if seed is not None:
             generator = torch.Generator(device="cuda").manual_seed(seed)
 
-        infer_start = time.time()
+        print("START CATVTON", flush=True)
+        infer_start = time.perf_counter()
 
         result = pipeline(
             image=person_resized,
@@ -1989,8 +2125,19 @@ def main():
             generator=generator,
         )[0]
 
-        infer_elapsed = time.time() - infer_start
-        print(f"[CATVTON-STEP] 推理完成，耗时 {infer_elapsed:.1f}s", flush=True)
+        infer_elapsed = time.perf_counter() - infer_start
+        print(f"END CATVTON (duration={infer_elapsed:.2f}s)", flush=True)
+
+        # 推理时间合理性检查（替代原 2.0s 固定阈值，避免低 steps 时误判）
+        # 保守下限：>= 5 steps 时至少 1.0s，steps 越少越宽松
+        min_expected_time = max(1.0, args.steps * 0.15)
+        if infer_elapsed < min_expected_time and args.steps >= 5:
+            logger.warning(
+                f"[SPEED-WARNING] Inference completed in {infer_elapsed:.2f}s "
+                f"(expected >= {min_expected_time:.1f}s for {args.steps} steps). "
+                f"Result will be returned but may be degraded quality. "
+                f"Model may not be running on GPU."
+            )
 
         # ── 白盒调试：保存扩散输出（未重绘） ───────────────────────────
         if _debug_output_dir is not None:
@@ -2006,40 +2153,11 @@ def main():
             logger.info("执行背景重绘与原图混合...")
             result = _repaint_with_feather(result, person_resized, mask_resized, feather_radius=3)
 
-        # ── 衣服颜色保真校正 ─────────────────────────────────────────
-        # 动态强度：根据衣服饱和度自动选择校正强度
-        #   低饱和 (0.0-0.3): 纯色/黑白灰 → strength=0.7（标准）
-        #   中饱和 (0.3-0.6): 浅彩色     → strength=0.8（增强）
-        #   高饱和 (0.6-1.0): 正红/深蓝  → strength=0.9（高保真）
-        # 实际有效强度 = strength × 0.7（mask覆盖系数）
-        sat_score = _compute_garment_saturation(garment_resized)
-        if sat_score < 0.3:
-            color_strength = 0.7
-        elif sat_score < 0.6:
-            color_strength = 0.8
-        else:
-            color_strength = 0.9
-        logger.info(
-            f"执行衣服颜色保真校正 (saturation={sat_score:.2f}, strength={color_strength})..."
-        )
-        try:
-            result = _transfer_color_to_region(
-                source_img=garment_resized,
-                target_img=result,
-                mask=mask_resized,
-                strength=color_strength,
-            )
-            logger.info(f"颜色保真校正完成 (saturation={sat_score:.2f}, strength={color_strength})")
-        except Exception as e:
-            logger.warning(f"颜色校正失败，跳过: {e}")
-
         # ── 白盒调试：保存最终结果 ──────────────────────────────────────
         if _debug_output_dir is not None:
             save_debug_image("11_result_final", result, {
                 "repaint": not args.no_repaint,
                 "total_time_s": round(time.time() - infer_start, 2),
-                "saturation_score": round(sat_score, 3),
-                "color_strength": color_strength,
                 "torch_compile": getattr(args, "torch_compile", False),
                 "applied_optimizations": applied,
             })

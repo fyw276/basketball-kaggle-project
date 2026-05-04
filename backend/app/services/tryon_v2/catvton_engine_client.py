@@ -402,16 +402,38 @@ def _run_catvton_sync(
                     "message": "CatVTON not installed or import failed",
                     "metadata": {
                         "reason": "catvton_not_available",
-                        "hint": "Run: git clone https://github.com/Zheng-Chong/CatVTON.git",
-                        "stderr": stderr[:500],
+                        "hint": (
+                            "Set CATVTON_PATH in config or run: "
+                            "git clone https://github.com/Zheng-Chong/CatVTON.git"
+                        ),
+                        "stderr": stderr[:1000],
+                        "stdout": stdout[:500],
                     },
                 }
 
-            error_lines = [line for line in combined.splitlines() if line.startswith("ERROR:")]
+            # Extract traceback if present (from "TRACE:" prefix)
+            trace_lines = [
+                line.replace("TRACE:", "").strip()
+                for line in combined.splitlines()
+                if line.startswith("TRACE:")
+            ]
+            traceback_text = "\n".join(trace_lines) if trace_lines else ""
+
+            # Extract ERROR: lines for structured error message
+            error_lines = [
+                line.replace("ERROR:", "").strip()
+                for line in combined.splitlines()
+                if line.startswith("ERROR:")
+            ]
             if error_lines:
-                error_msg = error_lines[0].replace("ERROR:", "").strip()
+                error_msg = error_lines[0]
             else:
-                error_msg = combined[:500] if combined else f"exit code {result.returncode}"
+                error_msg = combined[:500] if combined.strip() else f"exit code {result.returncode}"
+
+            logger.error(
+                f"[CATVTON] Subprocess failed (code={result.returncode}): {error_msg}\n"
+                f"  stderr (last 500 chars): {stderr[-500:]}"
+            )
 
             return {
                 "result_image": None,
@@ -419,13 +441,21 @@ def _run_catvton_sync(
                 "message": f"CatVTON inference failed: {error_msg}",
                 "metadata": {
                     "reason": "inference_failed",
-                    "stderr": stderr[:500],
+                    "stderr": stderr[:1000],
+                    "stdout": stdout[:500],
                     "returncode": result.returncode,
+                    "traceback": traceback_text[:1000],
+                    "error_lines": error_lines[:5],
                 },
             }
 
         # ── Handle preprocess_only mode ────────────────────────────────
         stdout = result.stdout or ""
+        stderr = result.stderr or ""
+
+        # Surface stderr warnings even on success (they may indicate degradation)
+        if stderr.strip():
+            logger.warning(f"[CATVTON] Subprocess produced stderr warnings:\n{stderr[:300]}")
 
         # Extract debug_dir from output (e.g. "DEBUG_DIR:C:\path" or "PREPROCESS_ONLY:C:\path")
         debug_session_dir = None
@@ -498,18 +528,28 @@ def _run_catvton_sync(
                 "xformers": xformers,
                 "low_vram_mode": low_vram_mode,
                 "debug_session_dir": debug_session_dir,
+                "subprocess_stderr": stderr[:500] if stderr.strip() else None,
             },
         }
 
     except subprocess.TimeoutExpired:
+        stdout = "\n".join(stdout_lines)
+        stderr = "\n".join(stderr_lines)
+        logger.error(
+            f"[CATVTON] Subprocess timed out after {timeout}s. "
+            f"Last stdout lines: {stdout[-300:]}\n"
+            f"Last stderr lines: {stderr[-300:]}"
+        )
         return {
             "result_image": None,
             "status": "error",
-            "message": "CatVTON inference timeout",
+            "message": f"CatVTON inference timeout after {timeout}s",
             "metadata": {
                 "reason": "timeout",
                 "timeout_s": timeout,
                 "hint": "Increase CATVTON_TIMEOUT_SECONDS or reduce CATVTON_STEPS",
+                "stdout": stdout[-500:],
+                "stderr": stderr[-500:],
             },
         }
     except Exception as e:

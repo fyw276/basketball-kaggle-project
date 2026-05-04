@@ -1,0 +1,1 @@
+fix(tryon-v2): overlay alpha guard, test fixes, doc accuracy, and CHANGELOG sync

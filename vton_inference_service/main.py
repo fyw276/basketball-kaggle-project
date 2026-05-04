@@ -387,59 +387,49 @@ async def tryon_v1(
             logger.info(f"Skipping {engine_name} (not available)")
             continue
 
-        try:
-            if engine_name == "catvton":
-                logger.info("Using CatVTON engine")
-                cloth_type = cat_hint_catvton
-                # Use caller-provided steps/guidance if provided, else config defaults
-                steps = num_inference_steps if num_inference_steps != 50 else CATVTON_STEPS
-                guidance = guidance_scale if guidance_scale != 2.5 else CATVTON_GUIDANCE
-                result_bytes = _run_catvton_subprocess(
-                    person_bytes=p_bytes,
-                    garment_bytes=g_bytes,
-                    cloth_type=cloth_type,
-                    seed=seed if seed >= 0 else -1,
-                )
-                chosen_engine = "catvton"
+        if engine_name == "catvton":
+            logger.info("Using CatVTON engine")
+            cloth_type = cat_hint_catvton
+            steps = num_inference_steps if num_inference_steps != 50 else CATVTON_STEPS
+            guidance = guidance_scale if guidance_scale != 2.5 else CATVTON_GUIDANCE
+            result_bytes = _run_catvton_subprocess(
+                person_bytes=p_bytes,
+                garment_bytes=g_bytes,
+                cloth_type=cloth_type,
+                seed=seed if seed >= 0 else -1,
+            )
+            chosen_engine = "catvton"
+            break
 
-            elif engine_name == "ootd":
-                logger.info("Using OOTDiffusion engine")
-                from ootd_engine import get_engine
-                engine = get_engine()
-                cat = cat_hint_ootd if cat_hint_ootd is not None else 0
-                result_im = engine.infer(
-                    person_image=person_im,
-                    garment_image=garment_im,
-                    category=cat,
-                    num_inference_steps=num_inference_steps,
-                    guidance_scale=guidance_scale,
-                )
-                result_bytes = _pil_to_jpeg_bytes(result_im)
-                chosen_engine = "ootdiffusion"
+        elif engine_name == "ootd":
+            logger.info("Using OOTDiffusion engine")
+            from ootd_engine import get_engine
+            engine = get_engine()
+            cat = cat_hint_ootd if cat_hint_ootd is not None else 0
+            result_im = engine.infer(
+                person_image=person_im,
+                garment_image=garment_im,
+                category=cat,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+            )
+            result_bytes = _pil_to_jpeg_bytes(result_im)
+            chosen_engine = "ootdiffusion"
+            break
 
-            if result_bytes:
-                break
-
-        except Exception as e:
-            logger.warning(f"{engine_name} failed: {e}")
-            error_detail = str(e)
-            continue
-
-    # ── Fallback to stub ───────────────────────────────────────────────────────
+    # ── No fallback: if no engine succeeded, hard error ──────────────────────
     if not result_bytes:
-        logger.warning(
-            f"No VTON engine succeeded (catvton={'ok' if CATVTON_AVAILABLE else 'n/a'}, "
-            f"ootd={'ok' if OOTD_AVAILABLE else 'n/a'}). Using stub fallback."
-        )
-        jpeg = _stub_tryon(person_im, garment_im)
-        return Response(
-            content=jpeg,
-            media_type="image/jpeg",
-            headers={
-                "X-VTON-Engine": "stub-blend",
-                "X-VTON-Category-Hint": cat_hint_catvton,
-                "X-VTON-Fallback-Reason": error_detail or "no_engine_available",
-            },
+        engines_failed = []
+        if not CATVTON_AVAILABLE:
+            engines_failed.append(f"CatVTON (not available: {CATVTON_ERROR})")
+        if not OOTD_AVAILABLE:
+            engines_failed.append("OOTDiffusion (not available)")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"No VTON engine available. Tried: {', '.join(engines_failed)}. "
+                f"Install CatVTON or OOTDiffusion, or set VTON_STUB_MODE=true for demo only."
+            ),
         )
 
     logger.info(f"VTON completed with engine: {chosen_engine}")

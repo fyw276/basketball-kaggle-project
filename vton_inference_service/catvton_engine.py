@@ -37,6 +37,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import cv2
 import numpy as np
 import torch
 from PIL import Image
@@ -125,7 +126,9 @@ def _make_body_mask_from_pose(
 ) -> Image.Image:
     """
     Generate cloth-agnostic body mask using MediaPipe PoseLandmarker.
-    Falls back to rectangle mask if MediaPipe fails.
+    Falls back to polygon mask if MediaPipe fails.
+
+    改进（v2）：使用 polygon fillPoly 替代矩形 mask，更贴合人体轮廓。
     Returns PIL Image (L mode, 255=garment region to edit).
     """
     landmarks, seg_masks = _run_mediapipe_pose(person_img)
@@ -137,33 +140,31 @@ def _make_body_mask_from_pose(
         seg_np = (seg.numpy_view() * 255).astype(np.uint8)
         person_mask = Image.fromarray(seg_np, mode="L").resize((pw, ph), Image.LANCZOS)
     else:
-        person_mask = _make_rect_person_mask(pw, ph, cloth_type)
+        person_mask = _make_polygon_person_mask(pw, ph, cloth_type)
 
     # Intersect with cloth-type region
     if landmarks:
-        region = _get_cloth_rect(landmarks, cloth_type, pw, ph)
-        if region:
-            region_mask = _rect_to_mask(region, pw, ph)
-            import cv2
-            pm = np.array(person_mask)
-            rm = np.array(region_mask)
-            combined = cv2.bitwise_and(pm, rm)
+        polygon = _get_cloth_region_polygon(landmarks, cloth_type, pw, ph)
+        region_mask = _polygon_to_mask(polygon, pw, ph)
+        pm = np.array(person_mask)
+        rm = np.array(region_mask)
+        combined = cv2.bitwise_and(pm, rm)
 
-            # Key fix: when MediaPipe segmentation is too sparse (dark clothes),
-            # fall back to the keypoint rect directly so CatVTON has a usable region
-            white_ratio = int(np.sum(combined > 0)) / max(1, pm.size)
-            if white_ratio < 0.05:
-                logger.warning(
-                    f"MediaPipe segmentation sparse (ratio={white_ratio:.3f}), "
-                    "using keypoint rect mask"
-                )
-                kernel = np.ones((5, 5), np.uint8)
-                combined = cv2.dilate(rm, kernel, iterations=2)
-            else:
-                kernel = np.ones((3, 3), np.uint8)
-                combined = cv2.dilate(combined, kernel, iterations=1)
+        # Key fix: when MediaPipe segmentation is too sparse (dark clothes),
+        # fall back to the keypoint polygon directly so CatVTON has a usable region
+        white_ratio = int(np.sum(combined > 0)) / max(1, pm.size)
+        if white_ratio < 0.05:
+            logger.warning(
+                f"MediaPipe segmentation sparse (ratio={white_ratio:.3f}), "
+                "using keypoint polygon mask"
+            )
+            kernel = np.ones((5, 5), np.uint8)
+            combined = cv2.dilate(rm, kernel, iterations=2)
+        else:
+            kernel = np.ones((3, 3), np.uint8)
+            combined = cv2.dilate(combined, kernel, iterations=1)
 
-            person_mask = Image.fromarray(combined, mode="L")
+        person_mask = Image.fromarray(combined, mode="L")
 
     # Protect face
     if landmarks and len(landmarks) > 0:
@@ -172,11 +173,10 @@ def _make_body_mask_from_pose(
     return person_mask
 
 
-def _get_cloth_rect(landmarks, cloth_type: str, pw: int, ph: int):
-    """Return (x0,y0,x1,y1) cloth region from landmarks.
+def _get_cloth_region_polygon(landmarks, cloth_type: str, pw: int, ph: int):
+    """Return polygon vertices (list of (x,y) pixel tuples) for cloth region.
 
-    注意：pt() 返回的坐标已经是像素坐标 (lm.x * pw, lm.y * ph)，
-    所有计算都应基于像素坐标进行。
+    改进（v2）：使用 polygon 替代矩形，更贴合人体轮廓。
     """
     def pt(idx):
         if len(landmarks) <= idx:
@@ -184,118 +184,114 @@ def _get_cloth_rect(landmarks, cloth_type: str, pw: int, ph: int):
         lm = landmarks[idx]
         return (lm.x * pw, lm.y * ph)
 
-    def clamp(v, lo, hi):
-        return max(lo, min(hi, int(v)))
+    def clamp(val, lo, hi):
+        return max(lo, min(hi, int(val)))
 
     if cloth_type == "upper":
         ls, rs = pt(11), pt(12)
         lh, rh = pt(23), pt(24)
-        sy = (ls[1] + rs[1]) / 2 if ls and rs else None
-        hy = (lh[1] + rh[1]) / 2 if lh and rh else None
-        if sy is None or hy is None:
-            return (clamp(pw * 0.10, 0, pw - 2), clamp(ph * 0.12, 0, ph - 2),
-                    clamp(pw * 0.90, 2, pw), clamp(ph * 0.60, 2, ph))
 
-        x_pts = [p[0] for p in [ls, rs] if p]
-        x_left_px = min(x_pts) if x_pts else pw * 0.12
-        x_right_px = max(x_pts) if x_pts else pw * 0.88
+        if not (ls and rs and lh and rh):
+            return _upper_polygon_fallback(pw, ph)
 
-        # 上边界：肩膀上方一点
-        nose = pt(0)
-        if nose:
-            nose_y = nose[1]
-            shoulder_based_top = sy - ph * 0.08
-            y_top = max(sy - ph * 0.15, shoulder_based_top)
-            y_top = min(y_top, nose_y + ph * 0.05)
-        else:
-            y_top = sy - ph * 0.08
+        pts = []
+        pts.append((clamp(ls[0], 0, pw), clamp(ls[1], 0, ph)))
+        pts.append((clamp(rs[0], 0, pw), clamp(rs[1], 0, ph)))
+        pts.append((clamp(rh[0], 0, pw), clamp(rh[1], 0, ph)))
+        pts.append((clamp(lh[0], 0, pw), clamp(lh[1], 0, ph)))
 
-        # 下边界：臀部位置再往下一点
-        y_bottom = hy + ph * 0.04
+        le, re = pt(13), pt(14)
+        if le:
+            pts.insert(1, (clamp(int(le[0] * 0.6 + ls[0] * 0.4), 0, pw), clamp(int(le[1] * 0.6 + ls[1] * 0.4), 0, ph)))
+        if re:
+            pts.insert(len(pts) - 1, (clamp(int(re[0] * 0.6 + rs[0] * 0.4), 0, pw), clamp(int(re[1] * 0.6 + rs[1] * 0.4), 0, ph)))
 
-        # 左右边界：肩膀外扩一点
-        shoulder_width = x_right_px - x_left_px
-        margin = max(shoulder_width * 0.15, pw * 0.05)
-        x_left = x_left_px - margin
-        x_right = x_right_px + margin
+        return pts
 
-        return (
-            clamp(x_left, 0, pw - 2),
-            clamp(y_top, 0, ph - 2),
-            clamp(x_right, 2, pw),
-            clamp(y_bottom, 2, ph),
-        )
     elif cloth_type == "lower":
         lh, rh = pt(23), pt(24)
         la, ra = pt(27), pt(28)
         lk, rk = pt(25), pt(26)
-        hy = (lh[1] + rh[1]) / 2 if lh and rh else None
-        ay = None
-        if la and ra:
-            ay = (la[1] + ra[1]) / 2
-        elif lk and rk:
-            ay = (lk[1] + rk[1]) / 2
-        if hy is None:
-            return (clamp(pw * 0.16, 0, pw - 2), clamp(ph * 0.44, 0, ph - 2),
-                    clamp(pw * 0.84, 2, pw), clamp(ph * 0.97, 2, ph))
 
-        x_pts = [p[0] for p in [lh, rh, la, ra] if p]
-        x_left_px = min(x_pts) if x_pts else pw * 0.16
-        x_right_px = max(x_pts) if x_pts else pw * 0.84
+        if not (lh and rh):
+            return _lower_polygon_fallback(pw, ph)
 
-        # 上边界：臀部上方一点
-        y_top = hy - ph * 0.04
+        pts = []
+        pts.append((clamp(lh[0], 0, pw), clamp(lh[1], 0, ph)))
+        pts.append((clamp(rh[0], 0, pw), clamp(rh[1], 0, ph)))
+        if ra:
+            pts.append((clamp(ra[0], 0, pw), clamp(ra[1], 0, ph)))
+        if la:
+            pts.append((clamp(la[0], 0, pw), clamp(la[1], 0, ph)))
+        if lk:
+            pts.append((clamp(lk[0], 0, pw), clamp(lk[1], 0, ph)))
+        if rk:
+            pts.append((clamp(rk[0], 0, pw), clamp(rk[1], 0, ph)))
 
-        # 下边界：脚踝或膝盖位置
-        if ay:
-            y_bottom = ay + ph * 0.03
-        else:
-            y_bottom = ph * 0.97
+        return pts
 
-        # 左右边界：臀部外扩一点
-        hip_width = x_right_px - x_left_px
-        margin = max(hip_width * 0.10, pw * 0.06)
-        x_left = x_left_px - margin
-        x_right = x_right_px + margin
-
-        return (
-            clamp(x_left, 0, pw - 2),
-            clamp(y_top, 0, ph - 2),
-            clamp(x_right, 2, pw),
-            clamp(y_bottom, 2, ph),
-        )
     else:  # overall
-        u = _get_cloth_rect(landmarks, "upper", pw, ph)
-        l = _get_cloth_rect(landmarks, "lower", pw, ph)
-        if u is None and l is None:
-            return None
-        if u is None:
-            return l
-        if l is None:
-            return u
-        return (min(u[0], l[0]), min(u[1], l[1]), max(u[2], l[2]), max(u[3], l[3]))
+        u = _get_cloth_region_polygon(landmarks, "upper", pw, ph)
+        l = _get_cloth_region_polygon(landmarks, "lower", pw, ph)
+        if not u and not l:
+            return _full_polygon_fallback(pw, ph)
+        return u if u else l
 
 
-def _rect_to_mask(rect, pw: int, ph: int) -> Image.Image:
+def _upper_polygon_fallback(pw: int, ph: int):
+    cx = pw // 2
+    return [
+        (cx - int(pw * 0.18), int(ph * 0.16)),
+        (cx + int(pw * 0.18), int(ph * 0.16)),
+        (cx + int(pw * 0.14), int(ph * 0.52)),
+        (cx - int(pw * 0.14), int(ph * 0.52)),
+    ]
+
+
+def _lower_polygon_fallback(pw: int, ph: int):
+    cx = pw // 2
+    return [
+        (cx - int(pw * 0.14), int(ph * 0.46)),
+        (cx + int(pw * 0.14), int(ph * 0.46)),
+        (cx + int(pw * 0.10), int(ph * 0.95)),
+        (cx - int(pw * 0.10), int(ph * 0.95)),
+    ]
+
+
+def _full_polygon_fallback(pw: int, ph: int):
+    cx = pw // 2
+    return [
+        (cx - int(pw * 0.18), int(ph * 0.16)),
+        (cx + int(pw * 0.18), int(ph * 0.16)),
+        (cx + int(pw * 0.10), int(ph * 0.95)),
+        (cx - int(pw * 0.10), int(ph * 0.95)),
+    ]
+
+
+def _polygon_to_mask(polygon: list, pw: int, ph: int) -> Image.Image:
+    """Create binary mask from polygon vertices using cv2.fillPoly."""
     m = np.zeros((ph, pw), dtype=np.uint8)
-    if rect:
-        x0, y0, x1, y1 = rect
-        m[max(0,y0):min(ph,y1), max(0,x0):min(pw,x1)] = 255
+    if len(polygon) >= 3:
+        cv2.fillPoly(m, [np.array(polygon, dtype=np.int32)], 255)
     return Image.fromarray(m, mode="L")
 
 
-def _make_rect_person_mask(pw: int, ph: int, cloth_type: str) -> Image.Image:
+def _make_polygon_person_mask(pw: int, ph: int, cloth_type: str) -> Image.Image:
+    """Create polygon-based person mask fallback using proportional estimates.
+
+    改进（v2）：使用 polygon 替代矩形 mask。
+    """
     if cloth_type == "upper":
-        # FIX: 使用更保守的上装区域，不覆盖头部
-        region = (int(pw*0.10), int(ph*0.18), int(pw*0.90), int(ph*0.58))
+        pts = _upper_polygon_fallback(pw, ph)
     elif cloth_type == "lower":
-        region = (int(pw*0.16), int(ph*0.44), int(pw*0.84), int(ph*0.97))
+        pts = _lower_polygon_fallback(pw, ph)
     else:
-        upper = (int(pw*0.10), int(ph*0.18), int(pw*0.90), int(ph*0.58))
-        lower = (int(pw*0.16), int(ph*0.44), int(pw*0.84), int(ph*0.97))
-        region = (min(upper[0], lower[0]), min(upper[1], lower[1]),
-                  max(upper[2], lower[2]), max(upper[3], lower[3]))
-    return _rect_to_mask(region, pw, ph)
+        pts = _full_polygon_fallback(pw, ph)
+
+    m = np.zeros((ph, pw), dtype=np.uint8)
+    if len(pts) >= 3:
+        cv2.fillPoly(m, [np.array(pts, dtype=np.int32)], 255)
+    return Image.fromarray(m, mode="L")
 
 
 def _clear_face(mask: Image.Image, landmarks, pw: int, ph: int) -> Image.Image:
@@ -437,26 +433,26 @@ class CatVTONEngine:
             f"mask={'manual' if mask_image else 'MediaPipe-auto'}, seed={seed}"
         )
 
+        # ── 强制验证：pipe 类型必须为 CatVTONPipeline ───────────────────────
+        if not isinstance(self.pipeline, type(CatVTONPipeline)):
+            raise TypeError(
+                f"Pipeline type mismatch: expected CatVTONPipeline, got {type(self.pipeline).__name__}. "
+                f"Model may not be loaded correctly."
+            )
+
         try:
             person_image = person_image.convert("RGB")
             garment_image = garment_image.convert("RGB")
 
             # Generate or use provided mask
             if mask_image is not None:
-                # Use NEAREST resize to preserve binary mask quality for CatVTON
                 mask_resized = mask_image.convert("L").resize(
                     (self.width, self.height), Image.NEAREST
                 )
-                import numpy as np
                 m = np.array(mask_resized)
                 m[m > 0] = 255
                 mask_resized = Image.fromarray(m)
             else:
-                # MediaPipe-based auto mask
-                # Critical: use NEAREST resize to preserve binary mask quality
-                # DO NOT blur or feather before CatVTON inference
-                # CatVTON training uses pure binary masks (0 or 1)
-                # Feather blending should ONLY happen during repaint AFTER inference
                 body_mask = _make_body_mask_from_pose(person_image, cloth_type)
                 body_mask = body_mask.resize(
                     (self.width, self.height), Image.NEAREST
@@ -468,12 +464,20 @@ class CatVTONEngine:
             if seed is not None and seed >= 0:
                 generator = torch.Generator(device=self.device).manual_seed(seed)
 
-            # Resize inputs
+            # ── 预处理（不计推理耗时）──────────────────────────────────────
             from utils import resize_and_crop, resize_and_padding
-            person_resized = resize_and_crop(person_image, (self.width, self.height))
-            garment_resized = resize_and_padding(garment_image, (self.width, self.height))
+            from app.services.garment_preprocess import preprocess_garment
 
-            # Run inference
+            garment_np = preprocess_garment(garment_image, canvas_size=512)
+            garment_clean = Image.fromarray(garment_np, mode="RGB")
+            garment_resized = resize_and_padding(garment_clean, (self.width, self.height))
+            person_resized = resize_and_crop(person_image, (self.width, self.height))
+
+            # ── CatVTON 扩散推理 ───────────────────────────────────────────
+            import time
+            print("START CATVTON", flush=True)
+            infer_start = time.perf_counter()
+
             result = self.pipeline(
                 image=person_resized,
                 condition_image=garment_resized,
@@ -485,6 +489,15 @@ class CatVTONEngine:
                 generator=generator,
             )[0]
 
+            infer_elapsed = time.perf_counter() - infer_start
+            print(f"END CATVTON (duration={infer_elapsed:.2f}s)", flush=True)
+
+            if infer_elapsed < 2.0:
+                raise RuntimeError(
+                    f"Inference completed in {infer_elapsed:.2f}s — suspiciously fast. "
+                    f"Model may not be running on GPU or may be using a stub."
+                )
+
             # Repaint with original background
             if self.repaint:
                 result = self._repaint_result(result, person_resized, mask_resized)
@@ -493,12 +506,11 @@ class CatVTONEngine:
             return result
 
         except Exception as e:
-            logger.error(f"CatVTON inference failed: {e}", exc_info=True)
+            print(f"[CATVTON-ERROR] {type(e).__name__}: {e}", flush=True)
             raise RuntimeError(f"CatVTON inference failed: {e}") from e
 
     def _feather_mask(self, mask: Image.Image, feather_radius: int = 3) -> Image.Image:
         """Apply Gaussian blur to mask edges for smooth garment boundaries."""
-        import cv2
         mask_np = np.asarray(mask.convert("L"))
         blurred = cv2.GaussianBlur(mask_np, (0, 0), sigmaX=feather_radius, sigmaY=feather_radius)
         return Image.fromarray(blurred, mode="L")
@@ -506,7 +518,6 @@ class CatVTONEngine:
     def _repaint_result(
         self, result: Image.Image, person: Image.Image, mask: Image.Image
     ) -> Image.Image:
-        import cv2
         result_np = np.array(result).astype(np.float32)
         person_np = np.array(person).astype(np.float32)
         mask_np = np.asarray(mask.convert("L")).astype(np.float32) / 255.0

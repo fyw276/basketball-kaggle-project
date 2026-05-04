@@ -6,6 +6,11 @@
 - make_clothing_mask(person_image, keypoints, category) -> Image.Image (L mode, 255=编辑区域)
   (内置：人脸椭圆保护 + Gaussian feathering 边缘羽化)
 
+改进（v2）：
+|- 删除矩形 mask，改用 polygon fillPoly 生成贴合人体轮廓的 mask
+|- 使用 mediapipe 关键点（肩膀+臀部）构建 polygon 顶点
+|- GaussianBlur 平滑 mask 边缘
+
 MediaPipe 支持:
 - MediaPipe Tasks API (0.10+, 推荐)
 - Legacy mp.solutions.pose (降级兼容)
@@ -19,6 +24,8 @@ from typing import Any
 import cv2  # type: ignore[import-untyped]
 import numpy as np
 from PIL import Image
+
+from app.services.body_mask import create_lower_body_polygon_mask, create_upper_body_polygon_mask
 
 # MediaPipe landmark 索引（PoseLandmark）
 _MP_NOSE = 0
@@ -274,9 +281,11 @@ def make_clothing_mask(
 ) -> Image.Image:
     """根据关键点生成衣服区域 mask（白色=需编辑，黑色=保留不动）。
 
-    改进版：
-    1. 若检测到人脸，额外挖出人脸椭圆保护区域（防止 diffusion 修改人脸）
-    2. 对 mask 边缘做 Gaussian feathering 减少边界伪影
+    改进版（v2）：
+    1. 删除矩形 mask，改用 polygon fillPoly 生成贴合人体轮廓的 mask
+    2. 使用 mediapipe 关键点（肩膀+臀部）构建 polygon 顶点
+    3. 对 mask 边缘做 Gaussian feathering 减少边界伪影
+    4. 若检测到人脸，额外挖出人脸椭圆保护区域（防止 diffusion 修改人脸）
 
     Args:
         person_image: 人物图（PIL RGB）。
@@ -290,24 +299,26 @@ def make_clothing_mask(
     """
     pw, ph = person_image.size
     cat = (category or "top").strip().lower()
-    mask_np = np.zeros((ph, pw), dtype=np.uint8)
+
+    mask_np: np.ndarray
 
     if keypoints:
-        top_box = _top_region(keypoints, pw, ph) if cat in {"top", "outfit"} else None
-        bottom_box = (
-            _bottom_region(keypoints, pw, ph) if cat in {"bottom", "skirt", "outfit"} else None
-        )
+        if cat in {"top", "outfit"}:
+            mask_np = create_upper_body_polygon_mask(keypoints, pw, ph, feather_radius=0)
+        elif cat in {"bottom", "skirt"}:
+            mask_np = create_lower_body_polygon_mask(keypoints, pw, ph, feather_radius=0)
+        else:
+            mask_np = create_upper_body_polygon_mask(keypoints, pw, ph, feather_radius=0)
     else:
-        top_box = _top_fallback(pw, ph) if cat in {"top", "outfit"} else None
-        bottom_box = _bottom_fallback(pw, ph) if cat in {"bottom", "skirt", "outfit"} else None
+        mask_np = np.zeros((ph, pw), dtype=np.uint8)
+        if cat in {"top", "outfit"}:
+            from app.services.body_mask import _upper_body_fallback
 
-    # 填充矩形（255 = 编辑区域）
-    if top_box:
-        x0, y0, x1, y1 = top_box
-        mask_np[y0:y1, x0:x1] = 255
-    if bottom_box:
-        x0, y0, x1, y1 = bottom_box
-        mask_np[y0:y1, x0:x1] = 255
+            mask_np = _upper_body_fallback(pw, ph, feather_radius=0)
+        elif cat in {"bottom", "skirt"}:
+            from app.services.body_mask import _lower_body_fallback
+
+            mask_np = _lower_body_fallback(pw, ph, feather_radius=0)
 
     # 人脸保护：检测人脸并挖出椭圆
     face_box = detect_face_zone(person_image)
@@ -320,100 +331,6 @@ def make_clothing_mask(
         mask_np = np.clip(mask_np, 0, 255).astype(np.uint8)
 
     return Image.fromarray(mask_np, mode="L")
-
-
-# ─── 上装区域 ───────────────────────────────────────────────────────────────
-
-
-def _top_region(
-    kpts: dict[str, tuple[float, float]], pw: int, ph: int
-) -> tuple[int, int, int, int] | None:
-    """从肩膀到腰部（髋部）的躯干矩形框。"""
-    ls = kpts.get("left_shoulder")
-    rs = kpts.get("right_shoulder")
-    lh = kpts.get("left_hip")
-    rh = kpts.get("right_hip")
-    le = kpts.get("left_elbow")
-    re = kpts.get("right_elbow")
-
-    shoulder_y = _avg_y(ls, rs)
-    hip_y = _avg_y(lh, rh)
-    if shoulder_y is None or hip_y is None:
-        return _top_fallback(pw, ph)
-
-    # 水平范围：以肘部延伸，确保袖子覆盖
-    x_pts = [p[0] for p in [ls, rs, le, re] if p is not None]
-    x0_n = max(0.0, min(x_pts) - 0.04)
-    x1_n = min(1.0, max(x_pts) + 0.04)
-
-    # 垂直范围：肩膀往上留空（增加头部空间，防止遮脸），往下延伸到髋部
-    y0_n = max(0.0, shoulder_y - 0.09)
-    y1_n = min(1.0, hip_y + 0.04)
-
-    if y1_n <= y0_n:
-        return _top_fallback(pw, ph)
-
-    x0 = _clamp_int(int(x0_n * pw), 0, pw - 2)
-    y0 = _clamp_int(int(y0_n * ph), 0, ph - 2)
-    x1 = _clamp_int(int(x1_n * pw), x0 + 2, pw)
-    y1 = _clamp_int(int(y1_n * ph), y0 + 2, ph)
-    return (x0, y0, x1, y1)
-
-
-def _top_fallback(pw: int, ph: int) -> tuple[int, int, int, int]:
-    """无关键点时的上装区域 fallback（比例估算）。"""
-    return (
-        _clamp_int(int(pw * 0.12), 0, pw - 2),
-        _clamp_int(int(ph * 0.12), 0, ph - 2),
-        _clamp_int(int(pw * 0.88), 2, pw),
-        _clamp_int(int(ph * 0.60), 2, ph),
-    )
-
-
-# ─── 下装区域 ───────────────────────────────────────────────────────────────
-
-
-def _bottom_region(
-    kpts: dict[str, tuple[float, float]], pw: int, ph: int
-) -> tuple[int, int, int, int] | None:
-    """从腰部（髋部）到踝部的下装矩形框。"""
-    lh = kpts.get("left_hip")
-    rh = kpts.get("right_hip")
-    la = kpts.get("left_ankle")
-    ra = kpts.get("right_ankle")
-    lk = kpts.get("left_knee")
-    rk = kpts.get("right_knee")
-
-    hip_y = _avg_y(lh, rh)
-    ankle_y = _avg_y(la, ra) or _avg_y(lk, rk)
-    if hip_y is None:
-        return _bottom_fallback(pw, ph)
-
-    x_pts = [p[0] for p in [lh, rh, la, ra] if p is not None]
-    x0_n = max(0.0, (min(x_pts) - 0.06) if x_pts else 0.16)
-    x1_n = min(1.0, (max(x_pts) + 0.06) if x_pts else 0.84)
-
-    y0_n = max(0.0, hip_y - 0.04)
-    y1_n = min(1.0, (ankle_y + 0.03) if ankle_y is not None else hip_y + 0.55)
-
-    if y1_n <= y0_n:
-        return _bottom_fallback(pw, ph)
-
-    x0 = _clamp_int(int(x0_n * pw), 0, pw - 2)
-    y0 = _clamp_int(int(y0_n * ph), 0, ph - 2)
-    x1 = _clamp_int(int(x1_n * pw), x0 + 2, pw)
-    y1 = _clamp_int(int(y1_n * ph), y0 + 2, ph)
-    return (x0, y0, x1, y1)
-
-
-def _bottom_fallback(pw: int, ph: int) -> tuple[int, int, int, int]:
-    """无关键点时的下装区域 fallback（比例估算）。"""
-    return (
-        _clamp_int(int(pw * 0.16), 0, pw - 2),
-        _clamp_int(int(ph * 0.44), 0, ph - 2),
-        _clamp_int(int(pw * 0.84), 2, pw),
-        _clamp_int(int(ph * 0.97), 2, ph),
-    )
 
 
 def get_body_bounds_from_keypoints(

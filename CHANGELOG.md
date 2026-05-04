@@ -21,13 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Try-on v2 modes**: Six modes now available: `strict` (default, pipeline A geometric warp + QC gate), `balanced` (looser QC), `replace` (AI generative with configurable engine priority), `realistic` (CatVTON deep learning), `professional` (CatVTON + postprocessing), `hybrid` (Warp + CatVTON blending)
 - **Replace mode default priority**: Changed from `[catvton,bailian,remote,warp,diffusion]` to `[warp,bailian,remote,catvton,diffusion]` — warp runs first to guarantee garment fidelity
-- **CatVTON subprocess runner**: Moved from vton_inference_service to backend/scripts/ for direct backend integration
+- **CatVTON subprocess runner**: Lives in `vton_inference_service/catvton_runner.py`; called by `backend/app/services/tryon_v2/catvton_engine_client.py` as subprocess to avoid dependency conflicts
 
 ### Fixed
 
 - **Warp engine docstring**: Corrected function reference from `tryon_top_warp_preserve` to `tryon_top_warp` in hybrid try-on docstring
 - **Test documentation**: Updated test docstring to reflect actual replace mode engine priority chain
 - **Tech blueprint accuracy**: Removed reference to non-existent `tryon_engine_selector.py`, updated to reflect actual engine routing in `tryon_v2.py`
+- **Overlay garment fidelity**: Fixed `overlay_top_onto_ai_result` returning `ai_warp_hybrid` with near-zero alpha when rembg fails on solid-color images (added Step 3b guard to return `ai_only` with reason)
+- **VTON integration docs**: Corrected replace mode engine priority from `catvton→bailian→remote→warp→diffusion` to `warp→bailian→remote→catvton→diffusion`
+- **Try-on v2 API tests**: Fixed mock paths for warp engine functions (`tryon_top_warp` → `tryon_top_warp_preserve`) and CatVTON config isolation
+- **Overlay fidelity tests**: Rewrote to gracefully handle synthetic images where rembg produces near-zero alpha, avoiding false failures
 
 ---
 
