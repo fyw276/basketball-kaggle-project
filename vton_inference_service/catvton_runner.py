@@ -443,7 +443,7 @@ def _make_garment_mask_rembg(
         gar_mask_resized = cv2.resize(
             gar_mask_np,
             (target_w, target_h),
-            interpolation=cv2.GAUSSIANBLUR if target_w > 16 else cv2.INTER_NEAREST,
+            interpolation=cv2.INTER_LINEAR if target_w > 16 else cv2.INTER_NEAREST,
         )
 
         # 如果目标尺寸足够大，用双线性插值
@@ -552,14 +552,15 @@ def _make_cloth_mask_mediapipe(
                 )
             except AttributeError as e:
                 # rembg 后端代码可能在某些 cv2 版本中崩溃
-                # 例如: "module 'cv2' has no attribute 'GAUSSIANBLUR'"
-                logger.warning(f"[GARMENT-MASK] rembg 崩溃 ({e}), fallback 到关键点矩形方案")
+                # 例如: cv2.resize 不支持某些插值常量
+                logger.warning("[GARMENT-MASK] rembg 崩溃 ({}), fallback 到关键点方案".format(e))
                 rembg_mask = None
             except Exception as e:
-                logger.warning(f"[GARMENT-MASK] rembg 分割异常 ({e}), fallback 到关键点矩形方案")
+                logger.warning("[GARMENT-MASK] rembg 分割异常 ({}), fallback 到关键点方案".format(e))
                 rembg_mask = None
             if rembg_mask is not None:
                 # rembg 分割成功，使用 rembg mask
+                logger.info("[GARMENT-MASK] rembg 精确分割成功!")
                 # Step 1: 形态学闭/开运算精细化边界（填补孔洞 + 去除毛刺）
                 rembg_mask = _refine_garment_mask_boundary(rembg_mask)
                 # Step 2: MediaPipe FaceDetector 精确人脸保护（优先，失败则降级到关键点方法）
@@ -751,7 +752,7 @@ def _apply_cloth_region(
     white_pixels = int(np.sum(combined > 0))
     white_ratio = white_pixels / max(1, total_pixels)
 
-    if white_ratio < 0.10:
+    if white_ratio < 0.20:
         logger.warning(
             f"MediaPipe segmentation too sparse (white_ratio={white_ratio:.3f}), "
             f"using keypoint polygon mask for cloth region"
@@ -1928,22 +1929,66 @@ def main():
         # Runner lives at: clothing-assistant/vton_inference_service/catvton_runner.py
         # Backend lives at:  clothing-assistant/backend/
         runner_dir = Path(__file__).resolve().parent  # vton_inference_service/
-        workspace = runner_dir.parent.parent          # clothing-assistant/
-        backend_path = workspace / "backend"
+        # Find project root: go up from vton_inference_service until we find backend/app
+        # This handles paths like D:\path\to\clothing-assistant\vton_inference_service
+        project_root = runner_dir
+        while project_root.name and not (project_root / "backend" / "app").exists():
+            parent = project_root.parent
+            if parent == project_root:
+                raise RuntimeError(
+                    f"Could not find project root (backend/app) from {runner_dir}. "
+                    "Please ensure catvton_runner.py is inside the clothing-assistant project."
+                )
+            project_root = parent
+
+        backend_path = project_root / "backend"
+        vton_service_path = project_root / "vton_inference_service"
         if backend_path.exists() and str(backend_path) not in sys.path:
-            sys.path.insert(0, str(backend_path))
+            # IMPORTANT: insert at 1 (NOT 0) so backend always takes precedence over
+            # CatVTON_full/ in import resolution. If CatVTON_full contains a file
+            # named "app.py", placing backend at index 0 would still get shadowed when
+            # CatVTON_full is inserted at index 0 below. By inserting backend at
+            # index 1, CatVTON_full goes to index 0 for its own imports, but backend
+            # is still checked first when resolving top-level packages like "app".
+            sys.path.insert(1, str(backend_path))
+            logger.info(f"Added backend to sys.path: {backend_path}")
+
+        # Also add vton_inference_service parent (project root) so it can be imported
+        # This is needed for: from vton_inference_service.catvton_engine import ...
+        if str(project_root) not in sys.path:
+            sys.path.insert(1, str(project_root))
+            logger.info(f"Added project root to sys.path: {project_root}")
 
         # ── 导入 CatVTON ────────────────────────────────────────────────
         catvton_path = args.catvton_path or os.environ.get("CATVTON_PATH", "")
-        sys.path.insert(0, catvton_path)
 
+        # 使用 importlib 动态导入 CatVTON，避免 catvton_path 污染 sys.path
+        # 防止 CatVTON_full/app.py 覆盖 backend/app/ 的导入
+        import importlib.util
+        pipeline_spec = importlib.util.spec_from_file_location(
+            "CatVTONPipeline",
+            os.path.join(catvton_path, "model", "pipeline.py")
+        )
+        if pipeline_spec is None or pipeline_spec.loader is None:
+            print(f"ERROR:CATVTON_NOT_AVAILABLE")
+            print(f"Cannot load CatVTON pipeline from {catvton_path}/model/pipeline.py")
+            sys.exit(10)
+
+        # 临时将 catvton_path 加入 sys.path 以便 CatVTON 内部模块导入
+        # 然后立即移除，防止后续导入被覆盖
+        sys.path.insert(0, catvton_path)
         try:
-            from model.pipeline import CatVTONPipeline
-        except ImportError as e:
+            pipeline_module = importlib.util.module_from_spec(pipeline_spec)
+            pipeline_spec.loader.exec_module(pipeline_module)
+            CatVTONPipeline = pipeline_module.CatVTONPipeline
+        except Exception as e:
             print(f"ERROR:CATVTON_NOT_AVAILABLE")
             print(f"CatVTON pipeline import failed: {e}")
-            print("Set --catvton-path to the CatVTON repository directory.")
             sys.exit(10)
+        finally:
+            # 立即移除 catvton_path，防止覆盖 backend/app/ 导入
+            if sys.path[0] == catvton_path:
+                sys.path.pop(0)
 
         # ── 加载图片 ────────────────────────────────────────────────────
         person_img = _load_image(person_path)
@@ -1992,7 +2037,21 @@ def main():
         print(f"[CATVTON-STEP] 正在加载 CatVTON Pipeline (precision={final_precision})...", flush=True)
         import os as _os
         from huggingface_hub import snapshot_download
-        from utils import init_weight_dtype, resize_and_crop, resize_and_padding
+
+        # 直接从 catvton_path 导入 utils 模块，避免 sys.path 污染
+        utils_spec = importlib.util.spec_from_file_location(
+            "catvton_utils",
+            os.path.join(catvton_path, "utils.py")
+        )
+        if utils_spec and utils_spec.loader:
+            utils_module = importlib.util.module_from_spec(utils_spec)
+            utils_spec.loader.exec_module(utils_module)
+            init_weight_dtype = utils_module.init_weight_dtype
+            resize_and_crop = utils_module.resize_and_crop
+            resize_and_padding = utils_module.resize_and_padding
+        else:
+            logger.error("Cannot load utils.py from CatVTON path")
+            sys.exit(1)
 
         # 模型路径检测：支持两种结构
         # 1. catvton_path/zhengchong_CatVTON/ (HuggingFace snapshot 格式)
@@ -2058,12 +2117,30 @@ def main():
                 logger.warning(f"torch.compile failed: {e}")
 
         # ── 新版衣服预处理：rembg 去背景 + bbox 裁剪 + 居中黑底 ──────────────
-        from app.services.garment_preprocess import preprocess_garment
+        # 修复：使用 importlib 直接导入 backend 的模块，避免被 CatVTON_full/app.py 遮挡
+        # Python 在搜索 "app" 模块时，会先找 app.py 文件（而不是 app/__init__.py）
+        # 因此 "from app.services.garment_preprocess" 会被 CatVTON_full/app.py 截获
+        # 解决方案：使用绝对导入绕过 sys.path 搜索
+        import importlib.util
+        garment_preprocess_path = backend_path / "app" / "services" / "garment_preprocess.py"
+        if garment_preprocess_path.exists():
+            spec = importlib.util.spec_from_file_location(
+                "garment_preprocess_module", garment_preprocess_path
+            )
+            garment_preprocess_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(garment_preprocess_module)
+            preprocess_garment = garment_preprocess_module.preprocess_garment
+            logger.info(f"Loaded garment_preprocess from {garment_preprocess_path}")
+        else:
+            raise FileNotFoundError(f"garment_preprocess.py not found at {garment_preprocess_path}")
         print(f"[CATVTON-STEP] 预处理衣服 (rembg alpha 去背景 + bbox 居中)...", flush=True)
         person_resized = resize_and_crop(person_img, (args.width, args.height))
         try:
             garment_clean_np = preprocess_garment(garment_img, canvas_size=512)
-            garment_resized = Image.fromarray(garment_clean_np, mode="RGB")
+            garment_clean = Image.fromarray(garment_clean_np, mode="RGB")
+            # CatVTON expects garment, person, mask all same size
+            # First pad to white background (CatVTON convention), then resize to target
+            garment_resized = resize_and_padding(garment_clean, (args.width, args.height))
         except Exception as e:
             logger.warning(f"衣服预处理失败 ({e})，使用原始图像")
             garment_resized = resize_and_padding(garment_img, (args.width, args.height))
@@ -2099,8 +2176,9 @@ def main():
         import torch
         from vton_inference_service.catvton_engine import CatVTONPipeline as _ExpectedPipeline
 
-        # ── 强制验证：pipeline 类型必须为 CatVTONPipeline ──────────────
-        if not isinstance(pipeline, _ExpectedPipeline):
+        # 注意：使用 importlib.util 动态加载的 CatVTONPipeline 与通过 sys.path 导入的不同，
+        # 因此无法使用 isinstance 检查。改用类型名称验证
+        if type(pipeline).__name__ != "CatVTONPipeline":
             raise TypeError(
                 f"Pipeline type mismatch: expected CatVTONPipeline, got {type(pipeline).__name__}. "
                 f"Model may not be loaded correctly."

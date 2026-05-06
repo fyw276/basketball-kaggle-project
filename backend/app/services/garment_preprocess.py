@@ -176,7 +176,7 @@ def _center_on_canvas(rgb: np.ndarray, canvas_size: int = 512) -> np.ndarray:
 
     resized = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
 
-    canvas = np.zeros((canvas_size, canvas_size, 3), dtype=np.uint8)
+    canvas = np.full((canvas_size, canvas_size, 3), 255, dtype=np.uint8)
     x_offset = (canvas_size - new_w) // 2
     y_offset = (canvas_size - new_h) // 2
     canvas[y_offset : y_offset + new_h, x_offset : x_offset + new_w] = resized

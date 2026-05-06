@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Warp engine docstring**: Corrected function reference from `tryon_top_warp_preserve` to `tryon_top_warp` in hybrid try-on docstring
+- **Hybrid mode docstring**: Corrected function reference from `tryon_top_warp` to `tryon_top_warp_preserve` in hybrid try-on docstring
 - **Test documentation**: Updated test docstring to reflect actual replace mode engine priority chain
 - **Tech blueprint accuracy**: Removed reference to non-existent `tryon_engine_selector.py`, updated to reflect actual engine routing in `tryon_v2.py`
 - **Overlay garment fidelity**: Fixed `overlay_top_onto_ai_result` returning `ai_warp_hybrid` with near-zero alpha when rembg fails on solid-color images (added Step 3b guard to return `ai_only` with reason)

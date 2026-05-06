@@ -51,6 +51,60 @@ def _clamp_int(v: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, int(v)))
 
 
+def _detect_pattern_strength(img: Image.Image) -> float:
+    """
+    Detect whether a garment image contains high-contrast patterns (checkered, striped, etc.)
+
+    that would be destroyed by aggressive brightness transfer.
+
+    Returns a score [0, 1]:
+      - 0.0 ~ 0.25: solid or low-contrast fabric → apply brightness transfer
+      - 0.25 ~ 0.60: moderate pattern (small dots, subtle stripes) → careful transfer
+      - 0.60 ~ 1.00: high-contrast pattern (checkered, bold stripes, plaid) → skip transfer
+
+    Method: Compare gradient energy at multiple scales to distinguish sharp patterns from noise.
+    High local variance in small neighborhoods with many edge pixels → pattern.
+    """
+    arr = np.asarray(img.convert("RGB"), dtype=np.float32)
+    h, w = arr.shape[:2]
+    if h < 16 or w < 16:
+        return 0.0
+
+    gray = arr.mean(axis=2)
+
+    # Multi-scale gradient energy: captures patterns at different scales
+    scores = []
+
+    # Small scale (4px): fine checkered / thin stripes
+    gy, gx = np.gradient(gray.astype(np.float32))
+    grad = np.sqrt(gx**2 + gy**2)
+    threshold = np.percentile(grad[grad > 0], 75)
+    edge_density_small = float((grad > threshold).mean())
+    scores.append(edge_density_small)
+
+    # Medium scale (8px): medium patterns
+    local_mean = np.array(
+        Image.fromarray(gray.astype(np.uint8)).filter(ImageFilter.BoxBlur(radius=4))
+    )
+    local_var = (gray - local_mean) ** 2
+    var_score = float(np.percentile(local_var, 95) / max(1, gray.var()))
+    scores.append(min(1.0, var_score))
+
+    # Check color variance per channel (high per-channel variance = colorful pattern)
+    channel_ranges = []
+    for c in range(3):
+        ch = arr[:, :, c]
+        ch_range = float(ch.max() - ch.min()) / 255.0
+        channel_ranges.append(ch_range)
+    color_variance = np.std(channel_ranges)
+    scores.append(min(1.0, color_variance * 1.5))
+
+    # Combined score: weighted average
+    combined = 0.5 * scores[0] + 0.3 * scores[1] + 0.2 * scores[2]
+
+    return float(np.clip(combined, 0.0, 1.0))
+
+
 def _pil_quad_warp(
     src_rgba: Image.Image, dst_size: tuple[int, int], quad: tuple[int, ...]
 ) -> Image.Image:
@@ -611,72 +665,84 @@ def tryon_top_warp(
     a = ImageChops.multiply(a, protect)
     layer = Image.merge("RGBA", (r, gg, b, a))
 
-    # ── Realism pass: blend garment into scene lighting + add subtle volume ──
-    try:
-        import cv2  # noqa: F401  # reserved for future enhancement
+    # ── Realism pass: LAB brightness transfer + fold lines + edge darkening ──
+    # For patterns (checkered/striped), we skip the LAB transfer but still apply
+    # fold lines + edge darkening since those are boundary-only effects (harmless).
+    _pattern_strength = _detect_pattern_strength(g)
+    _skip_lab_transfer = _pattern_strength > 0.25
+    if not _skip_lab_transfer or True:  # always run fold+edge
+        try:
+            import cv2  # noqa: F401
 
-        layer_np = np.array(layer)
-        base_np = np.array(base)
+            layer_np = np.array(layer)
 
-        # Blend garment brightness with base (person's body lighting)
-        # Get the body region under the garment for lighting reference
-        body_roi = base_np[y0:y1, x0:x1]
-        if body_roi.size > 0:
-            # Compute per-channel brightness of body region
-            body_lum = np.mean(body_roi.astype(float), axis=(0, 1))
-            # Compute garment brightness (solid foreground pixels)
-            fg_mask = layer_np[y0:y1, x0:x1, 3] > 200
-            if fg_mask.sum() > 0:
-                gar_lum = np.mean(layer_np[y0:y1, x0:x1][fg_mask].astype(float), axis=(0))
-                # Ratio-based brightness transfer: keep garment color, match scene brightness
-                blend_ratio = 0.72  # 72% garment original, 28% scene brightness
-                for c in range(3):
-                    if gar_lum[c] > 5:  # avoid division by near-zero
-                        adjusted = layer_np[y0:y1, x0:x1, c].astype(float)
-                        adjusted[fg_mask] = np.clip(
-                            adjusted[fg_mask] * (blend_ratio + 0.28 * body_lum[c] / gar_lum[c]),
-                            0,
-                            255,
-                        )
-                        layer_np[y0:y1, x0:x1, c] = adjusted.astype(np.uint8)
+            # ── LAB brightness transfer (only for solid-color garments) ──────────
+            if not _skip_lab_transfer:
+                base_np = np.array(base)
+                body_roi = base_np[y0:y1, x0:x1]
+                gar_roi = layer_np[y0:y1, x0:x1, :3]
+                fg_mask = layer_np[y0:y1, x0:x1, 3] > 200
 
-        # Subtle vertical fold lines to suggest fabric draping/volume
-        # Add very faint dark lines at ~1/3 and 2/3 of garment width
-        fold_positions = [int(itw * 0.33), int(itw * 0.67)]
-        fold_strength = 0.06  # very subtle
-        for fx in fold_positions:
-            abs_x = ox + min(fx, tw - 1)
-            if 0 < abs_x < pw - 1:
-                fade = max(0, 1.0 - abs(fx - itw / 2) / (itw * 0.25)) * fold_strength
-                if fade > 0.005:
-                    region = layer_np[oy : oy + th, max(0, abs_x - 1) : abs_x + 1]
-                    if region.size > 0:
-                        alpha_aware = region[:, :, 3:4].astype(float) / 255.0
-                        darken = (1.0 - fade) * alpha_aware
-                        region[:, :, :3] = np.clip(
-                            region[:, :, :3].astype(float) * darken, 0, 255
-                        ).astype(np.uint8)
+                if body_roi.size > 0 and fg_mask.sum() > 0:
+                    body_lab = cv2.cvtColor(body_roi.astype(np.uint8), cv2.COLOR_RGB2LAB).astype(
+                        np.float32
+                    )
+                    body_L_mean = body_lab[:, :, 0].mean()
 
-        # Edge softening: slightly darken the border of the garment
-        # to simulate subtle cast shadow from garment onto body
-        edge_px = max(2, int(feather_px * 1.5))
-        for dx in range(-edge_px, edge_px + 1):
-            for dy in range(-edge_px, edge_px + 1):
-                abs_x = ox + dx
-                abs_y = oy + dy
-                if 0 <= abs_x < pw and 0 <= abs_y < ph:
-                    alpha_at = layer_np[abs_y, abs_x, 3]
-                    if 10 < alpha_at < 245:
-                        edge_dist = max(abs(dx), abs(dy))
-                        falloff = max(0, 1.0 - edge_dist / float(edge_px)) * 0.12
-                        if falloff > 0.005:
-                            layer_np[abs_y, abs_x, :3] = np.clip(
-                                layer_np[abs_y, abs_x, :3].astype(float) * (1.0 - falloff), 0, 255
+                    gar_lab = cv2.cvtColor(gar_roi.astype(np.uint8), cv2.COLOR_RGB2LAB).astype(
+                        np.float32
+                    )
+
+                    gar_L_roi = gar_lab[:, :, 0][fg_mask]
+                    if len(gar_L_roi) > 0:
+                        gar_L_mean = float(gar_L_roi.mean())
+                        blend_ratio = 0.72
+                        if gar_L_mean > 2.0:
+                            L_scale = (body_L_mean * blend_ratio + 0.28 * gar_L_mean) / gar_L_mean
+                            L_scale = np.clip(L_scale, 0.70, 1.30)
+                            gar_lab[:, :, 0] = np.clip(gar_lab[:, :, 0] * L_scale, 0, 255)
+                            gar_rgb = cv2.cvtColor(gar_lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+                            roi_region = layer_np[y0:y1, x0:x1]
+                            roi_region[fg_mask] = gar_rgb[fg_mask]
+                            layer_np[y0:y1, x0:x1] = roi_region
+
+            # ── Fold lines: subtle vertical darkening for drape illusion ───────────
+            fold_positions = [int(itw * 0.33), int(itw * 0.67)]
+            fold_strength = 0.06
+            for fx in fold_positions:
+                abs_x = ox + min(fx, tw - 1)
+                if 0 < abs_x < pw - 1:
+                    fade = max(0, 1.0 - abs(fx - itw / 2) / (itw * 0.25)) * fold_strength
+                    if fade > 0.005:
+                        region = layer_np[oy : oy + th, max(0, abs_x - 1) : abs_x + 1]
+                        if region.size > 0:
+                            alpha_aware = region[:, :, 3:4].astype(float) / 255.0
+                            darken = (1.0 - fade) * alpha_aware
+                            region[:, :, :3] = np.clip(
+                                region[:, :, :3].astype(float) * darken, 0, 255
                             ).astype(np.uint8)
 
-        layer = Image.fromarray(layer_np, mode="RGBA")
-    except Exception:
-        pass  # If realism pass fails, fall back to basic composite
+            # ── Edge darkening: simulate cast shadow from garment onto body ────────
+            edge_px = max(2, int(feather_px * 1.5))
+            for dx in range(-edge_px, edge_px + 1):
+                for dy in range(-edge_px, edge_px + 1):
+                    abs_x = ox + dx
+                    abs_y = oy + dy
+                    if 0 <= abs_x < pw and 0 <= abs_y < ph:
+                        alpha_at = layer_np[abs_y, abs_x, 3]
+                        if 10 < alpha_at < 245:
+                            edge_dist = max(abs(dx), abs(dy))
+                            falloff = max(0, 1.0 - edge_dist / float(edge_px)) * 0.12
+                            if falloff > 0.005:
+                                layer_np[abs_y, abs_x, :3] = np.clip(
+                                    layer_np[abs_y, abs_x, :3].astype(float) * (1.0 - falloff),
+                                    0,
+                                    255,
+                                ).astype(np.uint8)
+
+            layer = Image.fromarray(layer_np, mode="RGBA")
+        except Exception:
+            pass  # If realism pass fails, keep original layer intact
 
     out = Image.alpha_composite(base, layer).convert("RGB")
     engine_tag = "top_warp_v2_pose" if _used_pose else "top_warp_v1_gradient"
@@ -1249,9 +1315,9 @@ def tryon_hybrid_warp_catvton(
     Warp + CatVTON 两阶段混合试衣。
 
     策略：
-      1. Stage 1 (Warp): tryon_top_warp / tryon_pants_warp
-         → 像素级保真的衣服贴在人物身上
-      2. Stage 3 (Blend): overlay_draping_from_ai
+      1. Stage 1 (Warp): tryon_top_warp_preserve / tryon_skirt_warp / tryon_pants_warp
+         → 像素级保真的衣服贴在人物身上（保留原始颜色/图案）
+      2. Stage 2 (Blend): overlay_draping_from_ai
          → 将 CatVTON 产生的真实光影/阴影/褶皱叠加到 Warp 结果上
          → 衣服像素 100% 保留（颜色/图案/纹理完全来自原始衣服图）
 
