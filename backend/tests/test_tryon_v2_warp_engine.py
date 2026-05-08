@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PIL import Image
 
-from app.services.tryon_v2.warp_engine import tryon_pants_warp, tryon_top_warp
+from app.services.tryon_v2.warp_engine import tryon_pants_warp, tryon_top_warp_preserve
 
 
 def test_tryon_pants_warp_returns_same_size_and_preserves_upper_region_reasonably():
@@ -39,7 +39,7 @@ def test_tryon_top_warp_preserves_head_region_and_changes_torso():
         for y in range(30, 290):
             garment.putpixel((x, y), (40, 40, 40))
 
-    out, meta = tryon_top_warp(person_image=person, garment_image=garment)
+    out, meta = tryon_top_warp_preserve(person_image=person, garment_image=garment)
     assert out.size == person.size
     assert meta.engine.startswith("top_warp")
 

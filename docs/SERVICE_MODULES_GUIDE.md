@@ -1,6 +1,6 @@
 # 服务模块架构与实现指南
 
-**最后更新**: 2026/04/15 | **版本**: 1.0
+**最后更新**: 2026/05/07 | **版本**: 1.1
 
 ## 目录
 
@@ -32,6 +32,19 @@ FastAPI Application (main.py)
 │   │   └── cache_service.py (识别结果缓存)
 │   ├── 外源服务集成
 │   │   └── qwen_client.py (LLM 意图分类)
+│   ├── 虚拟试衣 v2 服务 (tryon_v2/)
+│   │   ├── pipeline_a.py         (方案 A 主管道)
+│   │   ├── input_gate.py        (输入门禁 QC)
+│   │   ├── warp_engine.py       (几何贴合引擎)
+│   │   ├── qc.py               (质量评分)
+│   │   ├── postprocess.py      (后处理增强)
+│   │   ├── preprocess.py       (衣物预处理)
+│   │   ├── pose_utils.py      (姿态关键点)
+│   │   ├── garment_struct.py   (衣物结构化)
+│   │   ├── catvton_engine_client.py (CatVTON 客户端)
+│   │   ├── occlusion_blend.py  (遮挡混合)
+│   │   ├── realism_engine.py   (真实感引擎)
+│   │   └── professional_tryon.py (专业模式)
 │   └── 其他服务 (auth, storage, etc.)
 └── Database & Models
 ```
@@ -242,6 +255,164 @@ with get_qwen_client() as client:
 AI_RECOMMENDER_API_BASE_URL=https://api.qwen.com/v1
 AI_RECOMMENDER_API_KEY=sk-xxxxx
 ```
+
+### 9. 虚拟试衣 v2 服务 (`tryon_v2/`)
+
+`backend/app/services/tryon_v2/` 是虚拟试衣 v2 的核心引擎包，提供六种试衣模式（strict/balanced/replace/realistic/professional/hybrid）。
+
+#### 9.1 `pipeline_a.py` — 方案 A 主管道
+
+```python
+from app.services.tryon_v2 import run_pipeline_a
+
+result = run_pipeline_a(
+    person_image=person_img,
+    garment_image=garment_img,
+    garment_category="top",
+    strict_identity=True,
+)
+# result: {"status": "success"|"error", "result_image": PIL.Image, ...}
+```
+
+方案 A（strict/balanced 模式）：几何贴合 + QC 门禁，平衡速度与质量。
+路由到 `warp_engine.py` 的 `tryon_top_warp` / `tryon_skirt_warp` / `tryon_pants_warp`。
+
+#### 9.2 `input_gate.py` — 输入门禁评估
+
+```python
+from app.services.tryon_v2.input_gate import evaluate_input_gate
+
+gate = evaluate_input_gate(
+    person_image=person_img,
+    garment_image=garment_img,
+    garment_category="top",
+    strict=True,
+    thresholds={"full_body": 0.55, "leg_visibility": 0.45, ...},
+)
+# gate.passed: bool, gate.scores: dict, gate.error_code: str
+```
+
+评估全身可见度 / 腿部可见度 / 正面姿态 / 商品正面度，分数低于阈值则拒绝试衣请求。
+
+#### 9.3 `warp_engine.py` — 几何贴合引擎
+
+```python
+from app.services.tryon_v2.warp_engine import (
+    tryon_top_warp,           # 上装贴合（带 LAB 亮度转移 + 褶皱 + 边缘暗化）
+    tryon_top_warp_preserve,  # 上装贴合（无 realism pass，纯像素保真）
+    tryon_skirt_warp,         # 裙装贴合
+    tryon_pants_warp,         # 下装贴合（双阶段膝关节感知变形）
+    tryon_hybrid_warp_catvton, # Warp + CatVTON 两阶段混合
+    overlay_draping_from_ai,   # AI 光影叠加（衣服像素 100% 保留）
+    overlay_top_onto_ai_result, # CatVTON 结果注入原始衣服像素
+)
+```
+
+关键特性：
+- MediaPipe 关键点优先路径（肩膀/臀部/膝盖/踝关节）
+- 梯度能量 fallback（无 MediaPipe 时）
+- 双阶段膝关节感知下装变形（保持裤腿图案对称）
+- 透视梯形变形（肩宽 → 腰宽，模拟 3D 贴合感）
+- LAB 亮度转移 + 折痕线 + 边缘暗化（solid-color 衣服）
+- 图案强度检测（`_detect_pattern_strength`）：格子/条纹衣服跳过亮度转移
+
+#### 9.4 `qc.py` — 质量评分
+
+```python
+from app.services.tryon_v2.qc import evaluate_qc
+
+qc = evaluate_qc(person, result, threshold=0.6)
+# qc.passed: bool
+# qc.scores: {identity_preserve_score, boundary_artifact_score, occlusion_validity_score, qc_aggregate_score}
+```
+
+通过 SSIM 类指标检测身份保真度 / 边缘伪影 / 遮挡有效性。
+
+#### 9.5 `preprocess.py` — 衣物预处理
+
+```python
+from app.services.tryon_v2.preprocess import preprocess_garment_image
+
+r = preprocess_garment_image(garment_img)
+# r.image: PIL.Image (白底标准化图)
+# r.tryon_category: "top"|"bottom"|"skirt"|"unknown"
+# r.confidence: float
+```
+
+自动去背景（rembg） + 白底合成 + 自动品类识别 + 围巾/accessory 形状检测。
+
+#### 9.6 `postprocess.py` — 后处理增强
+
+```python
+from app.services.tryon_v2.postprocess import enhance_tryon_result, quick_enhance
+
+enhanced = enhance_tryon_result(result, person, original_garment, strength="medium")
+```
+
+`quick_enhance` 用于 CatVTON 输出（尺寸可能与输入不同）；`enhance_tryon_result` 用于 warp 输出。
+
+#### 9.7 `catvton_engine_client.py` — CatVTON 本地引擎客户端
+
+```python
+from app.services.tryon_v2.catvton_engine_client import call_local_catvton
+
+upstream = await call_local_catvton(
+    garment_bytes=garment_jpg,
+    person_bytes=person_jpg,
+    garment_category="upper",
+    debug_dir=debug_session_dir,
+    preprocess_only=False,
+)
+```
+
+通过子进程调用 `vton_inference_service/catvton_runner.py`，支持白盒调试（`--debug-dir`）和预处理模式（`--preprocess-only`）。
+
+#### 9.8 `garment_struct.py` — 衣物结构化数据
+
+```python
+from app.services.tryon_v2.garment_struct import cutout_garment_rgba
+
+cutout = cutout_garment_rgba(garment_img)
+# cutout.cropped: PIL.Image (去背景 RGBA)
+```
+
+使用 rembg 或 MobileSAM 进行精准去背景。
+
+#### 9.9 `pose_utils.py` — 姿态关键点工具
+
+```python
+from app.services.tryon_v2.pose_utils import detect_pose_keypoints, get_body_bounds_from_keypoints
+
+kpts = detect_pose_keypoints(person_img)
+# kpts: {"left_shoulder": (x_norm, y_norm), ...} 或 None
+
+bounds = get_body_bounds_from_keypoints(kpts, w, h, "top")
+# bounds: {"valid": bool, "x0", "x1", "neck_y", "waist_y", ...}
+```
+
+使用 MediaPipe PoseLandmarker，fallback 到 rembg 衣服分割 + 关键点映射。
+
+#### 9.10 `occlusion_blend.py` — 遮挡区域混合
+
+```python
+from app.services.tryon_v2.occlusion_blend import build_change_mask, occlusion_validity_score
+
+mask = build_change_mask(person, result)
+score = occlusion_validity_score(person, result)
+```
+
+用于 QC 模块：检测试穿后图像的变化区域，评估遮挡合理性。
+
+#### 9.11 六种试衣模式总结
+
+| 模式 | 引擎 | 特点 | 适用场景 |
+|------|------|------|---------|
+| `strict` | Warp + QC | 几何贴合 + 门禁，身份保护 | 日常快速预览 |
+| `balanced` | Warp + QC | 宽松 QC | 快速预览 |
+| `replace` | AI 生成（warp→bailian→remote→catvton→diffusion） | 像素级衣服保真 + AI 真实感 | 需要真实感时 |
+| `realistic` | CatVTON | 深度学习，真实褶皱光照，图案保护注入 | 商品展示 |
+| `professional` | CatVTON + 后处理 | CatVTON + 质量评分，图案保护注入 (alpha=0.92) | 专业应用 |
+| `hybrid` | Warp + CatVTON + overlay_draping | 饱和度感知 drape_alpha，warp 保颜色 CatVTON 提供真实感 | 彩色高饱和度衣物 |
 
 ## 集成指南
 
@@ -498,3 +669,6 @@ logger.error(f"Batch processing failed: {e}")
 - [API 合约](API_CONTRACT_v1.0.md)
 - [后端就绪](BACKEND_READY.md)
 - [配置指南](../backend/README.md)
+- [VTON 集成](VTON_INTEGRATION.md)
+- [CatVTON 后处理修复](CATVTON_POSTPROCESS_FIX_2026-04-29.md)
+- [VTON 交付说明](VTON_DELIVERY_2026-04.md)

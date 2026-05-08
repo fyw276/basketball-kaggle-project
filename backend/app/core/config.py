@@ -250,7 +250,7 @@ class Settings(BaseSettings):
     )
 
     # CatVTON (本地高质量试衣引擎)
-    # 推荐用于 product→person 场景，支持自动遮罩生成，8GB VRAM (bf16) 可运行
+    # 推荐用于 product→person 场景，支持自动遮罩生成，8GB VRAM (fp16) 可运行
     CATVTON_ENABLED: bool = Field(
         default=False,
         description="启用 CatVTON 作为本地试衣引擎（需安装 CatVTON 并配置 CATVTON_PATH）",
@@ -261,43 +261,43 @@ class Settings(BaseSettings):
     )
     CATVTON_WIDTH: int = Field(
         default=768,
-        description="CatVTON 输入图像宽度（768 标准和质量平衡）",
+        description="CatVTON 输入图像宽度（512 低显存 / 768 标准 / 1024 高质量）",
     )
     CATVTON_HEIGHT: int = Field(
         default=1024,
-        description="CatVTON 输入图像高度（1024 标准和质量平衡）",
+        description="CatVTON 输入图像高度（768 低显存 / 1024 标准 / 1280 高质量）",
     )
     CATVTON_STEPS: int = Field(
-        default=50,
-        description="CatVTON 推理步数（30-80，推荐 50）",
+        default=28,
+        description="CatVTON 推理步数（20=快速3-7min / 28=标准28步 / 50=高质量29min）",
     )
     CATVTON_GUIDANCE: float = Field(
         default=2.5,
-        description="CatVTON CFG 强度（2.0-3.0，推荐 2.5。越高服装保真度越高）",
+        description="CatVTON CFG 强度（1.5 低显存快速 / 2.0 标准 / 2.5 高保真）",
     )
     CATVTON_REPAINT: bool = Field(
         default=True,
         description="CatVTON 是否使用背景重绘（repaint 模式恢复原始背景）",
     )
     CATVTON_MIXED_PRECISION: str = Field(
-        default="bf16",
-        description="CatVTON 混合精度：bf16（推荐，~8GB VRAM）/ fp16 / no（fp32）",
+        default="fp16",
+        description="CatVTON 混合精度：fp16（推荐，~4-6GB VRAM）/ bf16（高质量，~8GB VRAM）/ no（fp32）",
     )
     CATVTON_TIMEOUT_SECONDS: int = Field(
-        default=2400,
-        description="CatVTON 单次推理超时（秒，50步约需 25-30 分钟，100步约需 50-60 分钟）",
+        default=900,
+        description="CatVTON 单次推理超时（秒，20步约需 3-7 分钟，50步约需 25-30 分钟）",
     )
     CATVTON_DEBUG_DIR: str = Field(
         default="",
         description="保存 CatVTON 调试中间产物（mask、骨架图等）的目录，为空则不保存",
     )
     CATVTON_CPU_OFFLOAD: bool = Field(
-        default=False,
+        default=True,
         description="启用 CPU Offload 以减少 VRAM 占用（更慢但支持更小显存）",
     )
     # ─── 极限 VRAM 优化配置（8GB 及以下显存推荐全部开启）─────────────────
     CATVTON_FORCE_FP16: bool = Field(
-        default=False,
+        default=True,
         description="强制使用 fp16 替代 bf16（8GB VRAM 建议开启，节省约 2GB）",
     )
     CATVTON_ENABLE_VAE_SLICING: bool = Field(

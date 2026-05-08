@@ -1,0 +1,9 @@
+{
+  "repaint": true,
+  "total_time_s": 1778075456.09,
+  "torch_compile": false,
+  "applied_optimizations": [
+    "attention_slicing_auto",
+    "flash_attention_fallback"
+  ]
+}

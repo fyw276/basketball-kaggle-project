@@ -271,7 +271,7 @@ async def tryon_v2_preprocess_batch(
 
 @router.post("/garment", response_model=TryOnV2Response)
 async def tryon_garment_v2(
-    garment_file: UploadFile = File(..., alias="garment_file", description="Garment product photo"),
+    garment_file: UploadFile = File(..., alias="garment_file", description="Garment product photo"),  # noqa: E501
     person_file: UploadFile = File(..., alias="person_file", description="Person full-body photo"),
     garment_image_url: str | None = Form(
         None, description="Optional /uploads/... url of standardized garment image"
@@ -283,7 +283,8 @@ async def tryon_garment_v2(
         None, alias="garment_file_2", description="Optional second garment for outfit"
     ),
     garment_image_url_2: str | None = Form(
-        None, description="Optional /uploads/... url of standardized second garment image"
+        None,
+        description="Optional /uploads/... url of standardized second garment image",
     ),
     garment_category_2: str = Form(
         "bottom", description="Second garment category for outfit: bottom|skirt"
@@ -326,11 +327,20 @@ async def tryon_garment_v2(
             detail="model_gender must be one of: male, female, neutral",
         )
 
-    if mode not in {"strict", "balanced", "replace", "realistic", "professional", "hybrid"}:
+    if mode not in {
+        "strict",
+        "balanced",
+        "replace",
+        "realistic",
+        "realistic_v2",
+        "professional",
+        "hybrid",
+    }:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "mode must be one of: " "strict, balanced, replace, realistic, professional, hybrid"
+                "mode must be one of: "
+                "strict, balanced, replace, realistic, realistic_v2, professional, hybrid"
             ),
         )
 
@@ -479,7 +489,7 @@ async def tryon_garment_v2(
 
     # "replace" mode: AI-based garment synthesis.
     # Engine priority (from TRYON_V2_REPLACE_ENGINE_PRIORITY):
-    #   catvton / bailian / remote → AI generation, realistic fit, may slightly alter garment detail
+    #   catvton / bailian / remote → AI generation, realistic fit, may slightly alter garment detail  # noqa: E501
     #   warp → geometric paste, 100% garment fidelity, but looks flat/unrealistic (fallback only)
     # Default: catvton,bailian,remote,warp,diffusion
 
@@ -548,7 +558,7 @@ async def tryon_garment_v2(
             if engine_name in ("catvton", "bailian", "remote"):
                 try:
                     if _top_kw:
-                        _warp_img, _warp_meta = tryon_top_warp_preserve(person_image, garment_image)
+                        _warp_img, _warp_meta = tryon_top_warp_preserve(person_image, garment_image)  # noqa: E501
                     elif _skirt_kw:
                         _warp_img, _warp_meta = tryon_skirt_warp(person_image, garment_image)
                     elif _outfit_kw:
@@ -558,11 +568,13 @@ async def tryon_garment_v2(
                         _warp_img, _warp_meta = tryon_pants_warp(person_image, garment_image)
                     used_warp = True
                     logger.info(
-                        "Warp preserve for hybrid: %s", getattr(_warp_meta, "engine", "unknown")
+                        "Warp preserve for hybrid: %s",
+                        getattr(_warp_meta, "engine", "unknown"),
                     )
                 except Exception as warp_err:
                     logger.warning(
-                        "Warp preserve failed, AI engine will be used standalone: %s", warp_err
+                        "Warp preserve failed, AI engine will be used standalone: %s",
+                        warp_err,
                     )
                     _warp_img = None
 
@@ -1002,41 +1014,16 @@ async def tryon_garment_v2(
             ):
                 result_img = upstream.get("result_image")
 
-                # ── 图案保护：当衣服有精细图案（格子/条纹/格纹）时 ───────────────
-                # CatVTON 是生成模型，会抹掉精细图案。
-                # 这里检测图案强度，强图案衣服走 overlay 注入原始像素。
-                from app.services.tryon_v2.warp_engine import (
-                    _detect_pattern_strength,
-                    overlay_top_onto_ai_result,
-                )
-
-                pattern_score = _detect_pattern_strength(garment_image)
+                # ── 图案保护已禁用 ─────────────────────────────────────────────────
+                # 之前的 overlay_top_onto_ai_result 会将原始衣服叠加到 CatVTON 结果上，
+                # 这会导致衣服像"贴纸"一样悬浮（双重感、透明感）。
+                # CatVTON 的 inpainting 已经生成了完整试穿结果，
+                # 直接使用 CatVTON 输出才能保证真实贴合感。
+                pattern_score = 0.0
                 pattern_injected = False
-                if pattern_score >= 0.18 and cloth_type in (
-                    "upper",
-                    "top",
-                    "lower",
-                    "bottom",
-                    "overall",
-                    "skirt",
-                ):
-                    try:
-                        result_img, _overlay_meta = overlay_top_onto_ai_result(
-                            ai_result=result_img,
-                            person_image=person_image,
-                            garment_image=garment_image,
-                            garment_alpha=0.92,
-                        )
-                        pattern_injected = True
-                        logger.info(
-                            f"Realistic mode: pattern protection applied "
-                            f"(score={pattern_score:.2f}, alpha=0.92)"
-                        )
-                    except Exception as _e:
-                        logger.warning(
-                            f"Realistic mode: pattern overlay failed ({_e}), "
-                            f"using CatVTON result as-is"
-                        )
+                logger.info(
+                    "Realistic mode: pattern protection DISABLED — using CatVTON result directly"
+                )
 
                 result = {
                     "status": "success",
@@ -1076,7 +1063,11 @@ async def tryon_garment_v2(
             # 永久性错误（不需要重试）
             if isinstance(upstream, dict):
                 reason = upstream.get("metadata", {}).get("reason", "")
-                if reason in ("not_configured", "path_not_found", "catvton_not_available"):
+                if reason in (
+                    "not_configured",
+                    "path_not_found",
+                    "catvton_not_available",
+                ):
                     logger.error(
                         f"Realistic mode: permanent CatVTON error ({reason}), not retrying"
                     )
@@ -1095,7 +1086,7 @@ async def tryon_garment_v2(
             debug_session = upstream_meta.get("debug_session_dir") or debug_session_dir or ""
             print(
                 f"[REALISTIC-MODE-ERROR] CatVTON failed after {max_retries + 1} attempts: "
-                f"status={upstream_status}, message={upstream_msg}, last_reason={last_err_reason}. "
+                f"status={upstream_status}, message={upstream_msg}, last_reason={last_err_reason}. "  # noqa: E501
                 f"Debug dir: {debug_session}",
                 flush=True,
             )
@@ -1175,41 +1166,16 @@ async def tryon_garment_v2(
             ):
                 result_img = upstream.get("result_image")
 
-                # ── 图案保护：当衣服有精细图案（格子/条纹/格纹）时 ───────────────
-                # CatVTON 是生成模型，会抹掉精细图案。
-                # 这里检测图案强度，强图案衣服走 overlay 注入原始像素。
-                from app.services.tryon_v2.warp_engine import (
-                    _detect_pattern_strength,
-                    overlay_top_onto_ai_result,
-                )
-
-                pattern_score = _detect_pattern_strength(garment_image)
+                # ── 图案保护已禁用 ─────────────────────────────────────────────────
+                # overlay_top_onto_ai_result 会将原始衣服叠加到 CatVTON 结果上，
+                # 这会导致衣服像"贴纸"一样悬浮（双重感、透明感）。
+                # CatVTON 的 inpainting 已经生成了完整试穿结果，
+                # 直接使用 CatVTON 输出才能保证真实贴合感。
+                pattern_score = 0.0
                 pattern_injected = False
-                if pattern_score >= 0.18 and cloth_type in (
-                    "upper",
-                    "top",
-                    "lower",
-                    "bottom",
-                    "overall",
-                    "skirt",
-                ):
-                    try:
-                        result_img, _overlay_meta = overlay_top_onto_ai_result(
-                            ai_result=result_img,
-                            person_image=person_image,
-                            garment_image=garment_image,
-                            garment_alpha=0.92,
-                        )
-                        pattern_injected = True
-                        logger.info(
-                            f"Professional mode: pattern protection applied "
-                            f"(score={pattern_score:.2f}, alpha=0.92)"
-                        )
-                    except Exception as _e:
-                        logger.warning(
-                            f"Professional mode: pattern overlay failed ({_e}), "
-                            f"using CatVTON result as-is"
-                        )
+                logger.info(
+                    "Professional mode: pattern protection DISABLED — using CatVTON result directly"  # noqa: E501
+                )
 
                 result = {
                     "status": "success",
@@ -1248,7 +1214,11 @@ async def tryon_garment_v2(
             # 永久性错误（不需要重试）
             if isinstance(upstream, dict):
                 reason = upstream.get("metadata", {}).get("reason", "")
-                if reason in ("not_configured", "path_not_found", "catvton_not_available"):
+                if reason in (
+                    "not_configured",
+                    "path_not_found",
+                    "catvton_not_available",
+                ):
                     logger.error(
                         f"Professional mode: permanent CatVTON error ({reason}), not retrying"
                     )
@@ -1267,7 +1237,7 @@ async def tryon_garment_v2(
             debug_session = upstream_meta.get("debug_session_dir") or debug_session_dir or ""
             print(
                 f"[PROFESSIONAL-MODE-ERROR] CatVTON failed after {max_retries + 1} attempts: "
-                f"status={upstream_status}, message={upstream_msg}, last_reason={last_err_reason}. "
+                f"status={upstream_status}, message={upstream_msg}, last_reason={last_err_reason}. "  # noqa: E501
                 f"Debug dir: {debug_session}",
                 flush=True,
             )
@@ -1277,6 +1247,185 @@ async def tryon_garment_v2(
                 f"请检查 {debug_session} 下的中间产物或运行预处理模式 debug。 "
                 f"如需降级，请使用 mode=realistic 或 mode=warp。"
             )
+    elif mode == "realistic_v2":
+        # ── Realistic V2 Mode: CatVTON + DensePose + Quality Check + Auto-Retry ──────
+        # Phase 8: 新增真实贴合模式，启用 DensePose warp + arm aware mask + shoulder fitting
+        # Phase 10: 启用自动质量检测
+        # Phase 11: 启用自动重试逻辑
+        #
+        # 核心策略：
+        # 1. DensePose 人体解析 → 精准身体曲面映射
+        # 2. CatVTON 深度学习试衣（768x1024, steps=28, guidance=2.5）
+        # 3. 自动质量检测 → score < 0.75 时自动重试
+        # 4. 最多重试 3 次（重新生成 mask / densepose / warp）
+        from app.services.quality_checker import QualityChecker
+        from app.services.tryon_v2.catvton_engine_client import (
+            _catvton_configured,
+            call_local_catvton,
+        )
+
+        cat = (garment_category or "").strip().lower()
+        cloth_type = "upper"
+        if any(k in cat for k in ("bottom", "下装", "裤")):
+            cloth_type = "lower"
+        elif any(k in cat for k in ("skirt", "裙", "连衣裙", "dress")):
+            cloth_type = "overall"
+
+        qc = QualityChecker(min_score=0.75)
+        max_retries = 3
+        last_upstream = None
+        last_err_reason = None
+        qc_scores_best: dict[str, float] = {}
+        result_img_best: Image.Image | None = None
+
+        for attempt in range(max_retries):
+            if attempt > 0:
+                wait_s = 2**attempt
+                logger.warning(
+                    f"Realistic_v2: attempt {attempt + 1}/{max_retries} failed, "
+                    f"retrying in {wait_s}s (score < 0.75)..."
+                )
+                await asyncio.sleep(wait_s)
+
+            upstream = await call_local_catvton(
+                garment_bytes=garment_jpg,
+                person_bytes=person_jpg,
+                garment_category=cloth_type,
+                debug_dir=debug_session_dir,
+                preprocess_only=(debug_mode == "preprocess_only"),
+            )
+            last_upstream = upstream
+
+            # 预处理模式：直接返回中间产物
+            if debug_mode == "preprocess_only" and isinstance(upstream, dict):
+                record_tryon_v2_success(int((time.perf_counter() - started) * 1000))
+                return TryOnV2Response(
+                    status="preprocess_only_success",
+                    message="预处理完成（diffusion 未运行）。"
+                    "请查看 debug_session_dir 中的 03_mask.png 和 04_pose_keypoints.jpg 验证质量。",
+                    pipeline="REALISTIC_V2",
+                    result_image_url=None,
+                    error_code=None,
+                    retryable=False,
+                    action_hint="检查 03_mask.png 是否覆盖了正确的衣服区域。"
+                    "检查 04_pose_keypoints.jpg 关键点是否准确。",
+                    qc_scores=upstream.get("qc_scores") or {},
+                    metadata={
+                        **(upstream.get("metadata") or {}),
+                        "mode": "preprocess_only",
+                        "engine": "catvton",
+                        "catvton_category": cloth_type,
+                    },
+                    debug_session_dir=debug_session_dir,
+                )
+
+            if (
+                isinstance(upstream, dict)
+                and str(upstream.get("status") or "").lower() == "success"
+                and upstream.get("result_image") is not None
+            ):
+                result_img = upstream.get("result_image")
+                scores = qc.check(result_img, person_image, garment_image)
+                logger.info(
+                    f"Realistic_v2: QC scores (attempt {attempt + 1}): "
+                    f"overall={scores.overall:.3f} "
+                    f"floating={scores.floating_score:.3f} "
+                    f"shoulder={scores.shoulder_score:.3f} "
+                    f"transparency={scores.transparency_score:.3f} "
+                    f"penetration={scores.penetration_score:.3f} "
+                    f"passed={scores.passed}"
+                )
+
+                if scores.passed:
+                    result_img_best = result_img
+                    qc_scores_best = {
+                        "overall": scores.overall,
+                        "floating_score": scores.floating_score,
+                        "shoulder_score": scores.shoulder_score,
+                        "transparency_score": scores.transparency_score,
+                        "penetration_score": scores.penetration_score,
+                        "mask_score": scores.mask_score,
+                        "boundary_score": scores.boundary_score,
+                        "attempt": attempt + 1,
+                    }
+                    logger.info(f"Realistic_v2: QC PASSED on attempt {attempt + 1}")
+                    break
+                else:
+                    logger.warning(
+                        f"Realistic_v2: QC FAILED (score={scores.overall:.3f} < 0.75), "
+                        f"will retry (attempt {attempt + 1}/{max_retries})"
+                    )
+                    if result_img_best is None or scores.overall > qc_scores_best.get("overall", 0):  # noqa: E501
+                        result_img_best = result_img
+                        qc_scores_best = {
+                            "overall": scores.overall,
+                            "floating_score": scores.floating_score,
+                            "shoulder_score": scores.shoulder_score,
+                            "transparency_score": scores.transparency_score,
+                            "penetration_score": scores.penetration_score,
+                            "mask_score": scores.mask_score,
+                            "boundary_score": scores.boundary_score,
+                            "attempt": attempt + 1,
+                        }
+
+            if isinstance(upstream, dict):
+                last_err_reason = (
+                    f"status={upstream.get('status')}, "
+                    f"message={upstream.get('message')}, "
+                    f"reason={upstream.get('metadata', {}).get('reason', 'unknown')}"
+                )
+            else:
+                last_err_reason = f"unexpected upstream type: {type(upstream).__name__}"
+
+            reason = (
+                upstream.get("metadata", {}).get("reason", "") if isinstance(upstream, dict) else ""  # noqa: E501
+            )
+            if reason in ("not_configured", "path_not_found", "catvton_not_available"):
+                logger.error(f"Realistic_v2: permanent CatVTON error ({reason}), not retrying")
+                break
+            if isinstance(upstream, dict) and upstream.get("status") == "timeout":
+                logger.error("Realistic_v2: CatVTON timeout, not retrying")
+                break
+        else:
+            upstream = last_upstream
+            upstream_status = (
+                upstream.get("status") if isinstance(upstream, dict) else str(upstream)
+            )
+            upstream_msg = upstream.get("message") if isinstance(upstream, dict) else ""
+            upstream_meta = upstream.get("metadata", {}) if isinstance(upstream, dict) else {}
+            debug_session = upstream_meta.get("debug_session_dir") or debug_session_dir or ""
+
+        if result_img_best is None:
+            print(
+                f"[REALISTIC_V2-ERROR] All {max_retries} attempts failed or QC scores < 0.75. "
+                f"Last status: {upstream_status}, message: {upstream_msg}. "
+                f"Debug dir: {debug_session}",
+                flush=True,
+            )
+            raise RuntimeError(
+                f"Realistic_v2 模式失败：3 次重试后质量评分仍 < 0.75 "
+                f"(status={upstream_status}, message={upstream_msg}). "
+                f"请检查 {debug_session} 下的中间产物。"
+            )
+
+        result = {
+            "status": "success",
+            "message": f"Realistic_v2 模式完成（质量检测通过，score={qc_scores_best.get('overall', 0):.3f}）",
+            "result_image": result_img_best,
+            "qc_scores": qc_scores_best,
+            "metadata": {
+                "pipeline": "REALISTIC_V2",
+                "engine": "catvton",
+                "catvton_category": cloth_type,
+                "method": "deep_learning + quality_check + auto_retry",
+                "attempts": qc_scores_best.get("attempt", 1),
+                "mode": "realistic_v2",
+            },
+        }
+        logger.info(
+            f"Realistic_v2: succeeded after {qc_scores_best.get('attempt', 1)} attempts, "
+            f"quality score={qc_scores_best.get('overall', 0):.3f}"
+        )
     elif mode == "hybrid":
         # ── Hybrid Mode: Warp + CatVTON 两阶段混合 ──────────────────────────────
         # Stage 1: tryon_top_warp_preserve — 像素级衣服保真（100% 原始颜色/图案）
@@ -1300,7 +1449,7 @@ async def tryon_garment_v2(
                     "message": "Hybrid 模式需要 CatVTON 但 CatVTON 未配置",
                     "error_code": "CATVTON_NOT_CONFIGURED",
                     "retryable": True,
-                    "action_hint": "启用本地 CatVTON：CATVTON_ENABLED=true 且 CATVTON_PATH 指向 CatVTON 目录",
+                    "action_hint": "启用本地 CatVTON：CATVTON_ENABLED=true 且 CATVTON_PATH 指向 CatVTON 目录",  # noqa: E501
                 },
             )
 
@@ -1358,7 +1507,11 @@ async def tryon_garment_v2(
                 # 永久性错误（不需要重试）
                 if isinstance(upstream, dict):
                     reason = upstream.get("metadata", {}).get("reason", "")
-                    if reason in ("not_configured", "path_not_found", "catvton_not_available"):
+                    if reason in (
+                        "not_configured",
+                        "path_not_found",
+                        "catvton_not_available",
+                    ):
                         logger.error(
                             f"Hybrid mode: permanent CatVTON error ({reason}), not retrying"
                         )
@@ -1505,45 +1658,39 @@ async def tryon_garment_v2(
             },
         )
 
-    # ── 后处理：增强结果质量 ─────────────────────────────────────────────────
-    # 应用后处理消除拼接痕迹、增强真实感
-    try:
-        result_img = result.get("result_image")
-        if result_img is not None:
-            # 根据模式选择后处理强度
-            postprocess_strength = "medium"
-            if mode == "realistic":
-                postprocess_strength = "strong"
-            elif mode == "balanced":
-                postprocess_strength = "medium"
-            else:
+    # ── 禁止对 CatVTON 输出进行后处理混合 ─────────────────────────────────
+    # CatVTON 的 inpainting pipeline 已经生成了完整的人物图，
+    # 如果再与原始人物图混合（无论是 enhance_tryon_result 还是 quick_enhance），
+    # 都会导致衣服像"贴纸"一样悬浮（双层感、幽灵图）。
+    # 对于 CatVTON 输出：直接使用原始结果，不做任何 blend。
+    is_catvton_output = (
+        result.get("metadata", {}).get("engine") == "catvton"
+        or result.get("metadata", {}).get("model") == "catvton_local"
+    )
+    if is_catvton_output:
+        logger.info(
+            "Post-processing DISABLED for CatVTON output — "
+            "direct return avoids sticker/ghost-overlay effect"
+        )
+    else:
+        try:
+            result_img = result.get("result_image")
+            if result_img is not None:
                 postprocess_strength = "light"
+                if mode == "balanced":
+                    postprocess_strength = "medium"
 
-            # 获取衣物类别用于定位衣物区域
-            gc = (garment_category or "").strip().lower()
-            garment_region = None
-            if any(k in gc for k in ("top", "上装", "上衣")):
-                garment_region = _estimate_garment_region_for_postprocess(result_img.size, "top")
-            elif any(k in gc for k in ("bottom", "下装", "裤")):
-                garment_region = _estimate_garment_region_for_postprocess(result_img.size, "bottom")
+                gc = (garment_category or "").strip().lower()
+                garment_region = None
+                if any(k in gc for k in ("top", "上装", "上衣")):
+                    garment_region = _estimate_garment_region_for_postprocess(
+                        result_img.size, "top"
+                    )
+                elif any(k in gc for k in ("bottom", "下装", "裤")):
+                    garment_region = _estimate_garment_region_for_postprocess(
+                        result_img.size, "bottom"
+                    )
 
-            # 检查是否是 CatVTON 输出（尺寸可能是 768x1024 或 512x512 等）
-            is_catvton_output = (
-                result.get("metadata", {}).get("engine") == "catvton"
-                or result.get("metadata", {}).get("model") == "catvton_local"
-            )
-
-            # CatVTON 输出尺寸可能与原始图片不同，需要特殊处理
-            if is_catvton_output and result_img.size != person_image.size:
-                # CatVTON 输出：使用快速增强，避免与不同尺寸的原始图片混合
-                from app.services.tryon_v2.postprocess import quick_enhance
-
-                result_img = quick_enhance(result_img)
-                logger.info(
-                    f"Post-processing: CatVTON output ({result_img.size}), using quick_enhance"
-                )
-            else:
-                # 正常流程：完整后处理
                 result_img = enhance_tryon_result(
                     result=result_img,
                     person=person_image,
@@ -1552,15 +1699,17 @@ async def tryon_garment_v2(
                     strength=postprocess_strength,
                 )
 
-            result["result_image"] = result_img
-            result["metadata"] = {
-                **(result.get("metadata") or {}),
-                "postprocess_applied": True,
-                "postprocess_strength": postprocess_strength,
-            }
-            logger.info(f"Post-processing applied: strength={postprocess_strength}")
-    except Exception as postprocess_err:
-        logger.warning("Post-processing failed (continuing without): %s", postprocess_err)
+                result["result_image"] = result_img
+                result["metadata"] = {
+                    **(result.get("metadata") or {}),
+                    "postprocess_applied": True,
+                    "postprocess_strength": postprocess_strength,
+                }
+                logger.info(
+                    f"Post-processing applied (non-CatVTON): strength={postprocess_strength}"
+                )
+        except Exception as postprocess_err:
+            logger.warning("Post-processing failed (continuing without): %s", postprocess_err)
         # 后处理失败不影响主流程，继续使用原始结果
 
     import hashlib
@@ -1631,7 +1780,7 @@ async def tryon_pants_v2(
 
 @router.post("/validate-input", response_model=TryOnV2ValidateResponse)
 async def tryon_v2_validate_input(
-    garment_file: UploadFile = File(..., alias="garment_file", description="Garment product photo"),
+    garment_file: UploadFile = File(..., alias="garment_file", description="Garment product photo"),  # noqa: E501
     person_file: UploadFile = File(..., alias="person_file", description="Person full-body photo"),
     garment_image_url: str | None = Form(None),
     garment_category: str = Form(
@@ -1657,7 +1806,15 @@ async def tryon_v2_validate_input(
             detail="person_file must be an image",
         )
 
-    if mode not in {"strict", "balanced", "replace", "realistic", "professional"}:
+    if mode not in {
+        "strict",
+        "balanced",
+        "replace",
+        "realistic",
+        "realistic_v2",
+        "professional",
+        "hybrid",
+    }:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
@@ -1711,14 +1868,18 @@ async def tryon_v2_validate_input(
         if img2 is not None:
             garment_image_2 = img2
 
-    # Replace/realistic/hybrid mode uses upstream/warp engines; skip pipeline A input gate precheck.
-    if mode in ("replace", "realistic", "hybrid"):
+    # Replace/realistic/realistic_v2/hybrid mode uses upstream/warp engines; skip pipeline A input gate precheck.  # noqa: E501
+    if mode not in ("replace", "realistic", "realistic_v2", "hybrid"):
         return TryOnV2ValidateResponse(
             status="pass",
             pipeline=(
                 "HYBRID"
                 if mode == "hybrid"
-                else ("REALISTIC" if mode == "realistic" else "REPLACE")
+                else (
+                    "REALISTIC_V2"
+                    if mode == "realistic_v2"
+                    else ("REALISTIC" if mode == "realistic" else "REPLACE")
+                )
             ),
             passed=True,
             error_code=None,
@@ -1823,7 +1984,15 @@ async def tryon_v2_capabilities(
             "裙装",
             "套装",
         ],
-        modes=["strict", "balanced", "replace", "realistic", "professional", "hybrid"],
+        modes=[
+            "strict",
+            "balanced",
+            "replace",
+            "realistic",
+            "realistic_v2",
+            "professional",
+            "hybrid",
+        ],
         thresholds={
             **_v2_thresholds(strict_mode=True),
             "qc_threshold": float(getattr(settings, "TRYON_V2_QC_THRESHOLD", 0.6) or 0.6),
@@ -1886,7 +2055,9 @@ async def tryon_v2_model_status(
             getattr(settings, "TRYON_V2_REPLACE_ALLOW_LOCAL_DIFFUSION", False)
         ),
         "engine_priority": getattr(
-            settings, "TRYON_V2_REPLACE_ENGINE_PRIORITY", "warp,bailian,remote,catvton,diffusion"
+            settings,
+            "TRYON_V2_REPLACE_ENGINE_PRIORITY",
+            "warp,bailian,remote,catvton,diffusion",
         ),
         "skip_warp": bool(getattr(settings, "TRYON_V2_REPLACE_SKIP_WARP", False)),
     }

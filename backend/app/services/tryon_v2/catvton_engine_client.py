@@ -179,7 +179,7 @@ def _run_catvton_sync(
 
     width = int(getattr(settings, "CATVTON_WIDTH", 768) or 768)
     height = int(getattr(settings, "CATVTON_HEIGHT", 1024) or 1024)
-    steps = int(getattr(settings, "CATVTON_STEPS", 50) or 50)
+    steps = int(getattr(settings, "CATVTON_STEPS", 28) or 28)
     guidance = float(getattr(settings, "CATVTON_GUIDANCE", 2.5) or 2.5)
     repaint = bool(getattr(settings, "CATVTON_REPAINT", True))
 
@@ -225,7 +225,10 @@ def _run_catvton_sync(
             Path(catvton_path) / "catvton_runner.py" if catvton_path else None,
         ]
 
-        print(f"[DEBUG] Searching runner_paths: {[str(p) for p in runner_paths if p]}", flush=True)
+        print(
+            f"[DEBUG] Searching runner_paths: {[str(p) for p in runner_paths if p]}",
+            flush=True,
+        )
 
         runner_path = None
         for p in runner_paths:
@@ -359,10 +362,14 @@ def _run_catvton_sync(
 
         # Start streaming threads
         stdout_thread = threading.Thread(
-            target=stream_output, args=(proc.stdout, stdout_lines, stdout_lock, "OUT"), daemon=True
+            target=stream_output,
+            args=(proc.stdout, stdout_lines, stdout_lock, "OUT"),
+            daemon=True,
         )
         stderr_thread = threading.Thread(
-            target=stream_output, args=(proc.stderr, stderr_lines, stderr_lock, "ERR"), daemon=True
+            target=stream_output,
+            args=(proc.stderr, stderr_lines, stderr_lock, "ERR"),
+            daemon=True,
         )
         stdout_thread.start()
         stderr_thread.start()
@@ -385,7 +392,9 @@ def _run_catvton_sync(
         stderr = "\n".join(stderr_lines)
 
         result = type(
-            "obj", (object,), {"returncode": returncode, "stdout": stdout, "stderr": stderr}
+            "obj",
+            (object,),
+            {"returncode": returncode, "stdout": stdout, "stderr": stderr},
         )()
 
         logger.info(f"[CATVTON] 子进程执行完成，返回码: {result.returncode}")
@@ -685,7 +694,7 @@ def get_catvton_status() -> Dict[str, Any]:
         "model_path": str(base / "mix-48k-1024") if base and model_exists else None,
         "width": int(getattr(settings, "CATVTON_WIDTH", 768) or 768),
         "height": int(getattr(settings, "CATVTON_HEIGHT", 1024) or 1024),
-        "steps": int(getattr(settings, "CATVTON_STEPS", 50) or 50),
+        "steps": int(getattr(settings, "CATVTON_STEPS", 28) or 28),
         "guidance": float(getattr(settings, "CATVTON_GUIDANCE", 2.5) or 2.5),
         "repaint": bool(getattr(settings, "CATVTON_REPAINT", True)),
         "timeout_s": int(getattr(settings, "CATVTON_TIMEOUT_SECONDS", 2400) or 2400),

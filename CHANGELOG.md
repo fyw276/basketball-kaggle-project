@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Modular Try-on Services**: Extracted pre-processing and parsing tools into independent modules (`densepose_service`, `human_parsing`, `sam_mask`, `person_crop`).
+- **`realistic_v2` mode**: Added tentative variation of realistic mode for testing alternate rendering without deep-breaking existing API format.
+- **Service Modules Guide**: Newly created `SERVICE_MODULES_GUIDE.md` added.
+
+### Changed
+
+- **Realistic mode Alpha Overlay Disabled**: Turned off the hard-coded `pattern_score` alpha overlay mechanism during `realistic` mode rendering, to stop the "double garment/sticker" phenomenon, fully relying on CatVTON's inpainting capabilities.
+
+### Fixed
+
+- **Try-on V2 Preprocessing**: Fixed edge cases in garment structure logic and CatVTON client to adapt to strictly-typed inputs.
+
+## [1.6.0] - 2026-05-02
+
+### Added
+
 - **`hybrid` mode for try-on v2**: Warp + CatVTON two-stage blending with saturation-aware alpha
 - **Knee-aware warp for pants**: Two-stage warp preserving pattern symmetry at knee-bend vs single-taper warp
 - **torch.compile integration**: Optional GPU acceleration for CatVTON engine

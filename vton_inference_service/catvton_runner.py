@@ -6,9 +6,15 @@ CatVTON subprocess runner — standalone inference via CatVTONPipeline.
 2. 白盒调试工具：save_debug_image() + 每步中间产物落盘
 3. 预处理模式：--preprocess-only（只运行到 mask 生成，节省调试时间）
 4. Windows 安全日志：enqueue 模式
+5. MobileSAM 衣服分割（Part 5: 替换 rembg，处理复杂衣服）
+6. SCHP 人体解析（Part 2: 精准肩膀/手臂/衣服区域）
+7. TPS 布料变形（Part 4: 贴身感）
 
 架构：
 - CatVTONPipeline: 核心扩散模型（SD v1.5 inpainting + CatVTON attention）
+- MobileSAM: 精准衣服分割（荷叶边/泡泡袖/裙子）
+- SCHP Human Parsing: 精准肩膀/手臂/衣服区域解析
+- TPS Cloth Warping: 布料贴身变形
 - MediaPipe PoseLandmarker: 人体关键点 + 人物分割遮罩
 - Body-region mask: 从姿态关键点推导（上装/下装/全身）
 
@@ -16,12 +22,11 @@ CatVTON subprocess runner — standalone inference via CatVTONPipeline.
     python catvton_runner.py \
         --person person.jpg --garment garment.jpg \
         --output result.jpg --type upper \
-        --width 768 --height 1024 --steps 50 --guidance 2.5 \
+        --width 512 --height 768 --steps 20 --guidance 1.5 \
         --catvton-path D:/models/CatVTON \
         --precision fp16 \
         --vae-slicing --xformers \
-        --debug-dir ./debug_output \
-        --preprocess-only
+        --debug-dir ./debug_output
 
 退出码：
     0 = 成功
@@ -50,6 +55,60 @@ logger = logging.getLogger(__name__)
 from PIL import Image
 import numpy as np
 import mediapipe
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# New module imports: MobileSAM + SCHP Human Parsing + TPS Warp
+# Part 2/4/5/6 optimization: replace rembg with MobileSAM, add SCHP parsing
+# ─────────────────────────────────────────────────────────────────────────────
+_sam_wrapper = None
+_schp_parser = None
+
+
+def _get_sam_wrapper():
+    """Lazy-load MobileSAM wrapper."""
+    global _sam_wrapper
+    if _sam_wrapper is not None:
+        return _sam_wrapper
+
+    try:
+        from app.services.sam_mask import MobileSAMWrapper
+
+        _sam_wrapper = MobileSAMWrapper()
+        logger.info("[MOBILE-SAM] MobileSAM wrapper initialized")
+        return _sam_wrapper
+    except ImportError:
+        logger.warning("[MOBILE-SAM] mobile-sam not installed, falling back to rembg")
+        _sam_wrapper = None
+        return None
+    except Exception as e:
+        logger.warning(f"[MOBILE-SAM] Failed to initialize: {e}")
+        _sam_wrapper = None
+        return None
+
+
+def _get_schp_parser():
+    """Lazy-load SCHP human parsing wrapper."""
+    global _schp_parser
+    if _schp_parser is not None:
+        return _schp_parser
+
+    try:
+        from app.services.human_parsing import SCHPParser
+
+        _schp_parser = SCHPParser()
+        logger.info("[SCHP] SCHP parser initialized")
+        return _schp_parser
+    except ImportError:
+        logger.warning(
+            "[SCHP] human_parsing module not found, using MediaPipe fallback"
+        )
+        _schp_parser = None
+        return None
+    except Exception as e:
+        logger.warning(f"[SCHP] Failed to initialize: {e}")
+        _schp_parser = None
+        return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -249,7 +308,9 @@ def _get_pose_landmarker_model_path() -> str | None:
         "https://storage.googleapis.com/mediapipe-models/"
         "pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task"
     )
-    download_path = Path.home() / ".cache" / "mediapipe-assets" / "pose_landmarker_heavy.task"
+    download_path = (
+        Path.home() / ".cache" / "mediapipe-assets" / "pose_landmarker_heavy.task"
+    )
     try:
         download_path.parent.mkdir(parents=True, exist_ok=True)
         logger.info(f"Downloading PoseLandmarker model to {download_path}...")
@@ -284,12 +345,17 @@ def _draw_pose_skeleton(
 
     connections = [
         (11, 12),  # 肩膀
-        (11, 13), (13, 15),  # 左臂
-        (12, 14), (14, 16),  # 右臂
-        (11, 23), (12, 24),  # 躯干
+        (11, 13),
+        (13, 15),  # 左臂
+        (12, 14),
+        (14, 16),  # 右臂
+        (11, 23),
+        (12, 24),  # 躯干
         (23, 24),  # 臀部
-        (23, 25), (25, 27),  # 左腿
-        (24, 26), (26, 28),  # 右腿
+        (23, 25),
+        (25, 27),  # 左腿
+        (24, 26),
+        (26, 28),  # 右腿
     ]
     for i, j in connections:
         if i < len(landmarks) and j < len(landmarks):
@@ -316,177 +382,201 @@ def _make_garment_mask_rembg(
     ph: int,
 ) -> "Image.Image" | None:
     """
-    使用 rembg 精确分割衣服产品图，然后根据人体关键点映射到人物坐标。
+    使用 MobileSAM / rembg 精确分割衣服产品图，然后根据人体关键点映射到人物坐标。
 
-    策略：
-    1. rembg 分割衣服产品图 → 精确的衣服边界 mask（不受背景/颜色影响）
-    2. 根据姿态关键点计算衣服在人物图上的相对位置
-    3. 将衣服 mask 等比映射到人物坐标系统
+    策略（按优先级）：
+    1. MobileSAM 分割（Part 5: 比 rembg 强，对复杂衣服效果好）
+    2. rembg 分割（备用）
+    3. 返回 None 触发关键点 polygon fallback
 
     返回 L 模式 PIL Image（白色 = 待编辑的衣服区域，黑色 = 保留区域）。
-    如果 rembg 不可用，返回 None。
     """
     import cv2
 
-    try:
-        from io import BytesIO
+    gar_rgba = None
+    segmentation_source = "none"
 
-        from rembg import remove
+    # ── Step 1: Try MobileSAM (Part 5 optimization) ───────────────────────────
+    sam_wrapper = _get_sam_wrapper()
+    if sam_wrapper is not None:
+        try:
+            sam_mask = sam_wrapper.segment_garment(garment_img)
+            if sam_mask is not None:
+                sam_arr = np.array(sam_mask, dtype=np.uint8)
+                if sam_arr.sum() > 100:
+                    gar_rgba = Image.new("RGBA", garment_img.size, (255, 255, 255, 255))
+                    gar_rgba.putalpha(sam_mask.convert("L"))
+                    segmentation_source = "mobile_sam"
+                    logger.info("[GARMENT-MASK] MobileSAM segmentation succeeded!")
+        except Exception as e:
+            logger.debug(f"[GARMENT-MASK] MobileSAM failed ({e}), trying rembg")
 
-        rgb = garment_img.convert("RGB")
-        out = remove(rgb)
-        if isinstance(out, Image.Image):
-            gar_rgba = out.convert("RGBA")
-        elif isinstance(out, (bytes, bytearray)):
-            gar_rgba = Image.open(BytesIO(out)).convert("RGBA")
+    # ── Step 2: Fallback to rembg ────────────────────────────────────────────
+    if gar_rgba is None:
+        try:
+            from io import BytesIO
+
+            from rembg import remove
+
+            rgb = garment_img.convert("RGB")
+            out = remove(rgb)
+            if isinstance(out, Image.Image):
+                gar_rgba = out.convert("RGBA")
+            elif isinstance(out, (bytes, bytearray)):
+                gar_rgba = Image.open(BytesIO(out)).convert("RGBA")
+            if gar_rgba is not None:
+                segmentation_source = "rembg"
+        except Exception as e:
+            logger.warning(f"[GARMENT-MASK] rembg segmentation failed: {e}")
+            return None
+
+    if gar_rgba is None:
+        return None
+
+    # 获取衣服 alpha bbox
+    gar_a = np.asarray(gar_rgba.split()[3], dtype=np.uint8)
+    gar_h, gar_w = gar_a.shape
+    if gar_a.sum() < 100:
+        return None
+
+    # 提取关键点（像素坐标）
+    lm_dict = {lm_idx: (lm.x * pw, lm.y * ph) for lm_idx, lm in enumerate(landmarks)}
+
+    # 计算衣服在人物上的目标区域
+    if cloth_type == "upper":
+        ls = lm_dict.get(11)
+        rs = lm_dict.get(12)
+        lh = lm_dict.get(23)
+        rh = lm_dict.get(24)
+        nose = lm_dict.get(0)
+
+        if not (ls and rs and lh and rh):
+            return None
+
+        shoulder_y = (ls[1] + rs[1]) / 2
+        hip_y = (lh[1] + rh[1]) / 2
+        x_left_px = min(ls[0], rs[0])
+        x_right_px = max(ls[0], rs[0])
+        shoulder_width = x_right_px - x_left_px
+
+        # 上边界：肩膀上方一点，不超过鼻尖
+        if nose:
+            nose_y = nose[1]
+            y_top = max(
+                shoulder_y - ph * 0.15, min(shoulder_y - ph * 0.05, nose_y - ph * 0.02)
+            )
         else:
+            y_top = shoulder_y - ph * 0.08
+
+        # 下边界：臀部位置
+        y_bottom = hip_y + ph * 0.04
+
+        # 左右边界：肩膀外扩一点
+        margin = max(shoulder_width * 0.20, pw * 0.06)
+        x_left = max(0, x_left_px - margin)
+        x_right = min(pw, x_right_px + margin)
+
+    elif cloth_type == "lower":
+        lh = lm_dict.get(23)
+        rh = lm_dict.get(24)
+        la = lm_dict.get(27)
+        ra = lm_dict.get(28)
+
+        if not (lh and rh):
             return None
 
-        # 获取衣服 alpha bbox
-        gar_a = np.asarray(gar_rgba.split()[3], dtype=np.uint8)
-        gar_h, gar_w = gar_a.shape
-        if gar_a.sum() < 100:
+        hip_y = (lh[1] + rh[1]) / 2
+        x_left_px = min(lh[0], rh[0])
+        x_right_px = max(lh[0], rh[0])
+
+        if la and ra:
+            ankle_y = (la[1] + ra[1]) / 2
+        else:
+            ankle_y = ph * 0.95
+
+        y_top = hip_y - ph * 0.04
+        y_bottom = ankle_y + ph * 0.03
+
+        hip_width = x_right_px - x_left_px
+        margin = max(hip_width * 0.15, pw * 0.08)
+        x_left = max(0, x_left_px - margin)
+        x_right = min(pw, x_right_px + margin)
+
+    else:  # overall
+        ls = lm_dict.get(11)
+        rs = lm_dict.get(12)
+        lh = lm_dict.get(23)
+        rh = lm_dict.get(24)
+        if not (ls and rs and lh and rh):
             return None
 
-        # 提取关键点（像素坐标）
-        lm_dict = {lm_idx: (lm.x * pw, lm.y * ph) for lm_idx, lm in enumerate(landmarks)}
+        shoulder_y = (ls[1] + rs[1]) / 2
+        hip_y = (lh[1] + rh[1]) / 2
+        x_left_px = min(ls[0], rs[0], lh[0], rh[0])
+        x_right_px = max(ls[0], rs[0], lh[0], rh[0])
 
-        # 计算衣服在人物上的目标区域
-        if cloth_type == "upper":
-            ls = lm_dict.get(11)
-            rs = lm_dict.get(12)
-            lh = lm_dict.get(23)
-            rh = lm_dict.get(24)
-            nose = lm_dict.get(0)
+        y_top = shoulder_y - ph * 0.10
+        y_bottom = ph * 0.95
 
-            if not (ls and rs and lh and rh):
-                return None
+        body_width = x_right_px - x_left_px
+        margin = max(body_width * 0.20, pw * 0.06)
+        x_left = max(0, x_left_px - margin)
+        x_right = min(pw, x_right_px + margin)
 
-            shoulder_y = (ls[1] + rs[1]) / 2
-            hip_y = (lh[1] + rh[1]) / 2
-            x_left_px = min(ls[0], rs[0])
-            x_right_px = max(ls[0], rs[0])
-            shoulder_width = x_right_px - x_left_px
+    target_w = int(x_right - x_left)
+    target_h = int(y_bottom - y_top)
+    if target_w < 8 or target_h < 8:
+        return None
 
-            # 上边界：肩膀上方一点，不超过鼻尖
-            if nose:
-                nose_y = nose[1]
-                y_top = max(shoulder_y - ph * 0.15, min(shoulder_y - ph * 0.05, nose_y - ph * 0.02))
-            else:
-                y_top = shoulder_y - ph * 0.08
+    # 将衣服 alpha mask 等比映射到目标区域
+    # 使用 cloth-aware mapping：按比例缩放衣服 mask 到目标尺寸
+    gar_mask_np = (gar_a > 20).astype(np.uint8) * 255
 
-            # 下边界：臀部位置
-            y_bottom = hip_y + ph * 0.04
+    # 高质量缩放衣服 mask 到目标尺寸
+    gar_mask_resized = cv2.resize(
+        gar_mask_np,
+        (target_w, target_h),
+        interpolation=cv2.INTER_LINEAR if target_w > 16 else cv2.INTER_NEAREST,
+    )
 
-            # 左右边界：肩膀外扩一点
-            margin = max(shoulder_width * 0.20, pw * 0.06)
-            x_left = max(0, x_left_px - margin)
-            x_right = min(pw, x_right_px + margin)
-
-        elif cloth_type == "lower":
-            lh = lm_dict.get(23)
-            rh = lm_dict.get(24)
-            la = lm_dict.get(27)
-            ra = lm_dict.get(28)
-
-            if not (lh and rh):
-                return None
-
-            hip_y = (lh[1] + rh[1]) / 2
-            x_left_px = min(lh[0], rh[0])
-            x_right_px = max(lh[0], rh[0])
-
-            if la and ra:
-                ankle_y = (la[1] + ra[1]) / 2
-            else:
-                ankle_y = ph * 0.95
-
-            y_top = hip_y - ph * 0.04
-            y_bottom = ankle_y + ph * 0.03
-
-            hip_width = x_right_px - x_left_px
-            margin = max(hip_width * 0.15, pw * 0.08)
-            x_left = max(0, x_left_px - margin)
-            x_right = min(pw, x_right_px + margin)
-
-        else:  # overall
-            ls = lm_dict.get(11)
-            rs = lm_dict.get(12)
-            lh = lm_dict.get(23)
-            rh = lm_dict.get(24)
-            if not (ls and rs and lh and rh):
-                return None
-
-            shoulder_y = (ls[1] + rs[1]) / 2
-            hip_y = (lh[1] + rh[1]) / 2
-            x_left_px = min(ls[0], rs[0], lh[0], rh[0])
-            x_right_px = max(ls[0], rs[0], lh[0], rh[0])
-
-            y_top = shoulder_y - ph * 0.10
-            y_bottom = ph * 0.95
-
-            body_width = x_right_px - x_left_px
-            margin = max(body_width * 0.20, pw * 0.06)
-            x_left = max(0, x_left_px - margin)
-            x_right = min(pw, x_right_px + margin)
-
-        target_w = int(x_right - x_left)
-        target_h = int(y_bottom - y_top)
-        if target_w < 8 or target_h < 8:
-            return None
-
-        # 将衣服 alpha mask 等比映射到目标区域
-        # 使用 cloth-aware mapping：按比例缩放衣服 mask 到目标尺寸
-        gar_mask_np = (gar_a > 20).astype(np.uint8) * 255
-
-        # 高质量缩放衣服 mask 到目标尺寸
+    # 如果目标尺寸足够大，用双线性插值
+    if target_w >= 32:
         gar_mask_resized = cv2.resize(
             gar_mask_np,
             (target_w, target_h),
-            interpolation=cv2.INTER_LINEAR if target_w > 16 else cv2.INTER_NEAREST,
+            interpolation=cv2.INTER_LINEAR,
+        )
+    else:
+        gar_mask_resized = cv2.resize(
+            gar_mask_np,
+            (target_w, target_h),
+            interpolation=cv2.INTER_NEAREST,
         )
 
-        # 如果目标尺寸足够大，用双线性插值
-        if target_w >= 32:
-            gar_mask_resized = cv2.resize(
-                gar_mask_np,
-                (target_w, target_h),
-                interpolation=cv2.INTER_LINEAR,
-            )
-        else:
-            gar_mask_resized = cv2.resize(
-                gar_mask_np,
-                (target_w, target_h),
-                interpolation=cv2.INTER_NEAREST,
-            )
+    # 创建人物尺寸的全零 mask
+    person_mask = np.zeros((ph, pw), dtype=np.uint8)
 
-        # 创建人物尺寸的全零 mask
-        person_mask = np.zeros((ph, pw), dtype=np.uint8)
+    # 在目标区域填入缩放后的衣服 mask
+    x0_i, y0_i = int(x_left), int(y_top)
+    x1_i, y1_i = x0_i + target_w, y0_i + target_h
+    # 确保不越界
+    x1_i = min(x1_i, pw)
+    y1_i = min(y1_i, ph)
+    actual_w = x1_i - x0_i
+    actual_h = y1_i - y0_i
+    if actual_w > 0 and actual_h > 0:
+        person_mask[y0_i:y1_i, x0_i:x1_i] = gar_mask_resized[:actual_h, :actual_w]
 
-        # 在目标区域填入缩放后的衣服 mask
-        x0_i, y0_i = int(x_left), int(y_top)
-        x1_i, y1_i = x0_i + target_w, y0_i + target_h
-        # 确保不越界
-        x1_i = min(x1_i, pw)
-        y1_i = min(y1_i, ph)
-        actual_w = x1_i - x0_i
-        actual_h = y1_i - y0_i
-        if actual_w > 0 and actual_h > 0:
-            person_mask[y0_i:y1_i, x0_i:x1_i] = gar_mask_resized[:actual_h, :actual_w]
+    # 轻微膨胀，覆盖衣服边界与皮肤过渡区域
+    kernel = np.ones((3, 3), np.uint8)
+    person_mask = cv2.dilate(person_mask, kernel, iterations=1)
 
-        # 轻微膨胀，覆盖衣服边界与皮肤过渡区域
-        kernel = np.ones((3, 3), np.uint8)
-        person_mask = cv2.dilate(person_mask, kernel, iterations=1)
-
-        logger.info(
-            f"[GARMENT-MASK] rembg 分割成功，衣服映射到 person 区域 "
-            f"[{x0_i},{y0_i},{x1_i},{y1_i}] size={target_w}x{target_h}"
-        )
-        return Image.fromarray(person_mask, mode="L")
-
-    except Exception as e:
-        logger.warning(f"[GARMENT-MASK] rembg 分割失败: {e}")
-        return None
+    logger.info(
+        f"[GARMENT-MASK] {segmentation_source} segmentation succeeded, "
+        f"garment mapped to person region "
+        f"[{x0_i},{y0_i},{x1_i},{y1_i}] size={target_w}x{target_h}"
+    )
+    return Image.fromarray(person_mask, mode="L")
 
 
 def _make_cloth_mask_mediapipe(
@@ -529,7 +619,9 @@ def _make_cloth_mask_mediapipe(
                     tmp_path = f.name
                 person_img.save(tmp_path, format="JPEG", quality=95)
                 options = PoseLandmarkerOptions(
-                    base_options=mediapipe.tasks.BaseOptions(model_asset_path=mp_pose_path),
+                    base_options=mediapipe.tasks.BaseOptions(
+                        model_asset_path=mp_pose_path
+                    ),
                     running_mode=RunningMode.IMAGE,
                     output_segmentation_masks=False,
                 )
@@ -553,10 +645,16 @@ def _make_cloth_mask_mediapipe(
             except AttributeError as e:
                 # rembg 后端代码可能在某些 cv2 版本中崩溃
                 # 例如: cv2.resize 不支持某些插值常量
-                logger.warning("[GARMENT-MASK] rembg 崩溃 ({}), fallback 到关键点方案".format(e))
+                logger.warning(
+                    "[GARMENT-MASK] rembg 崩溃 ({}), fallback 到关键点方案".format(e)
+                )
                 rembg_mask = None
             except Exception as e:
-                logger.warning("[GARMENT-MASK] rembg 分割异常 ({}), fallback 到关键点方案".format(e))
+                logger.warning(
+                    "[GARMENT-MASK] rembg 分割异常 ({}), fallback 到关键点方案".format(
+                        e
+                    )
+                )
                 rembg_mask = None
             if rembg_mask is not None:
                 # rembg 分割成功，使用 rembg mask
@@ -566,38 +664,57 @@ def _make_cloth_mask_mediapipe(
                 # Step 2: MediaPipe FaceDetector 精确人脸保护（优先，失败则降级到关键点方法）
                 face_protection = _detect_face_with_mp_face_api(person_img, pw, ph)
                 import cv2
+
                 rembg_mask_np = np.asarray(rembg_mask.convert("L"))
                 face_protection_np = np.asarray(face_protection.convert("L"))
                 # 人脸区域从衣服 mask 中排除
-                rembg_mask_np = cv2.bitwise_and(rembg_mask_np, cv2.bitwise_not(face_protection_np))
+                rembg_mask_np = cv2.bitwise_and(
+                    rembg_mask_np, cv2.bitwise_not(face_protection_np)
+                )
                 rembg_mask = Image.fromarray(rembg_mask_np, mode="L")
                 if _debug_output_dir is None and debug_output_dir is not None:
                     init_debug_session(debug_output_dir)
                 if _debug_output_dir is not None:
-                    save_debug_image("03_mask", rembg_mask, {
-                        "cloth_type": cloth_type,
-                        "source": "rembg_garment_segmentation",
-                        "has_landmarks": landmarks is not None,
-                        "person_size": list(person_img.size),
-                        "note": "rembg精确分割 + 形态学边界refinement（闭/开运算），白色区域=将被AI编辑",
-                    })
+                    save_debug_image(
+                        "03_mask",
+                        rembg_mask,
+                        {
+                            "cloth_type": cloth_type,
+                            "source": "rembg_garment_segmentation",
+                            "has_landmarks": landmarks is not None,
+                            "person_size": list(person_img.size),
+                            "note": "rembg精确分割 + 形态学边界refinement（闭/开运算），白色区域=将被AI编辑",
+                        },
+                    )
                     skeleton = _draw_pose_skeleton(person_img, landmarks)
-                    save_debug_image("04_pose_keypoints", skeleton, {
-                        "cloth_type": cloth_type,
-                        "num_landmarks": len(landmarks),
-                    })
+                    save_debug_image(
+                        "04_pose_keypoints",
+                        skeleton,
+                        {
+                            "cloth_type": cloth_type,
+                            "num_landmarks": len(landmarks),
+                        },
+                    )
                     person_np = np.array(person_img.convert("RGB")).astype(np.float32)
-                    mask_np = np.array(rembg_mask.convert("L")).astype(np.float32) / 255.0
+                    mask_np = (
+                        np.array(rembg_mask.convert("L")).astype(np.float32) / 255.0
+                    )
                     mask_3ch = np.stack([mask_np] * 3, axis=-1)
                     overlay_np = person_np * mask_3ch + person_np * 0.3 * (1 - mask_3ch)
                     overlay = Image.fromarray(overlay_np.astype(np.uint8), mode="RGB")
-                    save_debug_image("09_mask_overlay", overlay, {
-                        "cloth_type": cloth_type,
-                        "note": "白色区域=将被AI编辑（rembg精确分割+边界refinement），黑色=保留原样",
-                    })
+                    save_debug_image(
+                        "09_mask_overlay",
+                        overlay,
+                        {
+                            "cloth_type": cloth_type,
+                            "note": "白色区域=将被AI编辑（rembg精确分割+边界refinement），黑色=保留原样",
+                        },
+                    )
                 return rembg_mask
             else:
-                logger.info("[GARMENT-MASK] rembg 分割返回空，fallback 到 MediaPipe 分割")
+                logger.info(
+                    "[GARMENT-MASK] rembg 分割返回空，fallback 到 MediaPipe 分割"
+                )
 
     # ── Step 1: 姿态关键点检测 ─────────────────────────────────────
     mp_pose_path = _get_pose_landmarker_model_path()
@@ -607,7 +724,11 @@ def _make_cloth_mask_mediapipe(
 
     try:
         from mediapipe import Image as MPImage
-        from mediapipe.tasks.python.vision import PoseLandmarker, PoseLandmarkerOptions, RunningMode
+        from mediapipe.tasks.python.vision import (
+            PoseLandmarker,
+            PoseLandmarkerOptions,
+            RunningMode,
+        )
 
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
             tmp_path = f.name
@@ -650,6 +771,7 @@ def _make_cloth_mask_mediapipe(
     # 优先使用专用人脸检测器（对侧脸/俯仰更鲁棒），失败则降级到关键点方法
     face_protection = _detect_face_with_mp_face_api(person_img, pw, ph)
     import cv2
+
     mask_np = np.asarray(mask.convert("L"))
     face_protection_np = np.asarray(face_protection.convert("L"))
     # 人脸区域从衣服 mask 中排除
@@ -661,28 +783,44 @@ def _make_cloth_mask_mediapipe(
         init_debug_session(debug_output_dir)
 
     if _debug_output_dir is not None:
-        save_debug_image("03_mask", mask, {
-            "cloth_type": cloth_type,
-            "source": "mediapipe_poselandmarker",
-            "has_landmarks": landmarks is not None,
-            "person_size": list(person_img.size),
-        })
+        save_debug_image(
+            "03_mask",
+            mask,
+            {
+                "cloth_type": cloth_type,
+                "source": "mediapipe_poselandmarker",
+                "has_landmarks": landmarks is not None,
+                "person_size": list(person_img.size),
+            },
+        )
         skeleton = _draw_pose_skeleton(person_img, landmarks)
-        save_debug_image("04_pose_keypoints", skeleton, {
-            "cloth_type": cloth_type,
-            "num_landmarks": len(landmarks),
-        })
+        save_debug_image(
+            "04_pose_keypoints",
+            skeleton,
+            {
+                "cloth_type": cloth_type,
+                "num_landmarks": len(landmarks),
+            },
+        )
         person_np = np.array(person_img.convert("RGB")).astype(np.float32)
         mask_np = np.array(mask.convert("L")).astype(np.float32) / 255.0
         mask_3ch = np.stack([mask_np] * 3, axis=-1)
         overlay_np = person_np * mask_3ch + person_np * 0.3 * (1 - mask_3ch)
         overlay = Image.fromarray(overlay_np.astype(np.uint8), mode="RGB")
-        save_debug_image("09_mask_overlay", overlay, {
-            "cloth_type": cloth_type,
-            "note": "白色区域=将被AI编辑，黑色区域=保留原样"
-        })
+        save_debug_image(
+            "09_mask_overlay",
+            overlay,
+            {
+                "cloth_type": cloth_type,
+                "note": "白色区域=将被AI编辑，黑色区域=保留原样",
+            },
+        )
         landmark_coords = {
-            f"lm_{i}": {"x": float(lm.x), "y": float(lm.y), "visibility": float(getattr(lm, "visibility", 1.0))}
+            f"lm_{i}": {
+                "x": float(lm.x),
+                "y": float(lm.y),
+                "visibility": float(getattr(lm, "visibility", 1.0)),
+            }
             for i, lm in enumerate(landmarks)
         }
         save_debug_text("landmarks", str(landmark_coords))
@@ -781,6 +919,7 @@ def _get_cloth_region_polygon(
 
     所有坐标已转换为像素坐标 (x_px, y_px)，不再使用归一化值。
     """
+
     def pt(idx) -> tuple[float, float] | None:
         if len(landmarks) <= idx:
             return None
@@ -805,12 +944,18 @@ def _get_cloth_region_polygon(
         pts: list[tuple[int, int]] = []
 
         if le:
-            sleeve_l = (int(le[0] * 0.65 + ls[0] * 0.35), int(le[1] * 0.65 + ls[1] * 0.35))
+            sleeve_l = (
+                int(le[0] * 0.65 + ls[0] * 0.35),
+                int(le[1] * 0.65 + ls[1] * 0.35),
+            )
             pts.append((clamp(sleeve_l[0], 0, pw), clamp(sleeve_l[1], 0, ph)))
         pts.append((clamp(ls[0], 0, pw), clamp(ls[1], 0, ph)))
         pts.append((clamp(rs[0], 0, pw), clamp(rs[1], 0, ph)))
         if re:
-            sleeve_r = (int(re[0] * 0.65 + rs[0] * 0.35), int(re[1] * 0.65 + rs[1] * 0.35))
+            sleeve_r = (
+                int(re[0] * 0.65 + rs[0] * 0.35),
+                int(re[1] * 0.65 + rs[1] * 0.35),
+            )
             pts.append((clamp(sleeve_r[0], 0, pw), clamp(sleeve_r[1], 0, ph)))
         pts.append((clamp(rh[0], 0, pw), clamp(rh[1], 0, ph)))
         pts.append((clamp(lh[0], 0, pw), clamp(lh[1], 0, ph)))
@@ -958,8 +1103,8 @@ def _protect_face(
     # 1. 清除面部椭圆区域（主要面部）
     y_grid, x_grid = np.ogrid[:rows, :cols]
     face_ellipse = (
-        ((x_grid - cx) ** 2) // max(1, ew ** 2)
-        + ((y_grid - (cy - int(ew * 0.1))) ** 2) // max(1, eh ** 2)
+        ((x_grid - cx) ** 2) // max(1, ew**2)
+        + ((y_grid - (cy - int(ew * 0.1))) ** 2) // max(1, eh**2)
     ) <= 1
     mask_np[face_ellipse] = 0
 
@@ -971,8 +1116,10 @@ def _protect_face(
 
     # 创建一个头部保护矩形（比面部椭圆稍大）
     head_protection = (
-        (x_grid >= head_left_x) & (x_grid <= head_right_x) &
-        (y_grid >= head_top_y) & (y_grid <= cy + int(ph * 0.02))
+        (x_grid >= head_left_x)
+        & (x_grid <= head_right_x)
+        & (y_grid >= head_top_y)
+        & (y_grid <= cy + int(ph * 0.02))
     )
     mask_np[head_protection] = 0
 
@@ -1020,7 +1167,7 @@ def _get_face_detector_model_path() -> str | None:
             return _MP_FACE_DETECTOR_TASK
 
     # MediaPipe FaceDetector .task 模型文件在大多数环境中不可用
-    #（官方仅提供 .tflite，不提供 .task；下载链接也返回 404）
+    # （官方仅提供 .tflite，不提供 .task；下载链接也返回 404）
     # 当返回 None 时，_detect_face_with_mp_face_api 会自动调用 _protect_face_haar
     return None
 
@@ -1060,7 +1207,9 @@ def _detect_face_with_mp_face_api(
         person_img.save(tmp_path, format="JPEG", quality=95)
 
         options = FaceDetectorOptions(
-            base_options=mediapipe.tasks.BaseOptions(model_asset_path=face_detector_path),
+            base_options=mediapipe.tasks.BaseOptions(
+                model_asset_path=face_detector_path
+            ),
             running_mode=RunningMode.IMAGE,
         )
         detector = FaceDetector.create_from_options(options)
@@ -1106,8 +1255,8 @@ def _detect_face_with_mp_face_api(
             rows, cols = face_mask.shape
             y_grid, x_grid = np.ogrid[:rows, :cols]
             face_ellipse = (
-                ((x_grid - head_cx) ** 2) // max(1, ew ** 2) +
-                ((y_grid - head_cy) ** 2) // max(1, eh ** 2)
+                ((x_grid - head_cx) ** 2) // max(1, ew**2)
+                + ((y_grid - head_cy) ** 2) // max(1, eh**2)
             ) <= 1
             face_mask[face_ellipse] = 255
 
@@ -1116,12 +1265,16 @@ def _detect_face_with_mp_face_api(
             head_left_x = max(0, cx - int(ew * 1.4))
             head_right_x = min(pw, cx + int(ew * 1.4))
             head_extend = (
-                (x_grid >= head_left_x) & (x_grid <= head_right_x) &
-                (y_grid >= head_top_y) & (y_grid <= y0 + int(face_h * 0.15))
+                (x_grid >= head_left_x)
+                & (x_grid <= head_right_x)
+                & (y_grid >= head_top_y)
+                & (y_grid <= y0 + int(face_h * 0.15))
             )
             face_mask[head_extend] = 255
 
-        logger.debug(f"[FACE] MediaPipe FaceDetector detected {len(detection_result.detections)} face(s)")
+        logger.debug(
+            f"[FACE] MediaPipe FaceDetector detected {len(detection_result.detections)} face(s)"
+        )
         return Image.fromarray(face_mask, mode="L")
 
     except Exception as e:
@@ -1182,7 +1335,7 @@ def _protect_face_haar(person_img: "Image.Image", pw: int, ph: int) -> "Image.Im
         if len(boxes) == 0:
             return _protect_face_legacy(person_img, pw, ph)
 
-        for (fx, fy, fw, fh) in boxes:
+        for fx, fy, fw, fh in boxes:
             # 安全边界检查
             fx = max(0, fx)
             fy = max(0, fy)
@@ -1206,8 +1359,8 @@ def _protect_face_haar(person_img: "Image.Image", pw: int, ph: int) -> "Image.Im
 
             # Step 1: 面部椭圆
             face_ellipse = (
-                ((x_grid - head_cx) ** 2) // max(1, ew ** 2) +
-                ((y_grid - head_cy) ** 2) // max(1, eh ** 2)
+                ((x_grid - head_cx) ** 2) // max(1, ew**2)
+                + ((y_grid - head_cy) ** 2) // max(1, eh**2)
             ) <= 1
             face_mask[face_ellipse] = 255
 
@@ -1216,21 +1369,29 @@ def _protect_face_haar(person_img: "Image.Image", pw: int, ph: int) -> "Image.Im
             head_left_x = max(0, head_cx - int(ew * 1.4))
             head_right_x = min(pw, head_cx + int(ew * 1.4))
             head_extend = (
-                (x_grid >= head_left_x) & (x_grid <= head_right_x) &
-                (y_grid >= head_top_y) & (y_grid <= fy + int(fh * 0.15))
+                (x_grid >= head_left_x)
+                & (x_grid <= head_right_x)
+                & (y_grid >= head_top_y)
+                & (y_grid <= fy + int(fh * 0.15))
             )
             face_mask[head_extend] = 255
 
         white_pixels = int(np.sum(face_mask > 0))
         if white_pixels < 100:
-            logger.debug("Haar face detection produced too small mask, using keypoint fallback")
+            logger.debug(
+                "Haar face detection produced too small mask, using keypoint fallback"
+            )
             return _protect_face_legacy(person_img, pw, ph)
 
-        logger.debug(f"[FACE] Haar Cascade detected {len(boxes)} face(s), {white_pixels} protected pixels")
+        logger.debug(
+            f"[FACE] Haar Cascade detected {len(boxes)} face(s), {white_pixels} protected pixels"
+        )
         return Image.fromarray(face_mask, mode="L")
 
     except Exception as e:
-        logger.debug(f"Haar Cascade face detection failed ({e}), using keypoint fallback")
+        logger.debug(
+            f"Haar Cascade face detection failed ({e}), using keypoint fallback"
+        )
         return _protect_face_legacy(person_img, pw, ph)
 
 
@@ -1242,7 +1403,11 @@ def _protect_face_legacy(person_img: "Image.Image", pw: int, ph: int) -> "Image.
 
     try:
         from mediapipe import Image as MPImage
-        from mediapipe.tasks.python.vision import PoseLandmarker, PoseLandmarkerOptions, RunningMode
+        from mediapipe.tasks.python.vision import (
+            PoseLandmarker,
+            PoseLandmarkerOptions,
+            RunningMode,
+        )
 
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
             tmp_path = f.name
@@ -1262,7 +1427,12 @@ def _protect_face_legacy(person_img: "Image.Image", pw: int, ph: int) -> "Image.
             return Image.fromarray(np.zeros((ph, pw), dtype=np.uint8), mode="L")
 
         landmarks = result.pose_landmarks[0]
-        return _protect_face(Image.fromarray(np.zeros((ph, pw), dtype=np.uint8), mode="L"), landmarks, pw, ph)
+        return _protect_face(
+            Image.fromarray(np.zeros((ph, pw), dtype=np.uint8), mode="L"),
+            landmarks,
+            pw,
+            ph,
+        )
     except Exception:
         return Image.fromarray(np.zeros((ph, pw), dtype=np.uint8), mode="L")
 
@@ -1315,7 +1485,7 @@ def _detect_and_correct_garment_orientation(image: "Image.Image") -> "Image.Imag
     h, w = arr.shape[:2]
 
     # 检测顶部是否有浅色横向条带（可能是衣架）
-    top_region = arr[:int(h * 0.1), :, :]
+    top_region = arr[: int(h * 0.1), :, :]
     top_brightness = top_region.mean()
     overall_brightness = arr.mean()
 
@@ -1333,7 +1503,9 @@ def _detect_and_correct_garment_orientation(image: "Image.Image") -> "Image.Imag
     return image
 
 
-def _enhance_garment_colors(image: "Image.Image", strength: float = 1.2) -> "Image.Image":
+def _enhance_garment_colors(
+    image: "Image.Image", strength: float = 1.2
+) -> "Image.Image":
     """增强衣服颜色饱和度和对比度，帮助 CatVTON 更好地识别衣服颜色。
 
     适度的颜色增强可以让模型更准确地保留衣服的颜色信息。
@@ -1363,7 +1535,9 @@ def _feather_mask(mask: "Image.Image", feather_radius: int = 4) -> "Image.Image"
     import cv2
 
     mask_np = np.asarray(mask.convert("L"))
-    blurred = cv2.GaussianBlur(mask_np, (0, 0), sigmaX=feather_radius, sigmaY=feather_radius)
+    blurred = cv2.GaussianBlur(
+        mask_np, (0, 0), sigmaX=feather_radius, sigmaY=feather_radius
+    )
     return Image.fromarray(blurred, mode="L")
 
 
@@ -1462,7 +1636,9 @@ def _repaint_with_feather(
 
     mask_np = np.asarray(mask.convert("L")).astype(np.float32) / 255.0
     if feather_radius > 0:
-        mask_np = cv2.GaussianBlur(mask_np, (0, 0), sigmaX=feather_radius, sigmaY=feather_radius)
+        mask_np = cv2.GaussianBlur(
+            mask_np, (0, 0), sigmaX=feather_radius, sigmaY=feather_radius
+        )
     mask_3ch = np.stack([mask_np] * 3, axis=-1)
     result_np = np.array(result).astype(np.float32)
     person_np = np.array(person).astype(np.float32)
@@ -1579,6 +1755,7 @@ def _check_triton_available() -> bool:
     """检查 Triton 是否可用（torch.compile 的必需依赖）。"""
     try:
         import triton
+
         return True
     except ImportError:
         return False
@@ -1725,6 +1902,7 @@ def _apply_memory_optimizations(
     if xformers:
         try:
             import xformers  # noqa: F401
+
             has_xformers = True
         except ImportError:
             has_xformers = False
@@ -1759,7 +1937,9 @@ def _apply_memory_optimizations(
         # already uses accelerate hooks internally, and cpu_offload conflicts with them.
         # Instead, rely on fp16 + VAE slicing for VRAM management.
         try:
-            logger.info("CPU offload 已禁用（与 CatVTON pipeline 不兼容，使用 fp16 + VAE slicing 替代）")
+            logger.info(
+                "CPU offload 已禁用（与 CatVTON pipeline 不兼容，使用 fp16 + VAE slicing 替代）"
+            )
         except Exception:
             pass
         applied.append("cpu_offload_skipped")
@@ -1807,6 +1987,7 @@ def _cleanup_after_inference():
 # 主推理流程
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="CatVTON inference runner (支持白盒调试 + 极限显存优化 + 预处理模式)"
@@ -1815,61 +1996,89 @@ def main():
     parser.add_argument("--garment", required=True, help="衣服产品图 JPEG 路径")
     parser.add_argument("--output", required=True, help="结果图输出路径")
     parser.add_argument(
-        "--type", default="upper", choices=["upper", "lower", "overall"],
-        help="衣服类型: upper(上装)/lower(下装)/overall(连衣裙)"
+        "--type",
+        default="upper",
+        choices=["upper", "lower", "overall"],
+        help="衣服类型: upper(上装)/lower(下装)/overall(连衣裙)",
     )
-    parser.add_argument("--width", type=int, default=512, help="输出宽度 (512-768，768 更清晰但更慢)")
-    parser.add_argument("--height", type=int, default=768, help="输出高度 (768-1024)")
-    parser.add_argument("--steps", type=int, default=25, help="扩散步数 (20-80，推荐 50)")
-    parser.add_argument("--guidance", type=float, default=2.5, help="CFG 引导强度 (2.0-3.5)")
+    parser.add_argument(
+        "--width", type=int, default=768, help="输出宽度 (768 推荐 / 512 低显存)"
+    )
+    parser.add_argument(
+        "--height", type=int, default=1024, help="输出高度 (1024 推荐 / 768 低显存)"
+    )
+    parser.add_argument(
+        "--steps", type=int, default=28, help="扩散步数 (28 推荐 / 20 快速)"
+    )
+    parser.add_argument(
+        "--guidance",
+        type=float,
+        default=2.5,
+        help="CFG 引导强度 (2.5 推荐高保真 / 1.5 快速)",
+    )
     parser.add_argument("--seed", type=int, default=-1, help="随机种子 (-1=随机)")
     parser.add_argument("--catvton-path", default=None, help="CatVTON 仓库路径")
     parser.add_argument("--no-repaint", action="store_true", help="禁用背景重绘")
     parser.add_argument(
-        "--precision", default="bf16", choices=["bf16", "fp16", "fp32"],
-        help="权重精度: bf16(RTX推荐)/fp16(8GB卡强制)/fp32(不推荐)"
+        "--precision",
+        default="bf16",
+        choices=["bf16", "fp16", "fp32"],
+        help="权重精度: bf16(RTX推荐)/fp16(8GB卡强制)/fp32(不推荐)",
     )
-    parser.add_argument("--cpu-offload", action="store_true", help="启用顺序 CPU 卸载（最省显存但最慢）")
     parser.add_argument(
-        "--debug-dir", default=None,
-        help="白盒调试输出目录（保存所有中间产物，为空则不保存）"
+        "--cpu-offload", action="store_true", help="启用顺序 CPU 卸载（最省显存但最慢）"
+    )
+    parser.add_argument(
+        "--debug-dir",
+        default=None,
+        help="白盒调试输出目录（保存所有中间产物，为空则不保存）",
     )
     # ─── 新增参数 ─────────────────────────────────────────────────────────
     parser.add_argument(
-        "--preprocess-only", action="store_true",
-        help="仅运行前处理（mask + pose 生成），不进入扩散模型推理，极大加快调试速度"
+        "--preprocess-only",
+        action="store_true",
+        help="仅运行前处理（mask + pose 生成），不进入扩散模型推理，极大加快调试速度",
     )
     parser.add_argument(
-        "--vae-slicing", action="store_true", default=True,
-        help="启用 VAE 分片推理（降低峰值显存，默认开启）"
+        "--vae-slicing",
+        action="store_true",
+        default=True,
+        help="启用 VAE 分片推理（降低峰值显存，默认开启）",
     )
     parser.add_argument(
-        "--no-vae-slicing", action="store_true",
-        help="禁用 VAE 分片推理"
+        "--no-vae-slicing", action="store_true", help="禁用 VAE 分片推理"
     )
     parser.add_argument(
-        "--xformers", action="store_true", default=True,
-        help="启用 xformers 高效注意力（默认开启，无 xformers 时降级到 FlashAttention）"
+        "--xformers",
+        action="store_true",
+        default=True,
+        help="启用 xformers 高效注意力（默认开启，无 xformers 时降级到 FlashAttention）",
     )
     parser.add_argument(
-        "--no-xformers", action="store_true",
-        help="禁用 xformers 高效注意力"
+        "--no-xformers", action="store_true", help="禁用 xformers 高效注意力"
     )
     parser.add_argument(
-        "--force-fp16", action="store_true",
-        help="强制使用 fp16 而非 bf16（RTX 4060 Laptop 推荐开启，节省约 2GB 显存）"
+        "--force-fp16",
+        action="store_true",
+        help="强制使用 fp16 而非 bf16（RTX 4060 Laptop 推荐开启，节省约 2GB 显存）",
     )
     parser.add_argument(
-        "--low-vram-mode", action="store_true",
-        help="一键低显存模式（等于 --force-fp16 --vae-slicing --cpu-offload --no-repaint）"
+        "--low-vram-mode",
+        action="store_true",
+        help="一键低显存模式（等于 --force-fp16 --vae-slicing --cpu-offload --no-repaint）",
     )
     parser.add_argument(
-        "--torch-compile", dest="torch_compile", action="store_true", default=False,
-        help="启用 PyTorch 2.0 torch.compile JIT 编译 UNet（推理速度 +25%，编译开销 ~2-5s）"
+        "--torch-compile",
+        dest="torch_compile",
+        action="store_true",
+        default=False,
+        help="启用 PyTorch 2.0 torch.compile JIT 编译 UNet（推理速度 +25%%，编译开销 ~2-5s）",
     )
     parser.add_argument(
-        "--no-torch-compile", dest="torch_compile", action="store_false",
-        help="禁用 torch.compile（默认禁用，需要 PyTorch 2.0+）"
+        "--no-torch-compile",
+        dest="torch_compile",
+        action="store_false",
+        help="禁用 torch.compile（默认禁用，需要 PyTorch 2.0+）",
     )
     args = parser.parse_args()
 
@@ -1965,9 +2174,9 @@ def main():
         # 使用 importlib 动态导入 CatVTON，避免 catvton_path 污染 sys.path
         # 防止 CatVTON_full/app.py 覆盖 backend/app/ 的导入
         import importlib.util
+
         pipeline_spec = importlib.util.spec_from_file_location(
-            "CatVTONPipeline",
-            os.path.join(catvton_path, "model", "pipeline.py")
+            "CatVTONPipeline", os.path.join(catvton_path, "model", "pipeline.py")
         )
         if pipeline_spec is None or pipeline_spec.loader is None:
             print(f"ERROR:CATVTON_NOT_AVAILABLE")
@@ -1998,35 +2207,56 @@ def main():
         debug_output_dir = Path(args.debug_dir) if args.debug_dir else None
         if debug_output_dir:
             init_debug_session(debug_output_dir)
-            save_debug_image("01_input_person", person_img, {
-                "source_path": person_path,
-                "size": list(person_img.size),
-                "mode": person_img.mode,
-            })
-            save_debug_image("02_input_garment", garment_img, {
-                "source_path": garment_path,
-                "size": list(garment_img.size),
-                "cloth_type_requested": args.type,
-            })
+            save_debug_image(
+                "01_input_person",
+                person_img,
+                {
+                    "source_path": person_path,
+                    "size": list(person_img.size),
+                    "mode": person_img.mode,
+                },
+            )
+            save_debug_image(
+                "02_input_garment",
+                garment_img,
+                {
+                    "source_path": garment_path,
+                    "size": list(garment_img.size),
+                    "cloth_type_requested": args.type,
+                },
+            )
 
         # ── 生成衣服区域遮罩 ───────────────────────────────────────────
         # 关键改进：传入衣服图像用于 rembg 精确分割
         # rembg 分割会优先使用，获取精确的衣服边界
         print(f"[CATVTON-STEP] 开始生成衣服遮罩 (type={args.type})...", flush=True)
+        mask_start = time.perf_counter()
         cloth_mask = _make_cloth_mask_mediapipe(
             person_img,
             args.type,
             debug_output_dir=debug_output_dir,
             garment_img=garment_img,  # ← 传入衣服图，用于 rembg 精确分割
         )
-        print(f"[CATVTON-STEP] 遮罩生成完成", flush=True)
+        mask_elapsed = time.perf_counter() - mask_start
+        pw, ph = person_img.size
+        mask_arr = np.array(cloth_mask.convert("L"))
+        mask_white = int(np.sum(mask_arr > 128))
+        mask_area_ratio = mask_white / max(pw * ph, 1)
+        print(
+            f"[CATVTON-STEP] 遮罩生成完成 ({mask_elapsed:.2f}s) | "
+            f"size={pw}x{ph} mask_white_pixels={mask_white} "
+            f"mask_area_ratio={mask_area_ratio:.3f}",
+            flush=True,
+        )
+        logger.info(
+            f"[CATVTON-STEP] Mask generated in {mask_elapsed:.2f}s: "
+            f"size={pw}x{ph}, white_pixels={mask_white}, area_ratio={mask_area_ratio:.3f}"
+        )
 
         # ── 预处理模式：直接返回遮罩结果 ───────────────────────────────
         if args.preprocess_only:
             debug_dir = get_debug_session_dir()
-            logger.info(
-                f"[PREPROCESS-ONLY] 预处理完成，已保存中间产物到: {debug_dir}"
-            )
+            logger.info(f"[PREPROCESS-ONLY] 预处理完成，已保存中间产物到: {debug_dir}")
             if debug_dir:
                 print(f"PREPROCESS_ONLY:{debug_dir}")
             else:
@@ -2034,14 +2264,16 @@ def main():
             sys.exit(0)
 
         # ── 初始化 CatVTON Pipeline ───────────────────────────────────
-        print(f"[CATVTON-STEP] 正在加载 CatVTON Pipeline (precision={final_precision})...", flush=True)
+        print(
+            f"[CATVTON-STEP] 正在加载 CatVTON Pipeline (precision={final_precision})...",
+            flush=True,
+        )
         import os as _os
         from huggingface_hub import snapshot_download
 
         # 直接从 catvton_path 导入 utils 模块，避免 sys.path 污染
         utils_spec = importlib.util.spec_from_file_location(
-            "catvton_utils",
-            os.path.join(catvton_path, "utils.py")
+            "catvton_utils", os.path.join(catvton_path, "utils.py")
         )
         if utils_spec and utils_spec.loader:
             utils_module = importlib.util.module_from_spec(utils_spec)
@@ -2060,13 +2292,15 @@ def main():
         if not _os.path.exists(repo_path):
             # 检查是否是下载的仓库格式（直接包含 model/ 和数据集目录）
             if _os.path.exists(_os.path.join(catvton_path, "model")) and (
-                _os.path.exists(_os.path.join(catvton_path, "mix-48k-1024")) or
-                _os.path.exists(_os.path.join(catvton_path, "vitonhd-16k-512"))
+                _os.path.exists(_os.path.join(catvton_path, "mix-48k-1024"))
+                or _os.path.exists(_os.path.join(catvton_path, "vitonhd-16k-512"))
             ):
                 logger.info("检测到 CatVTON 仓库格式 (包含 model/ 和数据集目录)")
                 repo_path = catvton_path
             else:
-                logger.info("Downloading CatVTON checkpoints from HuggingFace (first run)...")
+                logger.info(
+                    "Downloading CatVTON checkpoints from HuggingFace (first run)..."
+                )
                 repo_path = snapshot_download(repo_id="zhengchong/CatVTON")
 
         # CatVTON 代码（model/pipeline.py 等）就在 repo_path 目录本身。
@@ -2111,7 +2345,9 @@ def main():
         # 仅在用户显式传入 --torch-compile 且 Triton 可用时启用
         if getattr(args, "torch_compile", False):
             try:
-                compile_results = _compile_unet_pretrained(pipeline, compile_mode="reduce-overhead")
+                compile_results = _compile_unet_pretrained(
+                    pipeline, compile_mode="reduce-overhead"
+                )
                 applied.extend(compile_results)
             except Exception as e:
                 logger.warning(f"torch.compile failed: {e}")
@@ -2122,7 +2358,10 @@ def main():
         # 因此 "from app.services.garment_preprocess" 会被 CatVTON_full/app.py 截获
         # 解决方案：使用绝对导入绕过 sys.path 搜索
         import importlib.util
-        garment_preprocess_path = backend_path / "app" / "services" / "garment_preprocess.py"
+
+        garment_preprocess_path = (
+            backend_path / "app" / "services" / "garment_preprocess.py"
+        )
         if garment_preprocess_path.exists():
             spec = importlib.util.spec_from_file_location(
                 "garment_preprocess_module", garment_preprocess_path
@@ -2132,18 +2371,37 @@ def main():
             preprocess_garment = garment_preprocess_module.preprocess_garment
             logger.info(f"Loaded garment_preprocess from {garment_preprocess_path}")
         else:
-            raise FileNotFoundError(f"garment_preprocess.py not found at {garment_preprocess_path}")
-        print(f"[CATVTON-STEP] 预处理衣服 (rembg alpha 去背景 + bbox 居中)...", flush=True)
+            raise FileNotFoundError(
+                f"garment_preprocess.py not found at {garment_preprocess_path}"
+            )
+        print(
+            f"[CATVTON-STEP] 预处理衣服 (rembg alpha 去背景 + bbox 居中)...", flush=True
+        )
+        preprocess_start = time.perf_counter()
         person_resized = resize_and_crop(person_img, (args.width, args.height))
         try:
             garment_clean_np = preprocess_garment(garment_img, canvas_size=512)
             garment_clean = Image.fromarray(garment_clean_np, mode="RGB")
             # CatVTON expects garment, person, mask all same size
             # First pad to white background (CatVTON convention), then resize to target
-            garment_resized = resize_and_padding(garment_clean, (args.width, args.height))
+            garment_resized = resize_and_padding(
+                garment_clean, (args.width, args.height)
+            )
         except Exception as e:
             logger.warning(f"衣服预处理失败 ({e})，使用原始图像")
             garment_resized = resize_and_padding(garment_img, (args.width, args.height))
+        preprocess_elapsed = time.perf_counter() - preprocess_start
+        gw, gh = garment_resized.size
+        pw_out, ph_out = person_resized.size
+        print(
+            f"[CATVTON-STEP] 衣服预处理完成 ({preprocess_elapsed:.2f}s) | "
+            f"person_resized={pw_out}x{ph_out} garment_resized={gw}x{gh}",
+            flush=True,
+        )
+        logger.info(
+            f"[CATVTON-STEP] Garment preprocessing done ({preprocess_elapsed:.2f}s): "
+            f"person={pw_out}x{ph_out} garment={gw}x{gh}"
+        )
 
         # ── 衣服颜色增强（已禁用）────────────────────────────────────────
         # 之前 saturation * 1.15 会扭曲原始颜色，导致 CatVTON VAE 编码偏差。
@@ -2161,20 +2419,34 @@ def main():
 
         # ── 白盒调试：保存缩放后的中间产物 ─────────────────────────────
         if _debug_output_dir is not None:
-            save_debug_image("06_person_resized", person_resized, {
-                "target_size": [args.width, args.height],
-            })
-            save_debug_image("07_garment_resized", garment_resized, {
-                "target_size": [args.width, args.height],
-            })
-            save_debug_image("08_mask_resized", mask_resized, {
-                "target_size": [args.width, args.height],
-                "feather_radius": 3,
-            })
+            save_debug_image(
+                "06_person_resized",
+                person_resized,
+                {
+                    "target_size": [args.width, args.height],
+                },
+            )
+            save_debug_image(
+                "07_garment_resized",
+                garment_resized,
+                {
+                    "target_size": [args.width, args.height],
+                },
+            )
+            save_debug_image(
+                "08_mask_resized",
+                mask_resized,
+                {
+                    "target_size": [args.width, args.height],
+                    "feather_radius": 3,
+                },
+            )
 
         # ── 运行扩散推理 ───────────────────────────────────────────────
         import torch
-        from vton_inference_service.catvton_engine import CatVTONPipeline as _ExpectedPipeline
+        from vton_inference_service.catvton_engine import (
+            CatVTONPipeline as _ExpectedPipeline,
+        )
 
         # 注意：使用 importlib.util 动态加载的 CatVTONPipeline 与通过 sys.path 导入的不同，
         # 因此无法使用 isinstance 检查。改用类型名称验证
@@ -2219,26 +2491,37 @@ def main():
 
         # ── 白盒调试：保存扩散输出（未重绘） ───────────────────────────
         if _debug_output_dir is not None:
-            save_debug_image("10_result_raw", result, {
-                "steps": args.steps,
-                "guidance": args.guidance,
-                "seed": seed,
-                "inference_time_s": round(infer_elapsed, 2),
-            })
+            save_debug_image(
+                "10_result_raw",
+                result,
+                {
+                    "steps": args.steps,
+                    "guidance": args.guidance,
+                    "seed": seed,
+                    "inference_time_s": round(infer_elapsed, 2),
+                },
+            )
 
-        # ── 重绘与原图混合 ─────────────────────────────────────────────
-        if not args.no_repaint:
-            logger.info("执行背景重绘与原图混合...")
-            result = _repaint_with_feather(result, person_resized, mask_resized, feather_radius=3)
+        # ── 直接返回 CatVTON 输出（禁止 repaint 混合）────────────────────────
+        # 之前的 _repaint_with_feather 会将 CatVTON 输出与原图混合，
+        # 这会导致衣服像"贴纸"一样悬浮在人体上（半透明、双层感）。
+        # CatVTON 的 inpainting pipeline 已经生成了完整的试穿结果，
+        # 直接返回 CatVTON 输出才能保证真实的贴合感。
+        logger.info("直接返回 CatVTON 扩散输出（禁止 repaint 混合）")
+        final_result = result
 
         # ── 白盒调试：保存最终结果 ──────────────────────────────────────
         if _debug_output_dir is not None:
-            save_debug_image("11_result_final", result, {
-                "repaint": not args.no_repaint,
-                "total_time_s": round(time.time() - infer_start, 2),
-                "torch_compile": getattr(args, "torch_compile", False),
-                "applied_optimizations": applied,
-            })
+            save_debug_image(
+                "11_result_final",
+                result,
+                {
+                    "repaint": not args.no_repaint,
+                    "total_time_s": round(time.time() - infer_start, 2),
+                    "torch_compile": getattr(args, "torch_compile", False),
+                    "applied_optimizations": applied,
+                },
+            )
 
         # ── 推理后显存回收 ─────────────────────────────────────────────
         _cleanup_after_inference()
@@ -2266,6 +2549,7 @@ def main():
 if __name__ == "__main__":
     # Force unbuffered output so parent process can see real-time logs
     import sys
+
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
     main()

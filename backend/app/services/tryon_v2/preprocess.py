@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+from app.services.garment_alignment import align_garment
 from app.services.tryon_v2.garment_struct import cutout_garment_rgba
 
 
@@ -59,10 +60,24 @@ def _standardize_white_background(rgba: Image.Image, canvas: int = 768) -> Image
 def _recognize_category(image_bytes: bytes) -> tuple[str, float]:
     """Return (raw_category, confidence)."""
     try:
-        from app.ml.image_recognizer import ImageRecognizer
+        from app.ml.image_recognizer import get_recognizer
 
-        r = ImageRecognizer().recognize(image_bytes)
+        r = get_recognizer().recognize(image_bytes)
         return str(r.category), float(r.category_confidence or 0.0)
+    except Exception:
+        pass
+
+    # Part 6 fallback: use the new garment classifier when ImageRecognizer is unavailable
+    try:
+        import io
+
+        from PIL import Image
+
+        from app.services.garment_classifier import classify_garment
+
+        img = Image.open(io.BytesIO(image_bytes))
+        category = classify_garment(img)
+        return category, 0.6  # Moderate confidence since this is a heuristic fallback
     except Exception:
         return "unknown", 0.0
 
@@ -92,8 +107,11 @@ def _map_to_tryon_category(raw_category: str) -> str:
         return "top"
     if any(k in c for k in ("裤", "下装", "裤子", "短裤", "长裤", "jeans", "pants", "bottom")):
         return "bottom"
-    if any(k in c for k in ("裙", "裙子", "裙装", "连衣裙", "dress", "skirt")):
+    # Part 6: skirt/dress detection — must come BEFORE "裙" generic check
+    if c in ("skirt", "裙子", "半身裙", "短裙", "长裙"):
         return "skirt"
+    if any(k in c for k in ("裙", "连衣裙", "dress", "onepiece")):
+        return "skirt"  # Default to skirt for ambiguous dress-like items
     return "unknown"
 
 
@@ -126,9 +144,34 @@ def preprocess_garment_image(
     garment_image: Image.Image,
     *,
     canvas: int = 768,
+    cloth_type_hint: str | None = None,
 ) -> PreprocessResult:
-    cutout = cutout_garment_rgba(garment_image)
-    standardized = _standardize_white_background(cutout.cropped, canvas=canvas)
+    """Preprocess a garment image for CatVTON try-on.
+
+    Args:
+        garment_image: Raw garment product photo.
+        canvas: Output canvas size (default 768).
+        cloth_type_hint: Optional hint for SAM segmentation ("upper" | "lower" | "dress").
+            If not provided, uses a fast heuristic based on image aspect ratio.
+    """
+    # Fast cloth type heuristic (needed for SAM hints before category recognition).
+    # Recognition via _recognize_category happens after cutout, so we need a quick guess.
+    if cloth_type_hint:
+        cloth_type = cloth_type_hint
+    else:
+        w, h = garment_image.size
+        aspect = h / max(w, 1)
+        # Tall narrow = likely bottom/skirt; wide = likely upper
+        cloth_type = "upper" if aspect < 1.8 else "lower"
+
+    cutout = cutout_garment_rgba(garment_image, cloth_type=cloth_type)
+    try:
+        aligned = align_garment(cutout.cropped, cloth_type=cloth_type, canvas_size=canvas)
+        alignment_applied = True
+    except Exception:
+        aligned = cutout.cropped
+        alignment_applied = False
+    standardized = _standardize_white_background(aligned, canvas=canvas)
     img_bytes = _pil_to_jpeg_bytes(standardized)
 
     raw_cat, conf = _recognize_category(img_bytes)
@@ -142,5 +185,10 @@ def preprocess_garment_image(
         tryon_category=tryon_cat,
         confidence=float(conf),
         raw_category=raw_cat,
-        metadata={"canvas": int(canvas), "accessory_shape": bool(accessory_shape)},
+        metadata={
+            "canvas": int(canvas),
+            "accessory_shape": bool(accessory_shape),
+            "cloth_type_used": cloth_type,
+            "alignment_applied": alignment_applied,
+        },
     )

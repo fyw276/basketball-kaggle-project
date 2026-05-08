@@ -1,16 +1,40 @@
-# 2026-04-27 CatVTON 集成修复与文档同步
+# 2026-05-08 虚拟试衣 v2 (TryOn v2) 模块化重构与真实模式修复
 
 ## 概述
 
-本次迭代成功修复了 CatVTON 虚拟试衣功能的核心问题：**子进程路径计算错误** 和 **日志输出缺失**。通过添加实时日志流、白盒调试工具和极限 VRAM 优化，CatVTON 现已可在 8GB 显存设备上稳定运行。
+本次更新主要包含后端虚拟试衣 v2 服务的模块化重构，以及修复了真实模式（Realistic）下可能出现的“衣服多层/贴纸感”问题。通过禁用后处理中的叠加保护，将图像合成的任务完全交由 CatVTON 的内绘网络处理，极大提升了生成图像的真实度与自然感。此外，梳理了后端各 AI 服务模块并同步了完整的服务模块开发指南。
 
-**完成时间**: 2026-04-27
-**版本更新**: v1.3.0 → v1.4.0
-**PR 类型**: feature + bugfix
+**完成时间**: 2026-05-08
+**版本更新**: v1.6.0 → v1.7.0
+**PR 类型**: refactor + bugfix + docs
 
 ---
 
-## 核心修复
+## 核心更新
+
+### 1. 真实模式 (Realistic Mode) 修复与优化
+**问题**: 在 Realistic 模式下，当检测到源衣物包含较强纹理时，原有逻辑会使用 alpha overlay 的方式将源衣服硬覆盖至 AI 生成图上，导致双重衣物错位或出现剥离感（"贴纸感"）。
+**修复**:
+- 在 API 中将 `pattern_score` 强制重置为 0.0，关闭叠加保护逻辑。
+- 让 CatVTON 的 Diffusion Inpainting 完全接管衣服生成，由于生成模型的本身能力已经能够很好地捕捉纹理与光影，最终效果更逼真且与原图完美贴合。
+- 引入了过渡状态的 `realistic_v2` 模式保留备用逻辑测试路径。
+
+### 2. 后端服务模块化 (Service Modules Refactoring)
+为了解决原先 `vton_inference_service` 及脚本过度紧耦合、不易维护的问题，我们拆分了以下服务模块，使架构更加清晰：
+- `human_parsing.py`: 人体图像解析服务 (SCHP 模型)
+- `densepose_service.py`: 姿态及身体网格提取服务 (DensePose)
+- `sam_mask.py`: 服装蒙版自动提取 (Segment Anything Model)
+- `person_crop.py`: 人物主体识别与智能裁剪
+- `garment_alignment.py`: 姿态对齐与衣物形变
+- `cloth_warp.py` 与 `garment_classifier.py` 进一步完善。
+这些模块使预处理工作流 (Preprocessing Pipeline) 阶段的扩展和单独测试变得可能。
+
+### 3. 文档同步更新
+- **`SERVICE_MODULES_GUIDE.md`**: 全新创建，详细记录了重构之后各独立服务模块的职责、调用方式与输入输出契约。
+- **`README.md` 与 `PROJECT_STATUS.md`**: 更新了版本号与重构详情。
+
+---
+
 
 ### 1. CatVTON 子进程路径修复
 

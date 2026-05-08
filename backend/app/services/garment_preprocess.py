@@ -43,6 +43,99 @@ def _get_rembg_session():
     return _REMBG_SESSION
 
 
+def _fill_alpha_holes(alpha: np.ndarray, max_hole_ratio: float = 0.40) -> np.ndarray:
+    """
+    Fill internal holes in a binary/semi-binary alpha mask.
+
+    This fixes the "transparent floating garment" bug where rembg incorrectly treats
+    lace/mesh/pattern gaps as background. Uses flood-fill from border to find
+    internal holes (not connected to the image edge), then fills small-to-medium ones.
+
+    Args:
+        alpha: uint8 alpha array (0-255).
+        max_hole_ratio: Holes larger than this fraction of the garment area
+            are NOT filled (likely real transparent regions like mesh panels).
+
+    Returns:
+        uint8 alpha with holes filled.
+    """
+    if alpha.max() == 0:
+        return alpha
+
+    h, w = alpha.shape
+    fg_mask = (alpha > 20).astype(np.uint8)
+
+    try:
+        # Flood-fill from all 4 corners to mark the true external background
+        bg = np.zeros((h + 2, w + 2), dtype=np.uint8)
+        cv2.floodFill(bg, seedPoint=(0, 0), newVal=1)
+        cv2.floodFill(bg, seedPoint=(w + 1, 0), newVal=1)
+        cv2.floodFill(bg, seedPoint=(0, h + 1), newVal=1)
+        cv2.floodFill(bg, seedPoint=(w + 1, h + 1), newVal=1)
+        bg = bg[1:-1, 1:-1]
+
+        # Everything not background and not foreground = internal hole
+        internal_hole = ((bg == 0) & (fg_mask == 0)).astype(np.uint8)
+
+        if internal_hole.sum() == 0:
+            return alpha
+
+        # Label hole components
+        num_holes, hole_labels, stats, _ = cv2.connectedComponentsWithStats(
+            internal_hole, connectivity=8
+        )
+        if num_holes <= 1:
+            return alpha
+
+        # Largest foreground area for ratio threshold
+        num_fg, _, fg_stats, _ = cv2.connectedComponentsWithStats(fg_mask, connectivity=8)
+        largest_fg_area = (
+            int(fg_stats[1:, cv2.CC_STAT_AREA].max()) if num_fg > 1 else int(fg_mask.sum())
+        )
+        max_hole_area = max(50, int(largest_fg_area * max_hole_ratio))
+
+        fill_mask = np.zeros_like(alpha)
+        for i in range(1, num_holes):
+            if stats[i, cv2.CC_STAT_AREA] <= max_hole_area:
+                fill_mask[hole_labels == i] = 255
+
+        return np.minimum(alpha, fill_mask).astype(np.uint8)
+    except Exception:
+        return alpha
+
+
+def _inpaint_holes(rgb: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+    """
+    Fill color pixels where alpha was holey (rembg saw-through).
+
+    In the holes: rembg set alpha=0, and RGB is garbage (background color).
+    We replace those pixels with the surrounding garment color using inpainting.
+
+    Args:
+        rgb: RGB image (H, W, 3), uint8.
+        alpha: alpha channel (H, W), uint8.
+
+    Returns:
+        RGB image with holes filled with plausible garment color.
+    """
+    hole_mask = (alpha < 10).astype(np.uint8)
+    if hole_mask.sum() < 50:
+        return rgb
+
+    try:
+        # Dilate hole mask slightly before inpainting for cleaner edges
+        kernel = np.ones((3, 3), np.uint8)
+        dilated = cv2.dilate(hole_mask, kernel, iterations=1)
+        # Inpaint with surrounding pixels (TEBALDINI is better for texture)
+        result = cv2.inpaint(rgb, dilated, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
+        return result
+    except Exception:
+        # Fallback: just set holes to a neutral gray
+        out = rgb.copy()
+        out[hole_mask > 0] = [180, 180, 180]
+        return out
+
+
 def _fallback_bg_removal(image: Image.Image) -> np.ndarray:
     """
     Color-threshold background removal when rembg is unavailable.
@@ -100,7 +193,12 @@ def preprocess_garment(image: Image.Image, canvas_size: int = 512) -> np.ndarray
 
 
 def _rembg_remove(image: Image.Image) -> tuple[np.ndarray, np.ndarray]:
-    """Use rembg to remove background and return (RGB, alpha)."""
+    """Use rembg to remove background and return (RGB, alpha).
+
+    Post-processes the alpha to fix the "floating garment" bug:
+      1. Fill internal holes (lace/mesh/pattern gaps rembg incorrectly removed)
+      2. Inpaint RGB where alpha was holey so the garment color is continuous
+    """
     remove_fn = _get_rembg_session()
     if remove_fn is None:
         raise RuntimeError("rembg not available")
@@ -118,6 +216,11 @@ def _rembg_remove(image: Image.Image) -> tuple[np.ndarray, np.ndarray]:
 
     rgb = rgba_np[:, :, :3]
     alpha = rgba_np[:, :, 3]
+
+    # FIX: fill alpha holes (lace/mesh gaps) and inpaint RGB colors
+    alpha = _fill_alpha_holes(alpha)
+    rgb = _inpaint_holes(rgb, alpha)
+
     return rgb, alpha
 
 

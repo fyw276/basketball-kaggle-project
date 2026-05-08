@@ -13,6 +13,19 @@ from app.schemas.garment import ColorSchema
 
 logger = setup_logging()
 
+# Module-level singleton cache: load models once, reuse for all requests
+_recognizer_instance: "ImageRecognizer | None" = None
+
+
+def get_recognizer() -> "ImageRecognizer":
+    """Return the cached ImageRecognizer singleton (loads models once)."""
+    global _recognizer_instance
+    if _recognizer_instance is None:
+        logger.info("Creating ImageRecognizer singleton (first load)...")
+        _recognizer_instance = ImageRecognizer()
+        logger.info("ImageRecognizer singleton ready")
+    return _recognizer_instance
+
 
 class RecognitionResult(BaseModel):
     """Complete recognition result from image analysis"""

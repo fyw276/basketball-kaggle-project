@@ -1,0 +1,10 @@
+{
+  "cloth_type": "upper",
+  "source": "rembg_garment_segmentation",
+  "has_landmarks": true,
+  "person_size": [
+    1236,
+    1498
+  ],
+  "note": "rembg精确分割 + 形态学边界refinement（闭/开运算），白色区域=将被AI编辑"
+}

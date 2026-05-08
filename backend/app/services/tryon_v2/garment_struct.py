@@ -227,26 +227,188 @@ def _smooth_alpha_boundary(rgba: Image.Image) -> Image.Image:
         return im
 
 
-def cutout_garment_rgba(garment_image: Image.Image) -> GarmentCutout:
+def _fill_alpha_holes(rgba: Image.Image, max_hole_area_ratio: float = 0.40) -> Image.Image:
+    """Fill internal holes in the alpha mask that rembg incorrectly treats as background.
+
+    This is the KEY fix for the "transparent floating garment" bug. When rembg
+    sees through lace, mesh, or pattern gaps, the alpha mask has holes that let
+    the person image bleed through. We fill any hole that is:
+      1. Completely surrounded by foreground pixels
+      2. Smaller than max_hole_area_ratio of the largest foreground component
+
+    Args:
+        rgba: RGBA PIL image with alpha mask.
+        max_hole_area_ratio: Holes larger than this ratio of the main garment
+            are NOT filled (they're likely real transparent regions like mesh).
+    """
+    im = rgba.convert("RGBA")
+    a = np.asarray(im.split()[3], dtype=np.uint8)
+    if a.max() == 0:
+        return im
+
+    try:
+        import cv2
+
+        # Binarize alpha
+        fg_mask = (a > 20).astype(np.uint8)
+
+        # Flood-fill the background from the image border to mark external background
+        h, w = a.shape
+        bg_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
+        cv2.floodFill(bg_mask, seedPoint=(0, 0), newVal=1)
+        cv2.floodFill(bg_mask, seedPoint=(w + 1, 0), newVal=1)
+        cv2.floodFill(bg_mask, seedPoint=(0, h + 1), newVal=1)
+        cv2.floodFill(bg_mask, seedPoint=(w + 1, h + 1), newVal=1)
+        bg_mask = bg_mask[1:-1, 1:-1]  # Remove padding
+
+        # Everything NOT background AND NOT foreground = internal hole
+        internal_hole = ((bg_mask == 0) & (fg_mask == 0)).astype(np.uint8)
+
+        if internal_hole.sum() == 0:
+            return im
+
+        # Label connected hole components
+        num_holes, hole_labels, stats, _ = cv2.connectedComponentsWithStats(
+            internal_hole, connectivity=8
+        )
+        if num_holes <= 1:
+            return im
+
+        # Find largest foreground component area for ratio comparison
+        num_fg, fg_labels, fg_stats, _ = cv2.connectedComponentsWithStats(fg_mask, connectivity=8)
+        largest_fg_area = 0
+        if num_fg > 1:
+            largest_fg_area = int(fg_stats[1:, cv2.CC_STAT_AREA].max())
+
+        # Fill only small-to-medium holes (not large transparent regions like mesh panels)
+        fill_mask = np.zeros_like(a)
+        max_hole_area = int(largest_fg_area * max_hole_area_ratio) if largest_fg_area > 0 else 1000
+
+        for i in range(1, num_holes):
+            hole_area = int(stats[i, cv2.CC_STAT_AREA])
+            if hole_area <= max_hole_area:
+                fill_mask[hole_labels == i] = 255
+
+        # Apply fill
+        a_filled = np.minimum(a, fill_mask).astype(np.uint8)
+        out = im.copy()
+        out.putalpha(Image.fromarray(a_filled, mode="L"))
+        return out
+    except Exception:
+        return im
+
+
+def _check_rembg_quality(rgba: Image.Image) -> bool:
+    """Return True if rembg alpha looks suspicious (many internal holes = bad quality).
+
+    Suspicious patterns that indicate rembg failure:
+      - Very high solidity (lots of holes inside garment)
+      - Alpha coverage is too sparse for a garment image
+    """
+    try:
+        import cv2
+
+        a = np.asarray(rgba.split()[3], dtype=np.uint8)
+        fg_mask = (a > 20).astype(np.uint8)
+
+        # Find contours on the alpha
+        contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return False
+
+        # Largest contour area
+        largest_area = max(cv2.contourArea(c) for c in contours)
+        if largest_area < 100:
+            return False
+
+        # Ratio of foreground pixels to bounding box of largest contour
+        ys, xs = np.where(fg_mask > 0)
+        if xs.size == 0:
+            return False
+        x0, y0 = xs.min(), ys.min()
+        x1, y1 = xs.max() + 1, ys.max() + 1
+        bbox_area = float((x1 - x0) * (y1 - y0))
+        solidity = float(fg_mask.sum()) / max(bbox_area, 1.0)
+
+        # If fill ratio < 0.55, rembg likely missed a lot of the garment (many holes)
+        if solidity < 0.55:
+            return True
+
+        # Check for suspicious internal holes (large un-filled area within bbox)
+        holes_area = bbox_area - float(fg_mask.sum())
+        hole_ratio = holes_area / max(bbox_area, 1.0)
+        if hole_ratio > 0.30:
+            return True
+
+        return False
+    except Exception:
+        return False
+
+
+def cutout_garment_rgba(
+    garment_image: Image.Image,
+    cloth_type: str = "upper",
+) -> GarmentCutout:
+    """Extract garment from product image as RGBA with alpha mask.
+
+    Strategy (in priority order):
+      1. MobileSAM + cloth_type hints → best quality for complex garments
+      2. rembg → fast for white-background product photos
+      3. Color threshold fallback → last resort
+
+    For SAM: cloth_type hints guide the segmentation (upper/bottom/dress).
+    For rembg: alpha holes (lace/mesh gaps) are filled with flood-fill.
+
+    Args:
+        garment_image: PIL RGB image of the garment.
+        cloth_type: "upper" | "lower" | "dress" | "skirt" — hints for SAM.
+    """
     rgb = garment_image.convert("RGB")
     rgba: Image.Image | None = None
+    used_sam = False
 
-    # Optional: use rembg if available (kept best-effort).
+    # ── Strategy 1: MobileSAM with cloth-type hints ─────────────────────────
+    # SAM provides much better segmentation than rembg for:
+    # - Complex garments (ruffles, puffy sleeves, skirts)
+    # - Semi-transparent fabrics
+    # - Garments with cutouts / holes
+    # Using cloth_type hints produces more accurate masks.
     try:
-        from io import BytesIO
+        from app.services.sam_mask import sam_segment_with_hints
 
-        from rembg import remove
-
-        out = remove(rgb)
-        if isinstance(out, Image.Image):
-            rgba = out.convert("RGBA")
-        elif isinstance(out, (bytes, bytearray)):
-            rgba = Image.open(BytesIO(out)).convert("RGBA")
+        sam_mask = sam_segment_with_hints(rgb, cloth_type=cloth_type)
+        if sam_mask is not None:
+            sam_np = np.asarray(sam_mask, dtype=np.uint8)
+            if sam_np.sum() > 100:
+                rgba = rgb.convert("RGBA")
+                rgba.putalpha(sam_mask)
+                used_sam = True
+                logger.debug(
+                    f"[GARMENT-STRUCT] MobileSAM segmentation succeeded "
+                    f"(type={cloth_type}, area={sam_np.sum()})"
+                )
     except Exception:
-        rgba = None
+        pass
 
+    # ── Strategy 2: rembg (fast, white-background product photos) ───────────
+    # rembg handles white/clean backgrounds very well.
+    # Alpha holes (lace/mesh gaps) are fixed by _fill_alpha_holes below.
     if rgba is None:
-        # If this is a white-bg product photo, use a more stable mask.
+        try:
+            from io import BytesIO
+
+            from rembg import remove
+
+            out = remove(rgb)
+            if isinstance(out, Image.Image):
+                rgba = out.convert("RGBA")
+            elif isinstance(out, (bytes, bytearray)):
+                rgba = Image.open(BytesIO(out)).convert("RGBA")
+        except Exception:
+            rgba = None
+
+    # ── Strategy 3: Color threshold fallback ─────────────────────────────────
+    if rgba is None:
         if _looks_like_white_bg_product(rgb):
             mask = _generate_white_bg_mask(rgb)
         else:
@@ -254,23 +416,29 @@ def cutout_garment_rgba(garment_image: Image.Image) -> GarmentCutout:
         rgba = rgb.convert("RGBA")
         rgba.putalpha(mask)
 
-    # Keep only the main connected component to avoid pasting "product list panels"/watermarks.
-    # For white-bg product photos, avoid over-aggressive component filtering.
-    if not _looks_like_white_bg_product(rgb):
-        rgba = _keep_largest_alpha_component(rgba)
+    # ── Post-processing: fill alpha holes + smooth boundary ──────────────────
+    # For non-SAM paths: rembg and color-threshold can produce holes (lace/mesh gaps).
+    # These holes cause the "floating garment" bug where the person bleeds through.
+    # For SAM: even though SAM generates clean masks, some garment-edge holes may
+    # still exist and should be filled for best quality.
+    if not used_sam:
+        if not _looks_like_white_bg_product(rgb):
+            rgba = _keep_largest_alpha_component(rgba)
 
-    # Edge-preserving refinement: use bilateral-ish smoothing on alpha near boundary
-    # to reduce halo artifacts where garment meets background.
-    rgba = _smooth_alpha_boundary(rgba)
+        rgba = _fill_alpha_holes(rgba)
+        rgba = _smooth_alpha_boundary(rgba)
 
-    # Poster/screenshot often yields near-full alpha. Instead of failing, try GrabCut refinement.
-    a = np.asarray(rgba.split()[3], dtype=np.uint8)
-    cover = float((a > 20).mean())
-    if cover > 0.85:
-        refined = _grabcut_refine_rgba(rgb)
-        if refined is not None:
-            refined = _keep_largest_alpha_component(refined)
-            rgba = refined
+        a = np.asarray(rgba.split()[3], dtype=np.uint8)
+        cover = float((a > 20).mean())
+        if cover > 0.85:
+            refined = _grabcut_refine_rgba(rgb)
+            if refined is not None:
+                refined = _keep_largest_alpha_component(refined)
+                rgba = refined
+    else:
+        # SAM masks can also have small internal holes (thin garment parts).
+        # Apply gentle hole-filling to ensure full garment coverage.
+        rgba = _fill_alpha_holes(rgba, max_hole_area_ratio=0.15)
 
     bbox = _alpha_bbox(rgba)
     cropped = rgba.crop(bbox) if bbox else rgba

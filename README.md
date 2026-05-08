@@ -1,6 +1,6 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-05-02
+**最后更新**: 2026-05-07
 **状态**: 生产级可用（FastAPI 后端 + Flutter Web/移动端 + CLI + MCP Agent 工具面）
 
 ## 项目简介

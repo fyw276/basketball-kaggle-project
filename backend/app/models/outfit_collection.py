@@ -9,6 +9,7 @@ from sqlalchemy import Column, DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base
+from app.models.garment import UUID  # Import custom UUID type for consistency with User.user_id
 
 
 class OutfitCollection(Base):
@@ -21,9 +22,9 @@ class OutfitCollection(Base):
 
     __tablename__ = "outfit_collections"
 
-    collection_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    collection_id = Column(UUID(), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(
-        String(36),
+        UUID(),
         ForeignKey("users.user_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -50,15 +51,15 @@ class OutfitCollectionItem(Base):
 
     __tablename__ = "outfit_collection_items"
 
-    item_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    item_id = Column(UUID(), primary_key=True, default=lambda: str(uuid.uuid4()))
     collection_id = Column(
-        String(36),
+        UUID(),
         ForeignKey("outfit_collections.collection_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     garment_id = Column(
-        String(36),
+        UUID(),
         ForeignKey("garments.garment_id", ondelete="CASCADE"),
         nullable=False,
         index=True,

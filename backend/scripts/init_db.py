@@ -12,7 +12,13 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from app.core.config import settings  # noqa: E402
 from app.db.base import Base  # noqa: E402
 from app.db.session import engine  # noqa: E402
-from app.models import Garment, User, UserProfile  # noqa: E402, F401
+from app.models import (  # noqa: E402, F401
+    Garment,
+    OutfitCollection,
+    OutfitCollectionItem,
+    User,
+    UserProfile,
+)
 
 
 def init_db():
@@ -23,7 +29,7 @@ def init_db():
     try:
         # Create all tables
         Base.metadata.create_all(bind=engine)
-        print("✓ All tables created successfully!")
+        print("[OK] All tables created successfully!")
 
         # Print created tables
         print("\nCreated tables:")
@@ -31,7 +37,10 @@ def init_db():
             print(f"  - {table.name}")
 
     except Exception as e:
-        print(f"✗ Error creating tables: {e}")
+        import traceback
+
+        print(f"[ERROR] Error creating tables: {e}")
+        traceback.print_exc()
         sys.exit(1)
 
 

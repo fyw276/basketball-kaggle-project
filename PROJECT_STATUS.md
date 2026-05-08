@@ -1,12 +1,21 @@
 # 智能穿搭助手 - 项目状态文档
 
-**最后更新**: 2026-05-02
-**项目版本**: v1.6.0
-**状态**: 生产级可用；六模式虚拟试衣 v2（strict/balanced/replace/realistic/professional/hybrid）
+**最后更新**: 2026-05-08
+**项目版本**: v1.7.0
+**状态**: 生产级可用；六模式虚拟试衣 v2（strict/balanced/replace/realistic/professional/hybrid），后端服务已完成高度模块化拆分。
 
 ---
 
-## 本次更新（2026-05-01）
+## 本次更新（2026-05-08）
+
+- **真实模式优化 (Realistic Mode)**: 移除后处理层的衣物纹理二次叠加机制（Overlay），完全信任 CatVTON inpainting 网络自身合成能力，解决“多层贴纸/鬼影”现象
+- **引入 realistic_v2 变体**: API 层新增支持 `realistic_v2` 等模式，允许未来灵活测试新的混合渲染算法
+- **模块化重构**: 拆分出了 `human_parsing`、`densepose_service`、`sam_mask`、`person_crop` 等原子级别服务，大幅降低了之前单模块的圈复杂度
+- **文档同步**: 新增与更新了 `SERVICE_MODULES_GUIDE.md` 明确声明独立服务的输入输出契约及使用指南
+
+---
+
+## 上次更新（2026-05-01）
 
 - 重写 `README.md`：更新技术栈为 FashionCLIP（非 TensorFlow/MobileNetV2），更新虚拟试衣 v2 为四模式架构（strict/balanced/replace/realistic/professional），新增 tryon_v2 14 个模块说明，新增极限 VRAM 优化与白盒调试文档
 
