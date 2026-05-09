@@ -1287,28 +1287,60 @@ def _protect_face_haar(person_img: "Image.Image", pw: int, ph: int) -> "Image.Im
     使用 OpenCV 内置 Haar Cascade 进行人脸检测。
     相比 MediaPipe FaceDetector，这个方案不需要下载外部模型文件，100% 可用。
     对正面人脸效果良好，足以满足"防止衣服编辑覆盖人脸"的需求。
+
+    使用项目内嵌的 cascade XML（backend/assets/opencv/），避免中文路径问题。
     """
     import cv2
 
     try:
-        # 尝试多个 Haar Cascade XML 文件路径（OpenCV 内置）
-        cascade_paths = [
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml",
-            cv2.data.haarcascades + "haarcascade_frontalface_alt.xml",
-            cv2.data.haarcascades + "haarcascade_frontalface_alt2.xml",
-        ]
-        face_cascade = None
-        for path in cascade_paths:
-            try:
-                candidate = cv2.CascadeClassifier(path)
-                if not candidate.empty():
-                    face_cascade = candidate
-                    logger.debug(f"Loaded Haar Cascade from {path}")
-                    break
-            except Exception:
-                continue
+        # 优先使用 cascade_manager 加载（ASCII 临时路径，无中文路径问题）
+        try:
+            from cascade_manager import load_cascade
 
+            face_cascade = load_cascade("haarcascade_frontalface_default.xml")
+            if face_cascade is not None and not face_cascade.empty():
+                logger.debug("Loaded Haar Cascade via cascade_manager (ASCII temp path)")
+            else:
+                logger.debug("cascade_manager failed, trying cv2.data paths as fallback")
+                face_cascade = None
+        except ImportError:
+            face_cascade = None
+
+        # 回退：尝试多个 Haar Cascade XML 文件路径（OpenCV 内置）
         if face_cascade is None:
+            # 优先使用 cv2 扩展目录（通常不含中文）
+            cv2_base = Path(cv2.__file__).resolve().parent
+            cv2_data_dir = cv2_base / "data"
+            cascade_paths = [
+                cv2_data_dir / "haarcascade_frontalface_default.xml",
+                cv2_data_dir / "haarcascade_frontalface_alt.xml",
+                cv2_data_dir / "haarcascade_frontalface_alt2.xml",
+            ]
+            for path in cascade_paths:
+                if not path.is_file():
+                    continue
+                try:
+                    # 检查路径是否为 ASCII
+                    try:
+                        path_str = str(path)
+                        path_str.encode("ascii")
+                        candidate = cv2.CascadeClassifier(path_str)
+                    except UnicodeEncodeError:
+                        # 中文路径：复制到临时目录
+                        import shutil as _shutil
+                        import tempfile as _tempfile
+                        tmp_path = Path(_tempfile.gettempdir()) / path.name
+                        _shutil.copyfile(path, tmp_path)
+                        candidate = cv2.CascadeClassifier(str(tmp_path))
+
+                    if not candidate.empty():
+                        face_cascade = candidate
+                        logger.debug(f"Loaded Haar Cascade from {path}")
+                        break
+                except Exception:
+                    continue
+
+        if face_cascade is None or face_cascade.empty():
             logger.debug("No Haar Cascade available, using keypoint-based fallback")
             return _protect_face_legacy(person_img, pw, ph)
 

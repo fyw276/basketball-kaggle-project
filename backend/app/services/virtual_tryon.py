@@ -403,76 +403,19 @@ class VirtualTryOnService:
     def _garment_has_face(self, garment_image: Image.Image) -> bool:
         """检测衣服图是否含正面人脸（含模特图）。"""
         try:
-            import shutil
-            import tempfile
-            from pathlib import Path
-
             import cv2
             import numpy as np
+
+            from app.services.cascade_manager import load_cascade
 
             arr = np.array(garment_image.convert("RGB"))
             gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
 
-            # Windows + 中文路径问题：OpenCV 的 cv2.data.haarcascades 在中文路径下
-            # 会返回乱码路径，导致 FileStorage 无法打开。
-            # 解决策略：直接复制 XML 到 ASCII 临时路径
-            def _get_cascade_path() -> str:
-                # 优先使用 cv2 扩展目录下的 data（通常不含中文）
-                cv2_base = Path(cv2.__file__).resolve().parent
-                cv2_cascade = cv2_base / "data" / "haarcascade_frontalface_default.xml"
-                if cv2_cascade.is_file():
-                    return str(cv2_cascade)
-
-                # 检查系统缓存目录
-                for candidate in [
-                    Path.home() / ".cache" / "cv2" / "haarcascade_frontalface_default.xml",
-                    Path("C:/temp/haarcascade_frontalface_default.xml"),
-                ]:
-                    if candidate.is_file():
-                        return str(candidate)
-
-                # 最后回退到 cv2.data（可能会失败）
-                return cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-
-            cascade_path = _get_cascade_path()
-            cascade_src = Path(cascade_path)
-
-            # 如果源文件不存在或路径包含非ASCII字符，复制到临时目录
-            cascade = cv2.CascadeClassifier()
-            if not cascade_src.is_file():
-                logger.warning("Haar cascade not found at: %s", cascade_path)
+            cascade = load_cascade("haarcascade_frontalface_default.xml")
+            if cascade is None or cascade.empty():
+                logger.warning("Haar cascade not available; skip garment face check")
                 return False
 
-            # 检查路径是否包含非ASCII字符
-            try:
-                cascade_path.encode("ascii")
-                cascade = cv2.CascadeClassifier(cascade_path)
-            except UnicodeEncodeError:
-                # 路径包含中文，复制到 ASCII 临时目录
-                tmp_dir = Path(tempfile.gettempdir())
-                dst = tmp_dir / "haarcascade_frontalface_default.xml"
-                try:
-                    shutil.copyfile(cascade_src, dst)
-                    cascade = cv2.CascadeClassifier(str(dst))
-                    logger.info("Haar cascade copied to ASCII temp path: %s", dst)
-                except OSError as e:
-                    logger.warning("Failed to copy cascade to temp: %s", e)
-                    return False
-
-            # 尝试直接加载，如果失败则复制到临时目录
-            if cascade.empty():
-                tmp_dir = Path(tempfile.gettempdir())
-                dst = tmp_dir / "haarcascade_frontalface_default.xml"
-                try:
-                    shutil.copyfile(cascade_src, dst)
-                    cascade = cv2.CascadeClassifier(str(dst))
-                    logger.info("Haar cascade loaded from temp: %s", dst)
-                except OSError as e:
-                    logger.warning("Failed to copy cascade to temp: %s", e)
-                    return False
-            if cascade.empty():
-                logger.warning("Haar cascade not loaded; skip garment face check")
-                return False
             faces = cascade.detectMultiScale(
                 gray, scaleFactor=1.1, minNeighbors=5, minSize=(64, 64)
             )

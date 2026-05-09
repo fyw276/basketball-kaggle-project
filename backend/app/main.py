@@ -242,6 +242,43 @@ async def _app_lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Failed to check CatVTON status: %s", e)
 
+    # Preload ImageRecognizer singleton at startup to avoid first-request blocking.
+    # Without this, the first HTTP request to /api/v2/tryon/validate-input would block
+    # for 20+ seconds while TensorFlow/MobileNetV2 models are loaded.
+    try:
+        from app.ml.image_recognizer import get_recognizer
+
+        get_recognizer()  # Initialize singleton (don't store reference)
+        logger.info("ImageRecognizer singleton preloaded at startup (no first-request blocking)")
+    except Exception as e:
+        logger.warning("Failed to preload ImageRecognizer at startup: %s", e)
+
+    # Initialize Haar Cascade XML files in ASCII temp directory.
+    # This solves the Windows + Chinese path issue where cv2.data.haarcascades
+    # returns garbled paths, causing OpenCV FileStorage to fail.
+    try:
+        from app.services.cascade_manager import ensure_cascade_available, init_cascades
+
+        init_cascades()
+        if ensure_cascade_available():
+            logger.info("Haar Cascades preloaded successfully (ASCII temp path)")
+        else:
+            logger.warning("Haar Cascades not available - face detection in try-on may fail")
+    except Exception as e:
+        logger.warning("Failed to initialize Haar Cascades at startup: %s", e)
+
+    # Warn if CatVTON is enabled but DISABLE_HOT_RELOAD is not set
+    import os as _os
+
+    if getattr(settings, "CATVTON_ENABLED", False) and not _os.environ.get("DISABLE_HOT_RELOAD"):
+        logger.warning(
+            "CatVTON is enabled (CATVTON_ENABLED=true). "
+            "Do NOT use uvicorn --reload in production — hot reload causes "
+            "CatVTON model to be reloaded/restarted on every code change, "
+            "triggering CUDA context destruction and GPU memory fragmentation. "
+            "Set DISABLE_HOT_RELOAD=true or run without --reload."
+        )
+
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
     logger.info(f"Debug mode: {settings.DEBUG}")
