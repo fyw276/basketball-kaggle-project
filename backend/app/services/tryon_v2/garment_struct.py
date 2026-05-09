@@ -6,10 +6,14 @@ so that the v2 MVP stays explainable and testable on CPU-only environments.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 from PIL import Image, ImageFilter
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -114,8 +118,6 @@ def _keep_largest_alpha_component(rgba: Image.Image, min_alpha: int = 20) -> Ima
         return im
 
     try:
-        import cv2  # type: ignore
-
         num, labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
         if num <= 1:
             return im
@@ -178,8 +180,6 @@ def _grabcut_refine_rgba(rgb: Image.Image) -> Image.Image | None:
     Requires OpenCV. Returns an RGBA image with alpha mask, or None if unavailable/fails.
     """
     try:
-        import cv2  # type: ignore
-
         arr = np.asarray(rgb.convert("RGB"))
         h, w = arr.shape[:2]
         if h < 64 or w < 64:
@@ -213,8 +213,6 @@ def _smooth_alpha_boundary(rgba: Image.Image) -> Image.Image:
         return im
 
     try:
-        import cv2
-
         kernel = np.ones((3, 3), np.uint8)
         a_thin = cv2.erode(a, kernel, iterations=1)
         a_thick = cv2.dilate(a_thin, kernel, iterations=1)
@@ -247,8 +245,6 @@ def _fill_alpha_holes(rgba: Image.Image, max_hole_area_ratio: float = 0.40) -> I
         return im
 
     try:
-        import cv2
-
         # Binarize alpha
         fg_mask = (a > 20).astype(np.uint8)
 
@@ -306,8 +302,6 @@ def _check_rembg_quality(rgba: Image.Image) -> bool:
       - Alpha coverage is too sparse for a garment image
     """
     try:
-        import cv2
-
         a = np.asarray(rgba.split()[3], dtype=np.uint8)
         fg_mask = (a > 20).astype(np.uint8)
 

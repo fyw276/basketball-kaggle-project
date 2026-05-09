@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 from PIL import Image, ImageChops, ImageFilter
 
@@ -58,9 +59,9 @@ def _detect_pattern_strength(img: Image.Image) -> float:
     that would be destroyed by aggressive brightness transfer.
 
     Returns a score [0, 1]:
-      - 0.0 ~ 0.25: solid or low-contrast fabric → apply brightness transfer
-      - 0.25 ~ 0.60: moderate pattern (small dots, subtle stripes) → careful transfer
-      - 0.60 ~ 1.00: high-contrast pattern (checkered, bold stripes, plaid) → skip transfer
+      - 0.0 ~ 0.35: solid or low-contrast fabric → apply brightness transfer (gentle)
+      - 0.35 ~ 0.50: moderate pattern → careful transfer (reduced blend)
+      - 0.50 ~ 1.00: high-contrast pattern (checkered, bold stripes, plaid) → skip all effects
 
     Method: Compare gradient energy at multiple scales to distinguish sharp patterns from noise.
     High local variance in small neighborhoods with many edge pixels → pattern.
@@ -144,7 +145,6 @@ def _person_foreground_mask(person_image: Image.Image) -> np.ndarray | None:
     so garments can auto-adjust position and size based on the person's shape.
     """
     try:
-        import cv2  # type: ignore
 
         arr = np.asarray(person_image.convert("RGB"))
         h, w = arr.shape[:2]
@@ -669,14 +669,16 @@ def tryon_top_warp(
     # For patterns (checkered/striped), we skip the LAB transfer but still apply
     # fold lines + edge darkening since those are boundary-only effects (harmless).
     _pattern_strength = _detect_pattern_strength(g)
-    _skip_lab_transfer = _pattern_strength > 0.25
-    if not _skip_lab_transfer or True:  # always run fold+edge
-        try:
-            import cv2  # noqa: F401
+    _skip_lab_transfer = _pattern_strength > 0.35  # Raised threshold to preserve more colors
+    _skip_fold_lines = _pattern_strength > 0.50  # Also skip fold lines for high-contrast patterns
+    _skip_edge_darken = _pattern_strength > 0.45  # Skip edge darkening for patterns
 
+    if not _skip_lab_transfer or not _skip_fold_lines or not _skip_edge_darken:
+        try:
             layer_np = np.array(layer)
 
             # ── LAB brightness transfer (only for solid-color garments) ──────────
+            # Preserve more of the original garment color - use gentler blending
             if not _skip_lab_transfer:
                 base_np = np.array(base)
                 body_roi = base_np[y0:y1, x0:x1]
@@ -696,10 +698,13 @@ def tryon_top_warp(
                     gar_L_roi = gar_lab[:, :, 0][fg_mask]
                     if len(gar_L_roi) > 0:
                         gar_L_mean = float(gar_L_roi.mean())
-                        blend_ratio = 0.72
+                        # Reduced blend ratio: preserve more original garment brightness
+                        blend_ratio = 0.50  # Changed from 0.72 to preserve more original color
                         if gar_L_mean > 2.0:
-                            L_scale = (body_L_mean * blend_ratio + 0.28 * gar_L_mean) / gar_L_mean
-                            L_scale = np.clip(L_scale, 0.70, 1.30)
+                            L_scale = (
+                                body_L_mean * blend_ratio + (1 - blend_ratio) * gar_L_mean
+                            ) / gar_L_mean
+                            L_scale = np.clip(L_scale, 0.80, 1.20)  # Reduced range from 0.70-1.30
                             gar_lab[:, :, 0] = np.clip(gar_lab[:, :, 0] * L_scale, 0, 255)
                             gar_rgb = cv2.cvtColor(gar_lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
                             roi_region = layer_np[y0:y1, x0:x1]
@@ -707,38 +712,44 @@ def tryon_top_warp(
                             layer_np[y0:y1, x0:x1] = roi_region
 
             # ── Fold lines: subtle vertical darkening for drape illusion ───────────
-            fold_positions = [int(itw * 0.33), int(itw * 0.67)]
-            fold_strength = 0.06
-            for fx in fold_positions:
-                abs_x = ox + min(fx, tw - 1)
-                if 0 < abs_x < pw - 1:
-                    fade = max(0, 1.0 - abs(fx - itw / 2) / (itw * 0.25)) * fold_strength
-                    if fade > 0.005:
-                        region = layer_np[oy : oy + th, max(0, abs_x - 1) : abs_x + 1]
-                        if region.size > 0:
-                            alpha_aware = region[:, :, 3:4].astype(float) / 255.0
-                            darken = (1.0 - fade) * alpha_aware
-                            region[:, :, :3] = np.clip(
-                                region[:, :, :3].astype(float) * darken, 0, 255
-                            ).astype(np.uint8)
+            # Only apply for solid-color garments, skip for patterns
+            if not _skip_fold_lines:
+                fold_positions = [int(itw * 0.33), int(itw * 0.67)]
+                fold_strength = 0.04  # Reduced from 0.06
+                for fx in fold_positions:
+                    abs_x = ox + min(fx, tw - 1)
+                    if 0 < abs_x < pw - 1:
+                        fade = max(0, 1.0 - abs(fx - itw / 2) / (itw * 0.25)) * fold_strength
+                        if fade > 0.005:
+                            region = layer_np[oy : oy + th, max(0, abs_x - 1) : abs_x + 1]
+                            if region.size > 0:
+                                alpha_aware = region[:, :, 3:4].astype(float) / 255.0
+                                darken = (1.0 - fade) * alpha_aware
+                                region[:, :, :3] = np.clip(
+                                    region[:, :, :3].astype(float) * darken, 0, 255
+                                ).astype(np.uint8)
 
             # ── Edge darkening: simulate cast shadow from garment onto body ────────
-            edge_px = max(2, int(feather_px * 1.5))
-            for dx in range(-edge_px, edge_px + 1):
-                for dy in range(-edge_px, edge_px + 1):
-                    abs_x = ox + dx
-                    abs_y = oy + dy
-                    if 0 <= abs_x < pw and 0 <= abs_y < ph:
-                        alpha_at = layer_np[abs_y, abs_x, 3]
-                        if 10 < alpha_at < 245:
-                            edge_dist = max(abs(dx), abs(dy))
-                            falloff = max(0, 1.0 - edge_dist / float(edge_px)) * 0.12
-                            if falloff > 0.005:
-                                layer_np[abs_y, abs_x, :3] = np.clip(
-                                    layer_np[abs_y, abs_x, :3].astype(float) * (1.0 - falloff),
-                                    0,
-                                    255,
-                                ).astype(np.uint8)
+            # Only apply for solid-color garments
+            if not _skip_edge_darken:
+                edge_px = max(2, int(feather_px * 1.5))
+                for dx in range(-edge_px, edge_px + 1):
+                    for dy in range(-edge_px, edge_px + 1):
+                        abs_x = ox + dx
+                        abs_y = oy + dy
+                        if 0 <= abs_x < pw and 0 <= abs_y < ph:
+                            alpha_at = layer_np[abs_y, abs_x, 3]
+                            if 10 < alpha_at < 245:
+                                edge_dist = max(abs(dx), abs(dy))
+                                falloff = (
+                                    max(0, 1.0 - edge_dist / float(edge_px)) * 0.08
+                                )  # Reduced from 0.12
+                                if falloff > 0.005:
+                                    layer_np[abs_y, abs_x, :3] = np.clip(
+                                        layer_np[abs_y, abs_x, :3].astype(float) * (1.0 - falloff),
+                                        0,
+                                        255,
+                                    ).astype(np.uint8)
 
             layer = Image.fromarray(layer_np, mode="RGBA")
         except Exception:
@@ -1063,8 +1074,6 @@ def overlay_draping_from_ai(
 
         # Feather garment edge so blending is smooth
         try:
-            import cv2
-
             kernel = np.ones((expand * 2 + 1, expand * 2 + 1), np.uint8)
             gar_mask_u8 = (garment_mask * 255).astype(np.uint8)
             gar_mask_u8 = cv2.erode(gar_mask_u8, kernel, iterations=1)
@@ -1392,3 +1401,238 @@ def tryon_hybrid_warp_catvton(
         "pipeline": "warp_preserve → overlay_draping_from_ai",
     }
     return result, meta
+
+
+def catvton_color_fidelity_enhance(
+    catvton_result: Image.Image,
+    original_garment: Image.Image,
+    person_image: Image.Image,
+    garment_category: str,
+    *,
+    fidelity_strength: float = 0.75,
+) -> tuple[Image.Image, dict]:
+    """
+    增强 CatVTON 生成结果的衣服颜色保真度。
+
+    核心策略：
+    1. 在 CatVTON 结果中检测衣服区域（使用 GrabCut 或前景掩码）
+    2. 对原衣服进行分割和 warp 变换，使其与 CatVTON 结果中人物的身体位置对齐
+    3. 在衣服区域应用 LAB 亮度保持的颜色转移 + alpha 混合
+       → 保留 CatVTON 的光影/阴影，只修正衣服颜色/图案
+    4. 边缘羽化融合，避免接缝痕迹
+
+    与 overlay_top_onto_ai_result 的关键区别：
+    - overlay_top_onto_ai_result：直接用原衣服覆盖 AI 结果 → 贴纸感
+    - catvton_color_fidelity_enhance：亮度保持的颜色转移 → 保留 AI 光影
+
+    Args:
+        catvton_result: CatVTON 生成的试穿结果
+        original_garment: 原始衣服商品图
+        person_image: 原始人物图（用于对齐）
+        garment_category: 衣服类别 (top/bottom/skirt/dress)
+        fidelity_strength: 0.0-1.0，颜色保真强度。0.75 表示 75% 原始衣服颜色
+
+    Returns:
+        (增强后的结果图, metadata_dict)
+    """
+    import logging
+
+    _logger = logging.getLogger(__name__)
+
+    try:
+        cr = catvton_result.convert("RGB")
+        og = original_garment.convert("RGB")
+
+        cw, ch = cr.size
+        gw, gh = og.size
+
+        # ── Step 1: 检测人物身体关键点 ────────────────────────────────────────
+        from app.services.tryon_v2.pose_utils import detect_pose_keypoints
+
+        cat = (garment_category or "").strip().lower()
+        _is_top = any(k in cat for k in ("top", "上装", "上衣"))
+        _is_skirt = any(k in cat for k in ("skirt", "dress", "裙", "连衣裙"))
+        _is_bottom = any(k in cat for k in ("bottom", "下装", "裤"))
+
+        # ── Step 2: 估算衣服区域在 CatVTON 结果中的位置 ─────────────────────
+        kpts = detect_pose_keypoints(catvton_result)
+        if kpts:
+            bounds = get_body_bounds_from_keypoints(kpts, cw, ch, "top" if _is_top else "bottom")
+            if bounds.get("valid"):
+                bx0 = int(bounds["x0"])
+                bx1 = int(bounds["x1"])
+                neck_y = int(bounds["neck_y"])
+                waist_y = int(bounds["waist_y"])
+                body_valid = True
+            else:
+                body_valid = False
+        else:
+            body_valid = False
+
+        if not body_valid:
+            fg = _person_foreground_mask(catvton_result)
+            if fg is not None:
+                rows = np.any(fg, axis=1)
+                cols = np.any(fg, axis=0)
+                if rows.any() and cols.any():
+                    y_top = int(np.where(rows)[0][0])
+                    y_bot = int(np.where(rows)[0][-1])
+                    x_lft = int(np.where(cols)[0][0])
+                    x_rgt = int(np.where(cols)[0][-1])
+                    bx0 = max(0, int(x_lft - cw * 0.03))
+                    bx1 = min(cw, int(x_rgt + cw * 0.03))
+                    body_span = y_bot - y_top
+                    neck_y = y_top + int(body_span * 0.18)
+                    waist_y = y_top + int(body_span * 0.52)
+                    body_valid = True
+                else:
+                    body_valid = False
+            else:
+                body_valid = False
+
+        if not body_valid:
+            if _is_top:
+                bx0, bx1 = int(cw * 0.15), int(cw * 0.85)
+                neck_y, waist_y = int(ch * 0.15), int(ch * 0.50)
+            elif _is_skirt:
+                bx0, bx1 = int(cw * 0.18), int(cw * 0.82)
+                neck_y, waist_y = int(ch * 0.40), int(ch * 0.85)
+            else:
+                bx0, bx1 = int(cw * 0.20), int(cw * 0.80)
+                neck_y, waist_y = int(ch * 0.38), int(ch * 0.90)
+
+        # ── Step 3: 计算衣服区域 ─────────────────────────────────────────────
+        if _is_top:
+            gar_x0 = max(0, bx0 - int(cw * 0.03))
+            gar_x1 = min(cw, bx1 + int(cw * 0.03))
+            gar_y0 = max(0, min(int(neck_y - ch * 0.02), int(ch * 0.40)))
+            gar_y1 = min(ch, max(gar_y0 + 2, int(waist_y + ch * 0.06)))
+        elif _is_skirt:
+            gar_x0 = max(0, bx0 - int(cw * 0.05))
+            gar_x1 = min(cw, bx1 + int(cw * 0.05))
+            gar_y0 = max(0, int(waist_y - ch * 0.04))
+            gar_y1 = min(ch, int(ch * 0.92))
+        else:
+            gar_x0 = max(0, bx0 - int(cw * 0.04))
+            gar_x1 = min(cw, bx1 + int(cw * 0.04))
+            gar_y0 = max(0, int(waist_y - ch * 0.02))
+            gar_y1 = min(ch, int(ch * 0.92))
+
+        gar_w = gar_x1 - gar_x0
+        gar_h = gar_y1 - gar_y0
+
+        if gar_w < 16 or gar_h < 16:
+            _logger.warning(
+                "catvton_color_fidelity: garment region too small (%dx%d), skipping",
+                gar_w,
+                gar_h,
+            )
+            return catvton_result, {
+                "engine": "catvton_color_fidelity",
+                "reason": "region_too_small",
+            }
+
+        # ── Step 4: 分割原始衣服 ─────────────────────────────────────────────
+        cutout = cutout_garment_rgba(og)
+        gar_src = cutout.cropped.convert("RGBA")
+        sw, sh = gar_src.size
+        if sw < 16 or sh < 16:
+            return catvton_result, {
+                "engine": "catvton_color_fidelity",
+                "reason": "garment_too_small",
+            }
+
+        # ── Step 5: 将原衣服缩放并贴合到目标区域 ─────────────────────────────
+        # 缩放衣服使其覆盖目标区域
+        scale = max(gar_w / float(sw), gar_h / float(sh))
+        s_w = max(2, int(sw * scale))
+        s_h = max(2, int(sh * scale))
+        gar_scaled = gar_src.resize((s_w, s_h), Image.Resampling.LANCZOS)
+
+        # 居中粘贴
+        paste_x = gar_x0 + (gar_w - s_w) // 2
+        paste_y = gar_y0 + (gar_h - s_h) // 2
+        paste_x = max(0, min(paste_x, cw - 2))
+        paste_y = max(0, min(paste_y, ch - 2))
+
+        fit_w = min(s_w, cw - paste_x)
+        fit_h = min(s_h, ch - paste_y)
+        if fit_w < 2 or fit_h < 2:
+            return catvton_result, {"engine": "catvton_color_fidelity", "reason": "fit_too_small"}
+
+        gar_fitted = gar_scaled.crop((0, 0, fit_w, fit_h))
+
+        # 创建衣服层
+        layer = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+        layer.paste(gar_fitted, (paste_x, paste_y), gar_fitted)
+
+        # ── Step 6: 羽化边缘 ───────────────────────────────────────────────
+        feather_px = max(2, int(min(cw, ch) * 0.012))
+        layer = _feather_alpha(layer, radius_px=feather_px)
+
+        # 保护面部/颈部
+        protect_y = max(0, int(neck_y - ch * 0.08))
+        protect = _upper_protect_mask((cw, ch), protect_until_y=protect_y)
+        r_ch, g_ch, b_ch, a_ch = layer.split()
+        a_ch = ImageChops.multiply(a_ch, protect)
+        layer = Image.merge("RGBA", (r_ch, g_ch, b_ch, a_ch))
+
+        # ── Step 7: LAB 亮度保持的颜色转移 + alpha 混合 ─────────────────────
+        layer_np = np.array(layer)
+        catvton_np = np.array(cr)
+        result_np = np.array(cr)
+
+        layer_alpha = layer_np[:, :, 3].astype(np.float32) / 255.0  # HxW
+        strength = layer_alpha * fidelity_strength  # HxW
+
+        # 只在衣服区域内处理
+        roi_layer = layer_np[gar_y0:gar_y1, gar_x0:gar_x1]
+        roi_catvton = catvton_np[gar_y0:gar_y1, gar_x0:gar_x1]
+        roi_alpha = layer_alpha[gar_y0:gar_y1, gar_x0:gar_x1]
+        roi_strength = strength[gar_y0:gar_y1, gar_x0:gar_x1]
+
+        # 有效的衣服像素 (alpha > 30)
+        valid = roi_alpha > 0.12
+
+        if valid.sum() > 100:
+            roi_catvton_lab = cv2.cvtColor(roi_catvton.astype(np.uint8), cv2.COLOR_RGB2LAB)
+            roi_layer_lab = cv2.cvtColor(roi_layer[:, :, :3].astype(np.uint8), cv2.COLOR_RGB2LAB)
+
+            # 对每个通道进行加权混合
+            for c in range(3):
+                roi_catvton_c = roi_catvton_lab[:, :, c].astype(np.float32)
+                roi_layer_c = roi_layer_lab[:, :, c].astype(np.float32)
+
+                # 颜色转移：原衣服 * strength + CatVTON * (1 - strength)
+                blended = roi_layer_c * roi_strength + roi_catvton_c * (1.0 - roi_strength)
+                blended = np.clip(blended, 0, 255).astype(np.uint8)
+
+                # 只在有效区域更新 result
+                result_np[gar_y0:gar_y1, gar_x0:gar_x1, c] = np.where(
+                    valid,
+                    blended,
+                    catvton_np[gar_y0:gar_y1, gar_x0:gar_x1, c],
+                )
+
+        result_img = Image.fromarray(result_np, mode="RGB")
+
+        _logger.info(
+            "catvton_color_fidelity: region=[%d,%d,%d,%d] strength=%.2f",
+            gar_x0,
+            gar_y0,
+            gar_x1,
+            gar_y1,
+            fidelity_strength,
+        )
+        return result_img, {
+            "engine": "catvton_color_fidelity",
+            "garment_region": {"x0": gar_x0, "y0": gar_y0, "x1": gar_x1, "y1": gar_y1},
+            "fidelity_strength": fidelity_strength,
+            "body_valid": body_valid,
+        }
+
+    except Exception as e:
+        import traceback
+
+        _logger.warning("catvton_color_fidelity_enhance failed: %s\n%s", e, traceback.format_exc())
+        return catvton_result, {"engine": "catvton_color_fidelity", "reason": str(e)}

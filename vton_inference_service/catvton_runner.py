@@ -53,6 +53,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from PIL import Image
+import cv2
 import numpy as np
 import mediapipe
 
@@ -336,8 +337,6 @@ def _draw_pose_skeleton(
     红色圆点：关键点位置
     如果关键点偏了（上装在肩膀以下、下装在臀部以上），说明 MediaPipe 检测有问题。
     """
-    import cv2
-
     pw, ph = person_img.size
     canvas = person_img.convert("RGB")
     arr = np.array(canvas)
@@ -391,8 +390,6 @@ def _make_garment_mask_rembg(
 
     返回 L 模式 PIL Image（白色 = 待编辑的衣服区域，黑色 = 保留区域）。
     """
-    import cv2
-
     gar_rgba = None
     segmentation_source = "none"
 
@@ -599,8 +596,6 @@ def _make_cloth_mask_mediapipe(
 
     打开 03_mask.png 和 04_pose_keypoints.jpg 逐帧对比即可验证质量。
     """
-    import cv2
-
     # ── Step 0: 尝试 rembg 衣服精确分割（最高优先级）────────────
     if garment_img is not None:
         # 先做姿态检测（rembg 衣服分割需要关键点来做映射）
@@ -663,7 +658,6 @@ def _make_cloth_mask_mediapipe(
                 rembg_mask = _refine_garment_mask_boundary(rembg_mask)
                 # Step 2: MediaPipe FaceDetector 精确人脸保护（优先，失败则降级到关键点方法）
                 face_protection = _detect_face_with_mp_face_api(person_img, pw, ph)
-                import cv2
 
                 rembg_mask_np = np.asarray(rembg_mask.convert("L"))
                 face_protection_np = np.asarray(face_protection.convert("L"))
@@ -770,7 +764,6 @@ def _make_cloth_mask_mediapipe(
     # ── Step 4: MediaPipe FaceDetector 精确人脸保护 ─────────────────
     # 优先使用专用人脸检测器（对侧脸/俯仰更鲁棒），失败则降级到关键点方法
     face_protection = _detect_face_with_mp_face_api(person_img, pw, ph)
-    import cv2
 
     mask_np = np.asarray(mask.convert("L"))
     face_protection_np = np.asarray(face_protection.convert("L"))
@@ -836,8 +829,6 @@ def _make_keypoint_hull_mask(
 
     改进（v2）：使用 polygon fillPoly + 凸包，替代矩形 mask。
     """
-    import cv2
-
     pw, ph = person_img.size
     points = []
     for lm in landmarks:
@@ -871,8 +862,6 @@ def _apply_cloth_region(
     person_mask 可能是稀疏噪点，bitwise_and 交集几乎为空。
     此时 fallback 到纯关键点 polygon mask，保证 CatVTON 有可用的衣服生成区域。
     """
-    import cv2
-
     person_np = np.asarray(person_mask)
 
     # 使用 polygon mask 替代矩形
@@ -1069,8 +1058,6 @@ def _protect_face(
 
     增强版：保护更大的头部区域，确保 mask 不会覆盖到头发和颈部以上的部分。
     """
-    import cv2
-
     if len(landmarks) == 0:
         return mask
 
@@ -1131,8 +1118,6 @@ def _fallback_mask(person_img: "Image.Image", cloth_type: str) -> "Image.Image":
 
     改进（v2）：使用 polygon fillPoly 替代矩形 mask，更贴合人体轮廓。
     """
-    import cv2
-
     pw, ph = person_img.size
     if cloth_type == "upper":
         pts = _upper_polygon_fallback(pw, ph)
@@ -1188,8 +1173,6 @@ def _detect_face_with_mp_face_api(
     Returns:
         L 模式 Image，白色 = 人脸保护区域（应从衣服 mask 中排除），黑色 = 可编辑区域
     """
-    import cv2
-
     face_detector_path = _get_face_detector_model_path()
     if face_detector_path is None:
         return _protect_face_haar(person_img, pw, ph)
@@ -1290,8 +1273,6 @@ def _protect_face_haar(person_img: "Image.Image", pw: int, ph: int) -> "Image.Im
 
     使用项目内嵌的 cascade XML（backend/assets/opencv/），避免中文路径问题。
     """
-    import cv2
-
     try:
         # 优先使用 cascade_manager 加载（ASCII 临时路径，无中文路径问题）
         try:
@@ -1511,8 +1492,6 @@ def _detect_and_correct_garment_orientation(image: "Image.Image") -> "Image.Imag
     如果衣服挂在衣架上（衣架在顶部），自动翻转使衣服正面朝上。
     这样可以确保衣服颜色和图案方向正确。
     """
-    import cv2
-
     arr = np.array(image.convert("RGB"))
     h, w = arr.shape[:2]
 
@@ -1542,8 +1521,6 @@ def _enhance_garment_colors(
 
     适度的颜色增强可以让模型更准确地保留衣服的颜色信息。
     """
-    import cv2
-
     arr = np.array(image.convert("RGB"))
     h, w = arr.shape[:2]
 
@@ -1564,8 +1541,6 @@ def _enhance_garment_colors(
 
 def _feather_mask(mask: "Image.Image", feather_radius: int = 4) -> "Image.Image":
     """对遮罩边缘施加高斯模糊，使衣服边界过渡自然（避免生硬的"贴图感"）。"""
-    import cv2
-
     mask_np = np.asarray(mask.convert("L"))
     blurred = cv2.GaussianBlur(
         mask_np, (0, 0), sigmaX=feather_radius, sigmaY=feather_radius
@@ -1587,8 +1562,6 @@ def _refine_garment_mask_boundary(mask: "Image.Image") -> "Image.Image":
     Returns:
         refinement 后的 mask
     """
-    import cv2
-
     mask_np = np.asarray(mask.convert("L"))
     if mask_np.max() == 0:
         return mask
@@ -1620,8 +1593,6 @@ def _compute_garment_saturation(source_img: "Image.Image") -> float:
     方法：HSV 空间下对衣服前景区域（排除透明/背景）的最大饱和度做 Z-score 截断，
     避免极端离群值拉高整体指标。
     """
-    import cv2
-
     arr = np.array(source_img.convert("RGB"))
     h, w = arr.shape[:2]
 
@@ -1664,8 +1635,6 @@ def _repaint_with_feather(
     使用羽化遮罩将 CatVTON 结果与原图混合。
     原理：在遮罩边缘区域，原图像素权重从 0 线性增加到 1，实现平滑过渡。
     """
-    import cv2
-
     mask_np = np.asarray(mask.convert("L")).astype(np.float32) / 255.0
     if feather_radius > 0:
         mask_np = cv2.GaussianBlur(
@@ -1705,8 +1674,6 @@ def _transfer_color_to_region(
     Returns:
         颜色校正后的图像
     """
-    import cv2
-
     src_arr = np.array(source_img.convert("RGB"))
     tgt_arr = np.array(target_img.convert("RGB"))
 

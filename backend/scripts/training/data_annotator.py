@@ -20,6 +20,8 @@ from io import BytesIO
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import cv2
+
 # 添加项目根目录到路径
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -358,7 +360,6 @@ class AnnotationTool:
     def run_server(self, host: str = "localhost", port: int = 5000):
         """启动标注服务"""
         try:
-            import cv2
             from flask import Flask, Response, redirect, request, send_file
         except ImportError:
             print("[Error] Flask is required. Install: pip install flask")

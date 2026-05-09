@@ -20,6 +20,7 @@ import hashlib
 import os
 from typing import Optional
 
+import cv2
 from PIL import Image
 
 from app.core.logging import setup_logging
@@ -403,7 +404,6 @@ class VirtualTryOnService:
     def _garment_has_face(self, garment_image: Image.Image) -> bool:
         """检测衣服图是否含正面人脸（含模特图）。"""
         try:
-            import cv2
             import numpy as np
 
             from app.services.cascade_manager import load_cascade

@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -92,8 +93,6 @@ def create_polygon_body_mask(
             mask_np = _upper_body_fallback(pw, ph, feather_radius=0)
 
     if feather_radius > 0:
-        import cv2
-
         mask_np = cv2.GaussianBlur(mask_np, (0, 0), sigmaX=feather_radius, sigmaY=feather_radius)
         mask_np = np.clip(mask_np, 0, 255).astype(np.uint8)
 
