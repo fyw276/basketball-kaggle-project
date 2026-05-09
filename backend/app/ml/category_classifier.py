@@ -70,7 +70,7 @@ class CategoryClassifier:
         """
         self.model_loader = model_loader or ModelLoader()
         self.preprocessor = preprocessor or ImagePreprocessor()
-        self.confidence_threshold = confidence_threshold
+        self.confidence_threshold = 0.12
 
         # Load MobileNetV2 with ImageNet classification head for now
         # In production, this should be a fine-tuned model
@@ -127,6 +127,12 @@ class CategoryClassifier:
         # Map ImageNet predictions to garment categories
         category, confidence = self._map_to_garment_category(predictions[0])
 
+        # Fallback to heuristic when confidence is too low
+        if confidence < 0.12:
+            heuristic = self.heuristic_category(image_source)
+            logger.warning(f"Fallback heuristic category used: {heuristic}")
+            return heuristic, confidence
+
         logger.info(f"Classified as '{category}' with confidence {confidence:.3f}")
 
         return category, confidence
@@ -165,8 +171,8 @@ class CategoryClassifier:
         best_category = max(category_scores, key=category_scores.get)
         confidence = category_scores[best_category]
 
-        # If confidence is too low, keep the best-scoring category instead of
-        # forcing every uncertain item into "上衣". The previous fallback
+        # If confidence is too low to pass the model threshold, keep best-scoring category
+        # instead of forcing every uncertain item into "上衣". The previous fallback
         # introduced a strong top-wear bias and hurt downstream outfit quality.
         if confidence < self.confidence_threshold:
             logger.warning(
@@ -176,6 +182,35 @@ class CategoryClassifier:
             return best_category, confidence
 
         return best_category, float(confidence)
+
+    def heuristic_category(self, image_source: Union[str, Path, bytes, Image.Image]) -> str:
+        """
+        Fallback category inference from image geometry.
+
+        Args:
+            image_source: Image file path, bytes, or PIL Image
+
+        Returns:
+            str: Heuristic category (upper/dress/lower)
+        """
+        try:
+            if isinstance(image_source, Image.Image):
+                img = image_source
+            else:
+                img = Image.open(image_source)
+                if hasattr(img, "_decompress"):
+                    img.load()
+
+            w, h = img.size
+            aspect = w / h if h > 0 else 1.0
+
+            if aspect > 0.9:
+                return "upper"
+            if aspect < 1.0 / 1.4:
+                return "dress"
+            return "lower"
+        except Exception:
+            return "upper"
 
     def get_confidence_level(self, confidence: float) -> str:
         """
