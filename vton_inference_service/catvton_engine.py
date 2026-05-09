@@ -468,7 +468,7 @@ class CatVTONEngine:
             from utils import resize_and_crop, resize_and_padding
             from app.services.garment_preprocess import preprocess_garment
 
-            garment_np = preprocess_garment(garment_image, canvas_size=512)
+            garment_np, _ = preprocess_garment(garment_image, canvas_size=512)
             garment_clean = Image.fromarray(garment_np, mode="RGB")
             garment_resized = resize_and_padding(garment_clean, (self.width, self.height))
             person_resized = resize_and_crop(person_image, (self.width, self.height))

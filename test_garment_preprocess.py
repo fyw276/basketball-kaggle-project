@@ -29,11 +29,12 @@ try:
     # Create a test garment image
     test_garment = Image.new("RGB", (400, 500), color=(200, 50, 50))
 
-    result = preprocess_garment(test_garment, canvas_size=512)
+    result, ratio = preprocess_garment(test_garment, canvas_size=512)
     print(f"    garment_preprocess: OK")
     print(f"    Output shape: {result.shape}")
     print(f"    Output dtype: {result.dtype}")
     print(f"    Unique values: {len(np.unique(result))}")
+    print(f"    Mask area ratio: {ratio:.3f}")
 
     # Check how much of the image is non-black
     non_black_ratio = np.mean(result > 10)

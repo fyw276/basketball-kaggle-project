@@ -156,13 +156,13 @@ def _fallback_bg_removal(image: Image.Image) -> np.ndarray:
     return rgb
 
 
-def preprocess_garment(image: Image.Image, canvas_size: int = 512) -> np.ndarray:
+def preprocess_garment(image: Image.Image, canvas_size: int = 512) -> tuple[np.ndarray, float]:
     """
     Preprocess a garment product image for CatVTON inference.
 
     Steps:
         1. Remove background (rembg with alpha, fallback to color threshold)
-        2. Crop tightly to garment bounding box
+        2. Crop tightly to garment bounding box (with auto-expand if too small)
         3. Scale to fit within canvas_size with margin
         4. Center on a 512x512 black canvas
 
@@ -171,7 +171,9 @@ def preprocess_garment(image: Image.Image, canvas_size: int = 512) -> np.ndarray
         canvas_size: Output canvas size (default 512)
 
     Returns:
-        numpy array: RGB image, shape (canvas_size, canvas_size, 3), dtype uint8
+        Tuple of:
+        - numpy array: RGB image, shape (canvas_size, canvas_size, 3), dtype uint8
+        - float: mask_area_ratio of the cropped bbox relative to original image
     """
     remove_fn = _get_rembg_session()
 
@@ -187,9 +189,10 @@ def preprocess_garment(image: Image.Image, canvas_size: int = 512) -> np.ndarray
         rgb_np = _fallback_bg_removal(image)
         alpha_np = None
 
-    rgb_np = _crop_to_bbox(rgb_np, alpha_np, margin=8)
+    crop_result = _crop_to_bbox_with_ratio(rgb_np, alpha_np, margin=8)
+    rgb_np, ratio = crop_result[0], crop_result[1]
     rgb_np = _center_on_canvas(rgb_np, canvas_size)
-    return rgb_np
+    return rgb_np, ratio
 
 
 def _rembg_remove(image: Image.Image) -> tuple[np.ndarray, np.ndarray]:
@@ -217,18 +220,22 @@ def _rembg_remove(image: Image.Image) -> tuple[np.ndarray, np.ndarray]:
     rgb = rgba_np[:, :, :3]
     alpha = rgba_np[:, :, 3]
 
-    # FIX: fill alpha holes (lace/mesh gaps) and inpaint RGB colors
     alpha = _fill_alpha_holes(alpha)
+
+    kernel = np.ones((15, 15), np.uint8)
+    alpha = cv2.morphologyEx(alpha, cv2.MORPH_CLOSE, kernel, iterations=1)
+    alpha = cv2.dilate(alpha, kernel, iterations=2)
+
     rgb = _inpaint_holes(rgb, alpha)
 
     return rgb, alpha
 
 
-def _crop_to_bbox(
+def _crop_to_bbox_with_ratio(
     rgb: np.ndarray,
     alpha: np.ndarray | None,
     margin: int = 8,
-) -> np.ndarray:
+) -> tuple[np.ndarray, float]:
     """
     Crop to the tight bounding box of the garment.
 
@@ -237,6 +244,10 @@ def _crop_to_bbox(
         alpha: alpha channel (if available), used for precise cropping.
                If None, uses luminance threshold fallback.
         margin: pixels of padding around the garment in the crop.
+
+    Returns:
+        Tuple of (cropped_rgb, mask_area_ratio).
+        mask_area_ratio is the area of the bbox relative to the original image.
     """
     h, w = rgb.shape[:2]
 
@@ -249,15 +260,29 @@ def _crop_to_bbox(
 
     if len(xs) == 0 or len(ys) == 0:
         logger.warning("No foreground pixels found — returning original")
-        return rgb
+        return rgb, 0.0
 
     x1 = max(0, xs.min() - margin)
     y1 = max(0, ys.min() - margin)
     x2 = min(w, xs.max() + margin)
     y2 = min(h, ys.max() + margin)
 
+    mask_area_ratio = (x2 - x1) * (y2 - y1) / (h * w)
+    if mask_area_ratio < 0.12:
+        pad_x = int((x2 - x1) * 0.12)
+        pad_y = int((y2 - y1) * 0.18)
+        x1 = max(0, x1 - pad_x)
+        y1 = max(0, y1 - pad_y)
+        x2 = min(w, x2 + pad_x)
+        y2 = min(h, y2 + pad_y)
+        new_ratio = (x2 - x1) * (y2 - y1) / (h * w)
+        logger.warning(
+            f"Mask too small: auto expanded from {mask_area_ratio:.3f} to {new_ratio:.3f}"
+        )
+        mask_area_ratio = new_ratio
+
     crop = rgb[y1:y2, x1:x2]
-    return crop
+    return crop, mask_area_ratio
 
 
 def _center_on_canvas(rgb: np.ndarray, canvas_size: int = 512) -> np.ndarray:

@@ -2380,7 +2380,7 @@ def main():
         preprocess_start = time.perf_counter()
         person_resized = resize_and_crop(person_img, (args.width, args.height))
         try:
-            garment_clean_np = preprocess_garment(garment_img, canvas_size=512)
+            garment_clean_np, _ = preprocess_garment(garment_img, canvas_size=512)
             garment_clean = Image.fromarray(garment_clean_np, mode="RGB")
             # CatVTON expects garment, person, mask all same size
             # First pad to white background (CatVTON convention), then resize to target
