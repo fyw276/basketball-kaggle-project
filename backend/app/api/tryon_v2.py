@@ -36,6 +36,14 @@ class TryOnV2Response(BaseModel):
     message: str = Field(..., description="Human-readable status message")
     pipeline: str = Field("A", description="Pipeline identifier")
     result_image_url: str | None = Field(None, description="URL of the try-on result image")
+    preview_white_url: str | None = Field(
+        None,
+        description=(
+            "用户可见白底预览图 URL。用于 UI 展示标准电商白底商品图外观。"
+            "此图使用 letterbox 缩放（保持原始比例），不经过 warp/TPS 变形。"
+            "仅当 auto_preprocess 启用时返回。",
+        ),
+    )
     error_code: str | None = Field(None, description="Stable error code")
     retryable: bool = Field(False, description="Whether client can retry later")
     action_hint: str | None = Field(None, description="Action guidance for UI")
@@ -46,6 +54,7 @@ class TryOnV2Response(BaseModel):
         None,
         description="白盒调试会话目录（debug_mode != 'off' 时返回）。"
         "包含: 01_input_person.jpg, 02_input_garment.jpg, "
+        "02b_preview_white.jpg (白底预览图, letterbox保持比例), "
         "03_mask.png, 04_pose_keypoints.jpg, 09_mask_overlay.png 等中间产物。",
     )
 
@@ -76,6 +85,15 @@ class TryOnV2PreprocessItem(BaseModel):
     raw_category: str
     category_confidence: float
     standardized_image_url: str
+    preview_white_url: str | None = Field(
+        None,
+        description=(
+            "用户可见白底预览图 URL。与 standardized_image_url 的区别："
+            "preview_white 使用 letterbox 缩放（保持原始比例，白边填充），"
+            "用于 UI 展示真实商品图外观；"
+            "standardized_image 用于模型 warp 处理。",
+        ),
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -145,28 +163,6 @@ def _maybe_auto_preprocess(
 
     r = preprocess_garment_image(garment_image)
 
-    # Fix: When recognition confidence is very low (< 0.15) and category is "accessory",
-    # use image aspect ratio to determine garment type instead.
-    # This prevents misclassification (e.g., white T-shirt classified as "shoes") from blocking try-on.
-    if r.tryon_category == "accessory" and r.confidence < 0.15:
-        # Use aspect ratio heuristic: wider = upper body, taller = lower body
-        w, h = garment_image.size
-        aspect = h / max(w, 1)
-        if aspect < 1.8:
-            # Wide image: likely upper garment (T-shirt, shirt, etc.)
-            r.tryon_category = "top"
-            logger.info(
-                f"[AUTO-PREPROCESS] Low-confidence accessory ({r.confidence:.3f}) "
-                f"reclassified as 'top' based on aspect ratio ({aspect:.2f})"
-            )
-        else:
-            # Tall image: likely lower garment or dress
-            r.tryon_category = "bottom"
-            logger.info(
-                f"[AUTO-PREPROCESS] Low-confidence accessory ({r.confidence:.3f}) "
-                f"reclassified as 'bottom' based on aspect ratio ({aspect:.2f})"
-            )
-
     # If still unknown, keep original category and let input_gate return actionable error.
     cat = r.tryon_category if r.tryon_category != "unknown" else garment_category
     return (
@@ -223,7 +219,6 @@ async def tryon_v2_preprocess(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty"
         )
     garment_image = Image.open(BytesIO(b)).convert("RGB")
-    # For preprocess we accept model/poster images and try best-effort extraction.
 
     try:
         r = preprocess_garment_image(garment_image)
@@ -240,16 +235,30 @@ async def tryon_v2_preprocess(
 
     import hashlib
 
+    # Save standardized image (model-internal, 768x768)
     image_bytes = _pil_image_to_jpeg_bytes(r.image, quality=92)
     key = hashlib.sha1(image_bytes).hexdigest()[:20]
-    path = f"preprocess/garment_{key}.jpg"
-    _, url = get_storage_service()._save_bytes(image_bytes, path)
+    std_path = f"preprocess/garment_{key}.jpg"
+    _, std_url = get_storage_service()._save_bytes(image_bytes, std_path)
+
+    # Save preview_white image (user-visible, letterbox, preserves aspect ratio)
+    preview_white_url: str | None = None
+    if r.preview_white is not None:
+        try:
+            pw_bytes = _pil_image_to_jpeg_bytes(r.preview_white, quality=95)
+            pw_key = hashlib.sha1(pw_bytes).hexdigest()[:20]
+            pw_path = f"preprocess/preview_white_{pw_key}.jpg"
+            _, preview_white_url = get_storage_service()._save_bytes(pw_bytes, pw_path)
+            logger.info(f"[PREPROCESS] preview_white saved: {preview_white_url}")
+        except Exception as e:
+            logger.warning(f"[PREPROCESS] failed to save preview_white: {e}")
 
     return TryOnV2PreprocessItem(
         tryon_category=r.tryon_category,
         raw_category=r.raw_category,
         category_confidence=float(r.confidence),
-        standardized_image_url=url,
+        standardized_image_url=std_url,
+        preview_white_url=preview_white_url,
         metadata=r.metadata,
     )
 
@@ -274,16 +283,30 @@ async def tryon_v2_preprocess_batch(
             r = preprocess_garment_image(img)
             import hashlib
 
+            # Save standardized image
             image_bytes = _pil_image_to_jpeg_bytes(r.image, quality=92)
             key = hashlib.sha1(image_bytes).hexdigest()[:20]
             path = f"preprocess/garment_{key}.jpg"
-            _, url = get_storage_service()._save_bytes(image_bytes, path)
+            _, std_url = get_storage_service()._save_bytes(image_bytes, path)
+
+            # Save preview_white image
+            preview_white_url: str | None = None
+            if r.preview_white is not None:
+                try:
+                    pw_bytes = _pil_image_to_jpeg_bytes(r.preview_white, quality=95)
+                    pw_key = hashlib.sha1(pw_bytes).hexdigest()[:20]
+                    pw_path = f"preprocess/preview_white_{pw_key}.jpg"
+                    _, preview_white_url = get_storage_service()._save_bytes(pw_bytes, pw_path)
+                except Exception as e:
+                    logger.warning(f"[PREPROCESS-BATCH] failed to save preview_white: {e}")
+
             out.append(
                 TryOnV2PreprocessItem(
                     tryon_category=r.tryon_category,
                     raw_category=r.raw_category,
                     category_confidence=float(r.confidence),
-                    standardized_image_url=url,
+                    standardized_image_url=std_url,
+                    preview_white_url=preview_white_url,
                     metadata=r.metadata,
                 )
             )
@@ -502,6 +525,54 @@ async def tryon_garment_v2(
 
     thresholds = _v2_thresholds(strict_mode=(mode == "strict"))
     qc_threshold = float(getattr(settings, "TRYON_V2_QC_THRESHOLD", 0.6) or 0.6)
+
+    # Generate and save preview_white BEFORE auto_preprocess overwrites garment_image.
+    # This preview is for user display only (letterbox, no warp/stretch).
+    preview_white_url: str | None = None
+    preview_white_url_2: str | None = None
+    try:
+        import hashlib
+
+        from app.services.tryon_v2.preprocess import generate_preview_white
+
+        # Generate preview for garment 1
+        pw_img = generate_preview_white(garment_image)
+        if pw_img is not None:
+            pw_bytes = _pil_image_to_jpeg_bytes(pw_img, quality=95)
+            pw_key = hashlib.sha1(pw_bytes).hexdigest()[:20]
+            pw_path = f"preprocess/preview_white_{pw_key}.jpg"
+            _, preview_white_url = get_storage_service()._save_bytes(pw_bytes, pw_path)
+            logger.info(f"[GARMENT] preview_white_1 saved: {preview_white_url}")
+
+            # Also save to debug_session_dir if available
+            if debug_session_dir:
+                try:
+                    debug_pw_path = Path(debug_session_dir) / "02b_preview_white.jpg"
+                    pw_img.save(debug_pw_path, quality=95)
+                    logger.info(f"[DEBUG] preview_white saved to: {debug_pw_path}")
+                except Exception as ex:
+                    logger.warning(f"[DEBUG] failed to save preview_white to debug dir: {ex}")
+
+        # Generate preview for garment 2 (if exists)
+        if garment_image_2 is not None:
+            pw_img2 = generate_preview_white(garment_image_2)
+            if pw_img2 is not None:
+                pw_bytes2 = _pil_image_to_jpeg_bytes(pw_img2, quality=95)
+                pw_key2 = hashlib.sha1(pw_bytes2).hexdigest()[:20]
+                pw_path2 = f"preprocess/preview_white_{pw_key2}.jpg"
+                _, preview_white_url_2 = get_storage_service()._save_bytes(pw_bytes2, pw_path2)
+                logger.info(f"[GARMENT] preview_white_2 saved: {preview_white_url_2}")
+
+                # Also save to debug_session_dir if available
+                if debug_session_dir:
+                    try:
+                        debug_pw_path2 = Path(debug_session_dir) / "02c_preview_white_2.jpg"
+                        pw_img2.save(debug_pw_path2, quality=95)
+                        logger.info(f"[DEBUG] preview_white_2 saved to: {debug_pw_path2}")
+                    except Exception as ex:
+                        logger.warning(f"[DEBUG] failed to save preview_white_2 to debug dir: {ex}")
+    except Exception as e:
+        logger.warning(f"[GARMENT] failed to generate preview_white: {e}")
 
     garment_image, garment_category, auto_meta = _maybe_auto_preprocess(
         garment_image, garment_category
@@ -1946,6 +2017,7 @@ async def tryon_garment_v2(
         message=str(result.get("message") or "方案A试衣成功"),
         pipeline=str((result.get("metadata") or {}).get("pipeline") or "A"),
         result_image_url=result_url,
+        preview_white_url=preview_white_url,
         error_code=None,
         retryable=False,
         action_hint=None,
@@ -2006,9 +2078,6 @@ async def tryon_v2_validate_input(
 ):
     _ensure_tryon_v2_enabled()
     request_start = time.time()
-    _classify_start = None
-    _feature_extract_start = None
-    _catvton_start = None
 
     if not garment_file.content_type or not garment_file.content_type.startswith("image/"):
         raise HTTPException(
@@ -2148,29 +2217,19 @@ async def tryon_v2_validate_input(
         )
         pre_meta["auto_preprocess_2"] = pre_meta2
 
-    # If category is "unknown" after auto-preprocess, return 400 instead of
-    # proceeding to the gate. This prevents the 422 cascade where a low-confidence
-    # classification passes through but later fails at the gate.
     recognized_cat = pre_meta.get("recognized_tryon_category", "")
-    if recognized_cat == "unknown" or garment_category in ("unknown", "auto", ""):
+    if recognized_cat == "unknown" and garment_category in ("unknown", "auto", ""):
         recognized_confidence = pre_meta.get("recognized_confidence", 0.0)
         logger.warning(
-            "Unable to classify garment: category=%s confidence=%.3f. "
-            "Returning 400 to client instead of proceeding to try-on.",
-            recognized_cat,
+            "[TRYON] Unknown category fallback -> upper "
+            "(confidence=%.3f, original_garment_category=%s)",
             recognized_confidence,
+            garment_category,
         )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "message": "Unable to classify garment",
-                "error_code": "GARMENT_CLASSIFICATION_FAILED",
-                "retryable": True,
-                "action_hint": "请上传清晰的单品商品图，避免海报/截图/多件衣物合照。",
-                "recognized_category": recognized_cat,
-                "recognized_confidence": recognized_confidence,
-            },
-        )
+        recognized_cat = "upper"
+        garment_category = "upper"
+        pre_meta["recognized_tryon_category"] = "upper"
+        pre_meta["category_fallback"] = True
 
     thresholds = _v2_thresholds(strict_mode=(mode == "strict"))
     gate = evaluate_input_gate(
