@@ -22,7 +22,6 @@ from app.services.storage import get_storage_service
 from app.services.subscription_billing import consume_usage
 from app.services.tryon_v2 import run_pipeline_a
 from app.services.tryon_v2.input_gate import evaluate_input_gate
-from app.services.tryon_v2.postprocess import enhance_tryon_result
 from app.services.tryon_v2.preprocess import preprocess_garment_image
 from app.services.virtual_tryon import check_tryon_garment_has_face
 
@@ -68,7 +67,18 @@ class TryOnV2ValidateResponse(BaseModel):
     retryable: bool = Field(False, description="Whether client can retry later")
     action_hint: str | None = Field(None, description="Action guidance for UI")
     qc_scores: dict[str, float] = Field(default_factory=dict, description="Input quality scores")
-    thresholds: dict[str, float] = Field(default_factory=dict, description="Thresholds applied")
+    thresholds: dict[str, float] = Field(
+        default_factory=dict, description="Numeric score thresholds applied"
+    )
+    recognized_tryon_category: str | None = Field(
+        None, description="Auto-detected tryon category (e.g. upper, lower, skirt)"
+    )
+    recognized_raw_category: str | None = Field(
+        None, description="Raw ML category before mapping (e.g. 上衣, 裤子)"
+    )
+    recognized_confidence: float | None = Field(
+        None, description="Category classification confidence"
+    )
 
 
 class TryOnV2CapabilitiesResponse(BaseModel):
@@ -339,7 +349,7 @@ async def tryon_garment_v2(
         "bottom", description="Second garment category for outfit: bottom|skirt"
     ),
     prompt: str = Form("", description="Optional text prompt"),
-    mode: str = Form("strict", description="strict|balanced"),
+    mode: str = Form("detail_fidelity", description="detail_fidelity|blend|stable_fast"),
     model_gender: str = Form("neutral", description="male|female|neutral"),
     # ─── 白盒调试参数 ───────────────────────────────────────────────
     debug_mode: str = Form(
@@ -376,21 +386,27 @@ async def tryon_garment_v2(
             detail="model_gender must be one of: male, female, neutral",
         )
 
+    # mode fallback: accept legacy/alias values from older clients
+    _MODE_FALLBACK = {
+        "detail": "detail_fidelity",
+        "mixed": "blend",
+        "hybrid": "blend",
+        "fast": "stable_fast",
+        "professional": "detail_fidelity",
+        "realistic": "detail_fidelity",
+        "realistic_v2": "detail_fidelity",
+        "replace": "stable_fast",
+    }
+    mode = _MODE_FALLBACK.get(mode, mode)
+
     if mode not in {
-        "strict",
-        "balanced",
-        "replace",
-        "realistic",
-        "realistic_v2",
-        "professional",
-        "hybrid",
+        "detail_fidelity",
+        "blend",
+        "stable_fast",
     }:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "mode must be one of: "
-                "strict, balanced, replace, realistic, realistic_v2, professional, hybrid"
-            ),
+            detail=("mode must be one of: detail_fidelity, blend, stable_fast"),
         )
 
     if debug_mode not in {"off", "preprocess_only", "full"}:
@@ -584,17 +600,15 @@ async def tryon_garment_v2(
         )
         pre_meta["auto_preprocess_2"] = pre_meta2
 
-    # "replace" mode: AI-based garment synthesis.
-    # Engine priority (from TRYON_V2_REPLACE_ENGINE_PRIORITY):
-    #   catvton / bailian / remote → AI generation, realistic fit, may slightly alter garment detail  # noqa: E501
-    #   warp → geometric paste, 100% garment fidelity, but looks flat/unrealistic (fallback only)
-    # Default: catvton,bailian,remote,warp,diffusion
+    # stable_fast 模式：云端/远程引擎优先，稳定快速
+    # bailian(百炼) / remote(远程VTON) / warp(几何贴合兜底)
+    # CatVTON 不参与 stable_fast，保证响应速度
 
     # 预转换图片为 JPEG bytes（所有模式都需要）
     garment_jpg = _pil_image_to_jpeg_bytes(garment_image, quality=95)
     person_jpg = _pil_image_to_jpeg_bytes(person_image, quality=95)
 
-    if mode == "replace":
+    if mode == "stable_fast":
         from app.services.bailian_tryon_client import _bailian_configured, call_bailian_tryon
         from app.services.tryon_v2.catvton_engine_client import (
             _catvton_configured,
@@ -620,8 +634,7 @@ async def tryon_garment_v2(
         # to inpaint. Passing warp result to CatVTON causes darkening / double-processing.
         # CatVTON can only be used standalone (when warp is skipped).
         priority_str = (
-            getattr(settings, "TRYON_V2_REPLACE_ENGINE_PRIORITY", "")
-            or "warp,bailian,remote,catvton,diffusion"
+            getattr(settings, "TRYON_V2_REPLACE_ENGINE_PRIORITY", "") or "warp,bailian,remote"
         )
         engine_priority = [e.strip().lower() for e in priority_str.split(",") if e.strip()]
         skip_warp = bool(getattr(settings, "TRYON_V2_REPLACE_SKIP_WARP", False))
@@ -1036,10 +1049,11 @@ async def tryon_garment_v2(
                 "used_warp": used_warp,
             },
         }
-    elif mode == "realistic":
-        # ── Realistic Mode: 使用 CatVTON 深度学习模型 ──────────────────────────
-        # CatVTON 是唯一能产生真实试穿效果的深度学习模型
-        # 它会根据人体姿态进行真实的衣物贴合、变形和光影处理
+    elif mode == "detail_fidelity":
+        # ── Detail Fidelity Mode: CatVTON 深度学习 + 质量检测 + 颜色保真 ────────────
+        # 最强保真模式：自动质量检测（score < 0.75 重试）+ 颜色保真增强
+        # 适用：追求最高质量、愿意等待更长时间（3-25min）
+        from app.services.quality_checker import QualityChecker
         from app.services.tryon_v2.catvton_engine_client import (
             _catvton_configured,
             call_local_catvton,
@@ -1051,6 +1065,7 @@ async def tryon_garment_v2(
         )
 
         cat = (garment_category or "").strip().lower()
+        gc = (garment_category or "").strip()
 
         cloth_type = "upper"
         if any(k in cat for k in ("bottom", "下装", "裤")):
@@ -1129,34 +1144,78 @@ async def tryon_garment_v2(
 
                 if enable_color_fidelity and fidelity_strength > 0.0:
                     try:
-                        from app.services.tryon_v2.warp_engine import catvton_color_fidelity_enhance
+                        from app.services.tryon_v2.warp_engine import (
+                            catvton_color_fidelity_enhance,
+                            catvton_color_fidelity_spatial,
+                        )
 
                         arr_check = np.array(garment_image.convert("RGB"))
                         hsv_check = cv2.cvtColor(arr_check, cv2.COLOR_RGB2HSV).astype(np.float32)
                         sat_check = hsv_check[:, :, 1]
                         v_check = hsv_check[:, :, 2]
-                        fg_mask_check = ~((v_check / 255.0 > 0.92) & (sat_check / 255.0 < 0.08))
+
+                        # ── 改进的饱和度检测 ──────────────────────────────────────
+                        # 方案1: 排除极亮(白色)和极暗(黑色)像素，只保留可能是彩色衣服的区域
+                        # 白色背景通常 v>240 且 s<20
+                        # 黑色区域通常 v<15
+                        # 中等亮度区域 v∈[15,240] 才可能是衣服
+                        brightness_mask = (v_check >= 15) & (v_check <= 240)
+                        # 排除纯白背景 (高亮度 + 低饱和度)
+                        white_bg_mask = (v_check > 220) & (sat_check < 30)
+                        # 综合前景掩码
+                        fg_mask_check = brightness_mask & ~white_bg_mask
                         fg_sat_check = sat_check[fg_mask_check]
-                        if len(fg_sat_check) >= 50:
+
+                        if len(fg_sat_check) >= 30:
                             sat_mean = float(fg_sat_check.mean()) / 255.0
+                            sat_max = float(fg_sat_check.max()) / 255.0
+                            # 如果最大饱和度 > 0.15，说明有彩色区域
+                            has_color = sat_max > 0.15
                         else:
                             sat_mean = 0.0
+                            sat_max = 0.0
+                            has_color = False
 
-                        # 只有彩色衣服才启用保真（sat_mean > 0.08）
-                        if sat_mean > 0.08:
-                            logger.info(
-                                "Realistic mode: applying color fidelity "
-                                "(saturation=%.3f, strength=%.2f)",
-                                sat_mean,
-                                fidelity_strength,
-                            )
-                            result_img, cf_meta = catvton_color_fidelity_enhance(
-                                catvton_result=result_img,
-                                original_garment=garment_image,
-                                person_image=person_image,
-                                garment_category=gc or "top",
-                                fidelity_strength=fidelity_strength,
-                            )
+                            # 降低阈值到 0.05，并检查 max 饱和度
+                            # 原来 sat_mean > 0.08 太严格了，蓝白格子会被误判
+                            # 改为: max_sat > 0.15 (有彩色) 或 sat_mean > 0.05 (有彩色区域但混合了白色)
+                            color_threshold = 0.05  # 降低阈值
+                        if sat_mean > color_threshold or has_color:
+                            # 高对比度图案（格子/条纹/彩色印花）使用空间感知保真
+                            # 均匀 LAB 混合会把蓝白格子变成褐色——必须用像素级替换
+                            # 使用 max 饱和度判断是否需要 spatial 保真
+                            if sat_max > 0.25:
+                                logger.info(
+                                    "Realistic mode: applying SPATIAL color fidelity "
+                                    "(sat_mean=%.3f, sat_max=%.3f, pattern detected)",
+                                    sat_mean,
+                                    sat_max,
+                                )
+                                logger.info(
+                                    "Realistic mode: applying SPATIAL color fidelity "
+                                    "(saturation=%.3f > 0.15, pattern detected)",
+                                    sat_mean,
+                                )
+                                result_img, cf_meta = catvton_color_fidelity_spatial(
+                                    catvton_result=result_img,
+                                    original_garment=garment_image,
+                                    person_image=person_image,
+                                    garment_category=gc or "top",
+                                    fidelity_strength=fidelity_strength,
+                                )
+                            else:
+                                logger.info(
+                                    "Realistic mode: applying uniform color fidelity "
+                                    "(saturation=%.3f, solid garment)",
+                                    sat_mean,
+                                )
+                                result_img, cf_meta = catvton_color_fidelity_enhance(
+                                    catvton_result=result_img,
+                                    original_garment=garment_image,
+                                    person_image=person_image,
+                                    garment_category=gc or "top",
+                                    fidelity_strength=fidelity_strength,
+                                )
                             pattern_injected = True
                             pattern_score = min(0.95, sat_mean + 0.3)
                             upstream["metadata"] = {
@@ -1165,8 +1224,10 @@ async def tryon_garment_v2(
                                 "color_fidelity_applied": True,
                             }
                             logger.info(
-                                "Realistic mode: color fidelity applied " "(pattern_score=%.3f)",
+                                "Realistic mode: color fidelity applied "
+                                "(pattern_score=%.3f, engine=%s)",
                                 pattern_score,
+                                cf_meta.get("engine", "unknown"),
                             )
                         else:
                             logger.info(
@@ -1185,9 +1246,25 @@ async def tryon_garment_v2(
                         fidelity_strength,
                     )
 
+                # ── 后处理增强（消除拼接痕迹）──────────────────────────────
+                try:
+                    from app.services.tryon_v2.postprocess import enhance_tryon_result
+
+                    result_img = enhance_tryon_result(
+                        result=result_img,
+                        person=person_image,
+                        original_garment=garment_image,
+                        strength="medium",
+                    )
+                    logger.info("Realistic mode: post-processing applied")
+                except Exception as pp_err:
+                    logger.warning(
+                        "Realistic mode: post-processing failed (continuing): %s", pp_err
+                    )
+
                 result = {
                     "status": "success",
-                    "message": "CatVTON 深度学习试衣完成（真实贴合 + 细节保真）",
+                    "message": "CatVTON 深度学习试衣完成（真实贴合 + 细节保真 + 后处理增强）",
                     "result_image": result_img,
                     "qc_scores": {
                         "fidelity_score": 0.85 if not pattern_injected else 0.95,
@@ -1201,6 +1278,7 @@ async def tryon_garment_v2(
                         "attempts": attempt + 1,
                         "pattern_protected": pattern_injected,
                         "pattern_score": round(pattern_score, 3),
+                        "postprocess_applied": True,
                     },
                 }
                 logger.info(f"Realistic mode: CatVTON succeeded on attempt {attempt + 1}")
@@ -1265,6 +1343,7 @@ async def tryon_garment_v2(
         )
 
         cat = (garment_category or "").strip().lower()
+        gc = (garment_category or "").strip()
         cloth_type = "upper"
         if any(k in cat for k in ("bottom", "下装", "裤")):
             cloth_type = "lower"
@@ -1342,43 +1421,75 @@ async def tryon_garment_v2(
 
                 if enable_color_fidelity and fidelity_strength > 0.0:
                     try:
-                        from app.services.tryon_v2.warp_engine import catvton_color_fidelity_enhance
+                        from app.services.tryon_v2.warp_engine import (
+                            catvton_color_fidelity_enhance,
+                            catvton_color_fidelity_spatial,
+                        )
 
                         arr_check = np.array(garment_image.convert("RGB"))
                         hsv_check = cv2.cvtColor(arr_check, cv2.COLOR_RGB2HSV).astype(np.float32)
                         sat_check = hsv_check[:, :, 1]
                         v_check = hsv_check[:, :, 2]
-                        fg_mask_check = ~((v_check / 255.0 > 0.92) & (sat_check / 255.0 < 0.08))
+
+                        # ── 改进的饱和度检测 ──────────────────────────────────────
+                        # 排除白色背景和高暗区域，只计算可能是有颜色衣服的区域
+                        brightness_mask = (v_check >= 15) & (v_check <= 240)
+                        white_bg_mask = (v_check > 220) & (sat_check < 30)
+                        fg_mask_check = brightness_mask & ~white_bg_mask
                         fg_sat_check = sat_check[fg_mask_check]
-                        if len(fg_sat_check) >= 50:
+
+                        if len(fg_sat_check) >= 30:
                             sat_mean = float(fg_sat_check.mean()) / 255.0
+                            sat_max = float(fg_sat_check.max()) / 255.0
+                            has_color = sat_max > 0.15
                         else:
                             sat_mean = 0.0
+                            sat_max = 0.0
+                            has_color = False
 
-                        if sat_mean > 0.08:
-                            logger.info(
-                                "Professional mode: applying color fidelity "
-                                "(saturation=%.3f, strength=%.2f)",
-                                sat_mean,
-                                fidelity_strength,
-                            )
-                            result_img, cf_meta = catvton_color_fidelity_enhance(
-                                catvton_result=result_img,
-                                original_garment=garment_image,
-                                person_image=person_image,
-                                garment_category=gc or "top",
-                                fidelity_strength=fidelity_strength,
-                            )
+                        color_threshold = 0.05
+                        if sat_mean > color_threshold or has_color:
+                            # 高对比度图案（格子/条纹/彩色印花）使用空间感知保真
+                            if sat_max > 0.25:
+                                logger.info(
+                                    "Professional mode: applying SPATIAL color fidelity "
+                                    "(sat_mean=%.3f, sat_max=%.3f, pattern detected)",
+                                    sat_mean,
+                                    sat_max,
+                                )
+                                result_img, cf_meta = catvton_color_fidelity_spatial(
+                                    catvton_result=result_img,
+                                    original_garment=garment_image,
+                                    person_image=person_image,
+                                    garment_category=gc or "top",
+                                    fidelity_strength=fidelity_strength,
+                                )
+                            else:
+                                logger.info(
+                                    "Professional mode: applying uniform color fidelity "
+                                    "(sat_mean=%.3f, sat_max=%.3f)",
+                                    sat_mean,
+                                    sat_max,
+                                )
+                                result_img, cf_meta = catvton_color_fidelity_enhance(
+                                    catvton_result=result_img,
+                                    original_garment=garment_image,
+                                    person_image=person_image,
+                                    garment_category=gc or "top",
+                                    fidelity_strength=fidelity_strength,
+                                )
                             pattern_injected = True
-                            pattern_score = min(0.95, sat_mean + 0.3)
+                            pattern_score = min(0.95, sat_max + 0.3)
                             upstream["metadata"] = {
                                 **(upstream.get("metadata") or {}),
                                 **cf_meta,
                                 "color_fidelity_applied": True,
                             }
                             logger.info(
-                                "Professional mode: color fidelity applied " "(pattern_score=%.3f)",
+                                "Professional mode: color fidelity applied "
+                                "(pattern_score=%.3f, engine=%s)",
                                 pattern_score,
+                                cf_meta.get("engine", "unknown"),
                             )
                         else:
                             logger.info(
@@ -1486,6 +1597,7 @@ async def tryon_garment_v2(
         )
 
         cat = (garment_category or "").strip().lower()
+        gc = (garment_category or "").strip()
         cloth_type = "upper"
         if any(k in cat for k in ("bottom", "下装", "裤")):
             cloth_type = "lower"
@@ -1568,44 +1680,78 @@ async def tryon_garment_v2(
 
                 if enable_color_fidelity and fidelity_strength > 0.0:
                     try:
-                        from app.services.tryon_v2.warp_engine import catvton_color_fidelity_enhance
+                        from app.services.tryon_v2.warp_engine import (
+                            catvton_color_fidelity_enhance,
+                            catvton_color_fidelity_spatial,
+                        )
 
                         arr_check = np.array(garment_image.convert("RGB"))
                         hsv_check = cv2.cvtColor(arr_check, cv2.COLOR_RGB2HSV).astype(np.float32)
                         sat_check = hsv_check[:, :, 1]
                         v_check = hsv_check[:, :, 2]
-                        fg_mask_check = ~((v_check / 255.0 > 0.92) & (sat_check / 255.0 < 0.08))
+
+                        # ── 改进的饱和度检测 ──────────────────────────────────────
+                        brightness_mask = (v_check >= 15) & (v_check <= 240)
+                        white_bg_mask = (v_check > 220) & (sat_check < 30)
+                        fg_mask_check = brightness_mask & ~white_bg_mask
                         fg_sat_check = sat_check[fg_mask_check]
-                        if len(fg_sat_check) >= 50:
+
+                        if len(fg_sat_check) >= 30:
                             sat_mean = float(fg_sat_check.mean()) / 255.0
+                            sat_max = float(fg_sat_check.max()) / 255.0
+                            has_color = sat_max > 0.15
                         else:
                             sat_mean = 0.0
+                            sat_max = 0.0
+                            has_color = False
 
-                        if sat_mean > 0.08:
-                            logger.info(
-                                "Realistic_v2: applying color fidelity "
-                                "(saturation=%.3f, strength=%.2f)",
-                                sat_mean,
-                                fidelity_strength,
-                            )
-                            result_img, cf_meta = catvton_color_fidelity_enhance(
-                                catvton_result=result_img,
-                                original_garment=garment_image,
-                                person_image=person_image,
-                                garment_category=gc or "top",
-                                fidelity_strength=fidelity_strength,
-                            )
+                        color_threshold = 0.05
+                        if sat_mean > color_threshold or has_color:
+                            # 高对比度图案使用空间感知保真
+                            if sat_max > 0.25:
+                                logger.info(
+                                    "Realistic_v2: applying SPATIAL color fidelity "
+                                    "(sat_mean=%.3f, sat_max=%.3f)",
+                                    sat_mean,
+                                    sat_max,
+                                )
+                                result_img, cf_meta = catvton_color_fidelity_spatial(
+                                    catvton_result=result_img,
+                                    original_garment=garment_image,
+                                    person_image=person_image,
+                                    garment_category=gc or "top",
+                                    fidelity_strength=fidelity_strength,
+                                )
+                            else:
+                                logger.info(
+                                    "Realistic_v2: applying uniform color fidelity "
+                                    "(sat_mean=%.3f, sat_max=%.3f)",
+                                    sat_mean,
+                                    sat_max,
+                                )
+                                result_img, cf_meta = catvton_color_fidelity_enhance(
+                                    catvton_result=result_img,
+                                    original_garment=garment_image,
+                                    person_image=person_image,
+                                    garment_category=gc or "top",
+                                    fidelity_strength=fidelity_strength,
+                                )
                             upstream["metadata"] = {
                                 **(upstream.get("metadata") or {}),
                                 **cf_meta,
                                 "color_fidelity_applied": True,
                             }
                             _cf_applied = True
-                            logger.info("Realistic_v2: color fidelity applied")
+                            logger.info(
+                                "Realistic_v2: color fidelity applied (engine=%s)",
+                                cf_meta.get("engine", "unknown"),
+                            )
                         else:
                             logger.info(
-                                "Realistic_v2: skipping color fidelity " "(saturation=%.3f < 0.08)",
+                                "Realistic_v2: skipping color fidelity "
+                                "(sat_mean=%.3f, sat_max=%.3f < threshold)",
                                 sat_mean,
+                                sat_max,
                             )
                     except Exception as cf_err:
                         logger.warning(
@@ -1918,6 +2064,7 @@ async def tryon_garment_v2(
             strict_identity=strict_identity,
             thresholds=thresholds,
             qc_threshold=qc_threshold,
+            garment_confidence=pre_meta.get("recognized_confidence"),
         )
 
     if result.get("status") != "success":
@@ -2232,12 +2379,14 @@ async def tryon_v2_validate_input(
         pre_meta["category_fallback"] = True
 
     thresholds = _v2_thresholds(strict_mode=(mode == "strict"))
+    gate_confidence = pre_meta.get("recognized_confidence")
     gate = evaluate_input_gate(
         person_image=person_image,
         garment_image=garment_image,
         garment_category=garment_category,
         strict=(mode == "strict"),
         thresholds=thresholds,
+        garment_confidence=gate_confidence,
     )
     # outfit: also validate second garment if provided
     if (
@@ -2246,12 +2395,14 @@ async def tryon_v2_validate_input(
         and "outfit" in garment_category.lower()
         and garment_image_2 is not None
     ):
+        gate2_confidence = pre_meta.get("auto_preprocess_2", {}).get("recognized_confidence")
         gate2 = evaluate_input_gate(
             person_image=person_image,
             garment_image=garment_image_2,
             garment_category=garment_category_2,
             strict=(mode == "strict"),
             thresholds=thresholds,
+            garment_confidence=gate2_confidence,
         )
         if not gate2.passed:
             gate = gate2
@@ -2273,10 +2424,10 @@ async def tryon_v2_validate_input(
         retryable=gate.retryable,
         action_hint=gate.action_hint,
         qc_scores=gate.scores,
-        thresholds={
-            **thresholds,
-            **{k: v for k, v in pre_meta.items() if k.startswith("recognized_")},
-        },
+        thresholds=thresholds,
+        recognized_tryon_category=pre_meta.get("recognized_tryon_category"),
+        recognized_raw_category=pre_meta.get("recognized_raw_category"),
+        recognized_confidence=pre_meta.get("recognized_confidence"),
     )
 
 

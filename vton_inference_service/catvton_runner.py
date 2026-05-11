@@ -450,30 +450,114 @@ def _make_garment_mask_rembg(
         if not (ls and rs and lh and rh):
             return None
 
-        shoulder_y = (ls[1] + rs[1]) / 2
-        hip_y = (lh[1] + rh[1]) / 2
+        # =========================
+        # 更宽松的上衣映射区域
+        # 修复：衣服只贴胸口
+        # =========================
+        shoulder_expand_ratio = 0.22
+        body_expand_ratio = 0.18
+        height_expand_ratio = 0.20
+
+        # 原始人体框
         x_left_px = min(ls[0], rs[0])
         x_right_px = max(ls[0], rs[0])
-        shoulder_width = x_right_px - x_left_px
+        shoulder_y = (ls[1] + rs[1]) / 2
+        person_w = x_right_px - x_left_px
+        person_h = ph * 0.58
 
-        # 上边界：肩膀上方一点，不超过鼻尖
-        if nose:
-            nose_y = nose[1]
-            y_top = max(
-                shoulder_y - ph * 0.15, min(shoulder_y - ph * 0.05, nose_y - ph * 0.02)
+        # 扩展肩膀
+        expand_x = int(person_w * shoulder_expand_ratio)
+
+        # 扩展高度
+        expand_y = int(person_h * height_expand_ratio)
+        mx1 = max(0, x_left_px - expand_x)
+        mx2 = min(pw, x_right_px + expand_x)
+
+        # 上半身区域
+        upper_top = max(0, int(shoulder_y - expand_y * 0.35))
+        upper_bottom = min(ph, int(shoulder_y + person_h * 0.40))
+
+        x_left = mx1
+        x_right = mx2
+        y_top = upper_top
+        y_bottom = upper_bottom
+
+        target_w = x_right - x_left
+        target_h = y_bottom - y_top
+
+        logger.info(
+            f"[GARMENT-MASK-FIX] expanded upper region "
+            f"[{x_left},{y_top},{x_right},{y_bottom}] "
+            f"size={target_w}x{target_h}"
+        )
+
+        if target_w < 8 or target_h < 8:
+            return None
+
+        # 将衣服 alpha mask 等比映射到目标区域
+        gar_mask_np = (gar_a > 20).astype(np.uint8) * 255
+
+        # 高质量缩放衣服 mask 到目标尺寸
+        _tw = max(1, int(target_w))
+        _th = max(1, int(target_h))
+        print(f"[RESIZE] target_w={target_w}, target_h={target_h}, int=({_tw}, {_th})", flush=True)
+        if _tw >= 32:
+            gar_mask_resized = cv2.resize(
+                gar_mask_np,
+                (_tw, _th),
+                interpolation=cv2.INTER_LINEAR,
             )
         else:
-            y_top = shoulder_y - ph * 0.08
+            gar_mask_resized = cv2.resize(
+                gar_mask_np,
+                (_tw, _th),
+                interpolation=cv2.INTER_NEAREST,
+            )
 
-        # 下边界：臀部位置
-        y_bottom = hip_y + ph * 0.04
+        # 创建人物尺寸的全零 mask
+        person_mask = np.zeros((ph, pw), dtype=np.uint8)
 
-        # 左右边界：肩膀外扩一点
-        margin = max(shoulder_width * 0.20, pw * 0.06)
-        x_left = max(0, x_left_px - margin)
-        x_right = min(pw, x_right_px + margin)
+        # 在目标区域填入缩放后的衣服 mask
+        x0_i, y0_i = int(x_left), int(y_top)
+        x1_i, y1_i = x0_i + _tw, y0_i + _th
+        # 确保不越界
+        x1_i = min(x1_i, pw)
+        y1_i = min(y1_i, ph)
+        actual_w = x1_i - x0_i
+        actual_h = y1_i - y0_i
+        if actual_w > 0 and actual_h > 0:
+            person_mask[y0_i:y1_i, x0_i:x1_i] = gar_mask_resized[:actual_h, :actual_w]
+
+        # =========================
+        # 修复 mask 太小
+        # =========================
+        kernel = np.ones((7, 7), np.uint8)
+        person_mask = cv2.dilate(
+            person_mask,
+            kernel,
+            iterations=1,
+        )
+        person_mask = cv2.GaussianBlur(
+            person_mask,
+            (5, 5),
+            0,
+        )
+        _, person_mask = cv2.threshold(
+            person_mask,
+            120,
+            255,
+            cv2.THRESH_BINARY,
+        )
+
+        logger.info(
+            f"[GARMENT-MASK] {segmentation_source} segmentation succeeded, "
+            f"garment mapped to person region "
+            f"[{x0_i},{y0_i},{x1_i},{y1_i}] size={actual_w}x{actual_h}"
+        )
+        return Image.fromarray(person_mask, mode="L")
 
     elif cloth_type == "lower":
+        # lower/overall branches: target_w/target_h are already int (line 603-604)
         lh = lm_dict.get(23)
         rh = lm_dict.get(24)
         la = lm_dict.get(27)
@@ -520,8 +604,9 @@ def _make_garment_mask_rembg(
         x_left = max(0, x_left_px - margin)
         x_right = min(pw, x_right_px + margin)
 
-    target_w = int(x_right - x_left)
-    target_h = int(y_bottom - y_top)
+    target_w = max(1, int(x_right - x_left))
+    target_h = max(1, int(y_bottom - y_top))
+    print(f"[RESIZE] target_w={target_w}, target_h={target_h} (lower/overall)", flush=True)
     if target_w < 8 or target_h < 8:
         return None
 
@@ -596,6 +681,15 @@ def _make_cloth_mask_mediapipe(
 
     打开 03_mask.png 和 04_pose_keypoints.jpg 逐帧对比即可验证质量。
     """
+    # ── 强制 RGB：MediaPipe 接收 RGBA(4ch) 会触发 image_frame.cc 断言崩溃 ──
+    print(f"[MEDIAPIPE-INPUT] person_img mode={person_img.mode}, size={person_img.size}", flush=True)
+    if person_img.mode != "RGB":
+        logger.warning(f"[MEDIAPIPE-INPUT] Converting person_img from {person_img.mode} to RGB")
+        person_img = person_img.convert("RGB")
+    if garment_img is not None and garment_img.mode not in ("RGB", "L"):
+        logger.warning(f"[MEDIAPIPE-INPUT] Converting garment_img from {garment_img.mode} to RGB")
+        garment_img = garment_img.convert("RGB")
+
     # ── Step 0: 尝试 rembg 衣服精确分割（最高优先级）────────────
     if garment_img is not None:
         # 先做姿态检测（rembg 衣服分割需要关键点来做映射）
@@ -1869,28 +1963,24 @@ def _apply_memory_optimizations(
 
     applied = []
 
-    # ── 策略 1: VAE 分片推理 ─────────────────────────────────────────
+    # ── 策略 1: VAE 分块编码/解码 ─────────────────────────────────────
     # CatVTON 的 VAE 在编码/解码高分辨率图像时显存峰值最高。
-    # slicing 将 VAE 操作切分为 tile_size 的小块，逐块处理后拼接。
-    # 对 768x1024 图像，通常切分为 4-8 块，峰值显存降低约 40-60%。
+    # VAE 有专用的 tiled encode/decode 功能，可以分块处理大图像。
+    # 对 768x1024 图像，分块后峰值显存降低约 40-60%。
     # 速度影响：约增加 10-20%，但换来了在 8GB 卡上运行的可能性。
+    # 重要：不要对 UNet 使用 set_attention_slice，否则会覆盖 CatVTON 的 SkipAttnProcessor！
     if vae_slicing:
         try:
-            # 正确方式：对 UNet 使用 set_attention_slice（diffusers 标准方法）
-            # CatVTON Pipeline 的 VAE 在 encode/decode 时显存最高，
-            # set_attention_slice 降低 attention 矩阵计算时的显存占用。
-            if hasattr(pipeline.unet, "set_attention_slice"):
-                pipeline.unet.set_attention_slice("auto")
-                applied.append("attention_slicing_auto")
-                logger.info("VRAM 优化已应用: UNet attention slicing (峰值显存 -40%)")
-            elif hasattr(pipeline.unet, "enable_attention_slicing"):
-                pipeline.unet.enable_attention_slicing("auto")
-                applied.append("attention_slicing_auto")
-                logger.info("VRAM 优化已应用: UNet attention slicing")
+            # 使用 VAE 的 tiled encode/decode（替代 UNet attention slicing）
+            # 这样可以节省显存，同时不影响 CatVTON 的 attention processors
+            if hasattr(pipeline, "vae"):
+                pipeline.vae.enable_slicing()
+                applied.append("vae_slicing")
+                logger.info("VRAM 优化已应用: VAE slicing (峰值显存 -40%)")
             else:
-                logger.warning("UNet 没有 set_attention_slice 方法，跳过")
+                logger.warning("Pipeline 没有 VAE，跳过 VAE slicing")
         except Exception as e:
-            logger.warning(f"Attention slicing 应用失败: {e}")
+            logger.warning(f"VAE slicing 应用失败: {e}")
 
     # ── 策略 2: xformers 高效注意力 ─────────────────────────────────
     # xformers 的 memory_efficient_attention 使用分块注意力算法，
@@ -2252,6 +2342,13 @@ def main():
             f"size={pw}x{ph}, white_pixels={mask_white}, area_ratio={mask_area_ratio:.3f}"
         )
 
+        # ── 面积过小时仅记录警告（不再自动扩张，避免衣物溢出） ──────────
+        if mask_area_ratio < 0.14:
+            logger.warning(
+                f"[MASK-FIX] mask area ratio small ({mask_area_ratio:.3f}), "
+                f"skipping auto-expansion to avoid garment overflow"
+            )
+
         # ── 预处理模式：直接返回遮罩结果 ───────────────────────────────
         if args.preprocess_only:
             debug_dir = get_debug_session_dir()
@@ -2284,6 +2381,8 @@ def main():
             logger.error("Cannot load utils.py from CatVTON path")
             sys.exit(1)
 
+        logger.info("[CATVTON] 使用原生 resize_and_padding（白色背景 255,255,255）")
+
         # 模型路径检测：支持两种结构
         # 1. catvton_path/zhengchong_CatVTON/ (HuggingFace snapshot 格式)
         # 2. catvton_path/ 直接包含 model/, mix-48k-1024/ 等 (下载的仓库格式，如 CatVTON_full)
@@ -2311,10 +2410,10 @@ def main():
         # 初始化精度
         weight_dtype = init_weight_dtype(final_precision)
 
-        # CatVTONPipeline 显存优化在构造函数中通过参数控制：
-        # - attention_slicing="auto" 启用 UNet attention 切片（降低峰值显存 ~40%）
-        # - enable_xformers=True 启用 xformers 高效注意力（替代 PyTorch 原生 attention）
-        # 显式传入这些参数，而不用运行后方法。
+        # 重要：不要在构造函数中传入 attention_slicing 参数！
+        # CatVTON pipeline 构造函数中的 self.unet.set_attention_slice() 会覆盖 SkipAttnProcessor，
+        # 导致衣服无法生成。我们使用 VAE slicing（更安全，不影响 attention processors）。
+        # 显存优化通过 _apply_memory_optimizations 中的 VAE.enable_slicing() 实现。
         pipeline = CatVTONPipeline(
             base_ckpt="runwayml/stable-diffusion-inpainting",
             attn_ckpt=repo_path,
@@ -2323,8 +2422,8 @@ def main():
             use_tf32=(final_precision in ("fp16", "bf16")),
             device="cuda",
             skip_safety_check=True,  # 跳过 NSFW 安全检查器，避免 FileNotFoundError
-            attention_slicing="auto" if vae_slicing else None,
-            enable_xformers=use_xformers,
+            attention_slicing=None,  # 不传，保留 SkipAttnProcessor
+            enable_xformers=False,   # 禁用，由 _apply_memory_optimizations 处理
         )
 
         # ── 应用极限 VRAM 优化 ─────────────────────────────────────────
