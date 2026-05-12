@@ -1008,6 +1008,10 @@ class ApiClient {
     String garmentCategory = 'auto',
     String garmentCategory2 = 'bottom',
     String mode = 'strict',
+
+    /// 白盒调试模式: off=关闭（默认）; preprocess_only=仅前处理，极快返回；
+    /// full=完整管线并保存所有中间产物。
+    String debugMode = 'off',
     Duration timeout = const Duration(seconds: 2400),
   }) async {
     try {
@@ -1043,6 +1047,9 @@ class ApiClient {
       }
       if (garmentImageUrl2 != null && garmentImageUrl2.trim().isNotEmpty) {
         request.fields['garment_image_url_2'] = garmentImageUrl2.trim();
+      }
+      if (debugMode.trim().isNotEmpty && debugMode != 'off') {
+        request.fields['debug_mode'] = debugMode.trim();
       }
       if (prompt != null && prompt.trim().isNotEmpty) {
         request.fields['prompt'] = prompt.trim();

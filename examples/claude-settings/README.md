@@ -6,10 +6,21 @@
 - `claude.json.example`：示例 `~/.claude.json` 内容
 - `clear_env.ps1`：在 Windows PowerShell 中移除可能干扰的环境变量（仅当前会话）
 - `clear_env.sh`：在 macOS/Linux bash 中移除可能干扰的环境变量（仅当前会话）
+ - `enable_1m_context.ps1`：Windows PowerShell 脚本，修改 `~/.claude/settings.json` 为带 `[1m]` 的模型 ID 并尝试打开新 PowerShell 窗口
+ - `enable_1m_context.sh`：macOS/Linux 脚本，修改 `~/.claude/settings.json` 为带 `[1m]` 的模型 ID 并尝试打开新终端窗口
 
 使用方法：
 1. 复制 `settings.json.example` 到你的用户目录下的 `.claude/settings.json`，并替换 `BASE_URL` 与 `MIMO_API_KEY` 占位符。
 2. 复制 `claude.json.example` 到用户目录下 `~/.claude.json`。
 3. 关闭并重开终端，进入项目目录运行 `claude`，使用 `/status` 与 `/context` 校验配置。
+
+启用 1M 长上下文：
+- 在已创建的 `~/.claude/settings.json` 基础上，运行下面脚本将模型 ID 更新为带 `[1m]` 后缀并尝试打开新终端（Windows/Linux/macOS）：
+	- PowerShell（在 Windows 本机运行）：
+		- [examples/claude-settings/enable_1m_context.ps1](examples/claude-settings/enable_1m_context.ps1)
+	- macOS / Linux（在本机运行）：
+		- [examples/claude-settings/enable_1m_context.sh](examples/claude-settings/enable_1m_context.sh)
+
+运行脚本后，请关闭旧终端或在新打开的终端中运行 `claude /context` 验证长上下文是否生效。
 
 注意：不要在公开聊天中贴入真实密钥；在本地编辑时再替换占位符。

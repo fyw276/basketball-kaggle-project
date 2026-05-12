@@ -1,0 +1,26 @@
+# 更新日志
+
+## 2026-05-10
+### 新增
+- Flutter 虚拟试衣界面新增 2 种模式：严格保真（strict）和混合模式（hybrid）
+- Flutter API 客户端 `virtualTryonV2Garment` 新增 `debug_mode` 参数（`off`/`preprocess_only`/`full`）
+- Flutter 默认试衣模式改为 hybrid（最佳：Warp保真 + CatVTON光影增强）
+- 后端 v2 API 新增 `/api/v2/tryon/preprocess` 和 `/api/v2/tryon/preprocess-batch` 端点
+- Try-On v2 文档（TRYON_TECH_BLUEPRINT_AB.md）更新至 2026-05-10 版本
+
+### 验证
+- CatVTON 端到端管线验证完成：推理耗时 ~15秒（steps=20, guidance=1.5）
+- 完整管线测试通过：人物图 906x1382 + 衣服图 768x768，mask 生成、姿态检测、CatVTON 推理、后处理全部成功
+
+### 修复
+- 文档过时信息（API 端点、支持的模式列表、CatVTON 验证状态）
+- **validate-input 422 崩溃**：`TryOnV2ValidateResponse.thresholds` 类型从 `dict[str, float]` 改为 `dict[str, float]` + 独立 `str` 字段（`recognized_tryon_category`、`recognized_raw_category`、`recognized_confidence`），不再混入字符串到数值字典
+- **/garment mode 400 错误**：新增 `_MODE_FALLBACK` 映射字典，旧值自动转换（professional→detail_fidelity, hybrid/mixed→blend, fast/replace→stable_fast）
+- **Flutter mode 枚举不一致**：`apiValue` 改为输出 `/garment` 端点接受的 `detail_fidelity|stable_fast`，新增 `validateApiValue` 输出 `/validate-input` 端点接受的 `professional|hybrid`
+- **启动命令**：setup.md 补充禁止 `--reload` 的说明（CatVTON + CUDA 环境下热重载导致 CUDA context 销毁）
+
+## 2026-05-09
+### 新增
+- 初始化 doc 文档体系
+- 添加 .cursorrules 项目规则
+- 创建 arch/ 和 architecture/ 双目录结构

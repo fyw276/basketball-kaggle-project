@@ -141,6 +141,142 @@ def _upper_protect_mask(size: tuple[int, int], protect_until_y: int) -> Image.Im
     return mask
 
 
+def _detect_face_box_from_result(
+    catvton_result: Image.Image,
+    cw: int,
+    ch: int,
+    original_person: Image.Image | None = None,
+) -> tuple[int, int, int, int] | None:
+    """Detect face bounding box for CatVTON result using Haar cascade.
+
+    Strategy (priority order):
+      1. Detect face in ORIGINAL person image (much clearer, more reliable).
+         Then SCALE the detected bbox to catvton_result coordinates proportionally.
+         This solves the core problem: CatVTON output degrades face quality,
+         making Haar cascade detection unreliable on AI-generated faces.
+      2. Fallback: detect face directly in catvton_result with histogram equalization.
+      3. Final fallback: return None (caller uses coarse neck-based protection).
+
+    Returns (x, y, w, h) in catvton_result pixel coordinates, or None if undetected.
+    """
+    try:
+        from app.services.cascade_manager import load_cascade
+
+        cascade = load_cascade("haarcascade_frontalface_default.xml")
+        if cascade is None or cascade.empty():
+            logger.warning(
+                "catvton_color_fidelity_spatial: Haar cascade unavailable, "
+                "falling back to coarse face protection"
+            )
+            return None
+
+        # ── Priority 1: Detect on ORIGINAL person image (clear, reliable) ───────
+        if original_person is not None:
+            try:
+                orig_arr = np.asarray(original_person.convert("RGB"))
+                orig_h, orig_w = orig_arr.shape[:2]
+
+                if orig_h < 64 or orig_w < 64:
+                    raise ValueError("Original person image too small")
+
+                orig_gray = cv2.cvtColor(orig_arr, cv2.COLOR_RGB2GRAY)
+                orig_gray_eq = cv2.equalizeHist(orig_gray)
+
+                orig_faces = cascade.detectMultiScale(
+                    orig_gray_eq,
+                    scaleFactor=1.1,
+                    minNeighbors=4,
+                    minSize=(int(orig_w * 0.06), int(orig_h * 0.06)),
+                    maxSize=(int(orig_w * 0.60), int(orig_h * 0.60)),
+                )
+
+                if orig_faces is not None and len(orig_faces) > 0:
+                    orig_face_list = sorted(orig_faces, key=lambda f: f[2] * f[3], reverse=True)
+                    ofx, ofy, ofw, ofh = [int(v) for v in orig_face_list[0]]
+
+                    # Scale from original person coords → catvton_result coords
+                    scale_x = cw / float(orig_w)
+                    scale_y = ch / float(orig_h)
+                    fx = int(ofx * scale_x)
+                    fy = int(ofy * scale_y)
+                    fw = int(ofw * scale_x)
+                    fh = int(ofh * scale_y)
+
+                    # Safety clamp
+                    fx = _clamp_int(fx, 0, cw - 1)
+                    fy = _clamp_int(fy, 0, ch - 1)
+                    fw = _clamp_int(fw, 4, cw)
+                    fh = _clamp_int(fh, 4, ch)
+
+                    logger.info(
+                        "catvton_color_fidelity_spatial: face detected on ORIGINAL person "
+                        "([%d,%d,%d,%d] at %dx%d) -> scaled to catvton([%d,%d,%d,%d] at %dx%d) "
+                        "(sx=%.4f, sy=%.4f)",
+                        ofx,
+                        ofy,
+                        ofw,
+                        ofh,
+                        orig_w,
+                        orig_h,
+                        fx,
+                        fy,
+                        fw,
+                        fh,
+                        cw,
+                        ch,
+                        scale_x,
+                        scale_y,
+                    )
+                    return (fx, fy, fw, fh)
+            except Exception as orig_err:
+                logger.debug(
+                    "catvton_color_fidelity_spatial: face detection on original failed (%s), "
+                    "falling back to catvton result detection",
+                    orig_err,
+                )
+
+        # ── Priority 2: Detect on CatVTON result directly (fallback) ──────────
+        arr = np.asarray(catvton_result.convert("RGB"))
+        gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+        gray_eq = cv2.equalizeHist(gray)
+
+        faces = cascade.detectMultiScale(
+            gray_eq,
+            scaleFactor=1.1,
+            minNeighbors=4,
+            minSize=(int(cw * 0.06), int(ch * 0.06)),
+            maxSize=(int(cw * 0.60), int(ch * 0.60)),
+        )
+        if faces is None or len(faces) == 0:
+            logger.debug(
+                "catvton_color_fidelity_spatial: no face detected by Haar cascade "
+                "(will use coarse neck-based protection)"
+            )
+            return None
+
+        face_list = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)
+        fx, fy, fw, fh = [int(v) for v in face_list[0]]
+        logger.info(
+            "catvton_color_fidelity_spatial: face detected on CatVTON result "
+            "bbox=[%d,%d,%d,%d] (%.1f%%w x %.1f%%h)",
+            fx,
+            fy,
+            fw,
+            fh,
+            fw / cw * 100,
+            fh / ch * 100,
+        )
+        return (fx, fy, fw, fh)
+
+    except Exception as e:
+        logger.warning(
+            "catvton_color_fidelity_spatial: face detection failed (%s), "
+            "falling back to coarse neck-based protection",
+            e,
+        )
+        return None
+
+
 def _person_foreground_mask(person_image: Image.Image) -> np.ndarray | None:
     """Best-effort person foreground mask (H,W) bool.
 
@@ -1170,10 +1306,6 @@ def overlay_draping_from_ai(
     Returns:
         (result_image, metadata_dict)
     """
-    import logging as _log
-
-    _logger = _log.getLogger(__name__)
-
     try:
         w, h = warp_result.size
         warp_rgb = np.array(warp_result.convert("RGB"), dtype=np.float32)
@@ -1235,7 +1367,7 @@ def overlay_draping_from_ai(
 
         out_img = Image.fromarray(result, mode="RGB")
 
-        _logger.info(
+        logger.info(
             "overlay_draping: warp=%dx%d ai=%dx%d region=[%d,%d,%d,%d] alpha=%.2f",
             w,
             h,
@@ -1261,7 +1393,7 @@ def overlay_draping_from_ai(
     except Exception as e:
         import traceback
 
-        _logger.warning("overlay_draping_from_ai failed: %s\n%s", e, traceback.format_exc())
+        logger.warning("overlay_draping_from_ai failed: %s\n%s", e, traceback.format_exc())
         return warp_result, {"engine": "overlay_draping", "reason": str(e)}
 
 
@@ -1289,10 +1421,6 @@ def overlay_top_onto_ai_result(
     Returns:
         (result_image, metadata_dict)
     """
-    import logging as _log
-
-    _logger = _log.getLogger(__name__)
-
     try:
         ai_w, ai_h = ai_result.size
         ai_rgb = np.array(ai_result.convert("RGB"), dtype=np.float32)
@@ -1349,7 +1477,7 @@ def overlay_top_onto_ai_result(
         if gw < 16 or gh < 16:
             return ai_result, {"engine": "ai_only", "reason": "garment too small"}
 
-        _logger.info(
+        logger.info(
             "overlay: ai_size=%dx%d garment=%dx%d region=[%d,%d,%d,%d] rw=%d rh=%d",
             ai_w,
             ai_h,
@@ -1439,7 +1567,7 @@ def overlay_top_onto_ai_result(
     except Exception as e:
         import traceback
 
-        _logger.warning("overlay_top_onto_ai_result failed: %s\n%s", e, traceback.format_exc())
+        logger.warning("overlay_top_onto_ai_result failed: %s\n%s", e, traceback.format_exc())
         return ai_result, {"engine": "ai_only", "reason": str(e)}
 
 
@@ -1481,10 +1609,6 @@ def tryon_hybrid_warp_catvton(
     Returns:
         (混合结果图, metadata_dict)
     """
-    import logging as _log
-
-    _logger = _log.getLogger(__name__)
-
     cat = (garment_category or "").strip().lower()
     if any(k in cat for k in ("top", "上装", "上衣")):
         warp_engine_name = "top_warp_preserve"
@@ -1504,7 +1628,7 @@ def tryon_hybrid_warp_catvton(
             person_image=person_image, garment_image=garment_image
         )
 
-    _logger.info(
+    logger.info(
         f"[HYBRID] Stage 1 Warp 完成: engine={warp_engine_name}, "
         f"garment={garment_category}, drape_alpha={drape_alpha}, "
         f"warp_strength={warp_strength}"
@@ -1519,7 +1643,7 @@ def tryon_hybrid_warp_catvton(
         drape_alpha=drape_alpha,
     )
 
-    _logger.info(
+    logger.info(
         f"[HYBRID] Stage 2 Blend 完成: engine=overlay_draping_from_ai, "
         f"drape_alpha={drape_alpha}"
     )
@@ -1579,10 +1703,6 @@ def catvton_color_fidelity_enhance(
     Returns:
         (增强后的结果图, metadata_dict)
     """
-    import logging
-
-    _logger = logging.getLogger(__name__)
-
     try:
         cr = catvton_result.convert("RGB")
         og = original_garment.convert("RGB")
@@ -1644,6 +1764,13 @@ def catvton_color_fidelity_enhance(
                 bx0, bx1 = int(cw * 0.20), int(cw * 0.80)
                 neck_y, waist_y = int(ch * 0.38), int(ch * 0.90)
 
+        # ── Step 2b: 精确检测面部区域（Haar cascade）────────────────────
+        # 仅上衣类需要此保护。Haar cascade 比 MediaPipe neck_y 精确得多，
+        # 确保面部（含下巴到颈部过渡）不被子衣颜色覆盖。
+        face_box = None
+        if _is_top:
+            face_box = _detect_face_box_from_result(catvton_result, cw, ch)
+
         # ── Step 3: 计算衣服区域 ─────────────────────────────────────────────
         if _is_top:
             gar_x0 = max(0, bx0 - int(cw * 0.03))
@@ -1665,7 +1792,7 @@ def catvton_color_fidelity_enhance(
         gar_h = gar_y1 - gar_y0
 
         if gar_w < 16 or gar_h < 16:
-            _logger.warning(
+            logger.warning(
                 "catvton_color_fidelity: garment region too small (%dx%d), skipping",
                 gar_w,
                 gar_h,
@@ -1714,8 +1841,25 @@ def catvton_color_fidelity_enhance(
         layer = _feather_alpha(layer, radius_px=feather_px)
 
         # 保护面部/颈部
-        protect_y = max(0, int(neck_y - ch * 0.08))
-        protect = _upper_protect_mask((cw, ch), protect_until_y=protect_y)
+        # 使用 Haar cascade 精确定位面部区域（仅上衣类）
+        def _make_en_face_protect_mask(
+            cw: int, ch: int, face_box: tuple[int, int, int, int] | None, neck_y: int
+        ) -> Image.Image:
+            protect_mask = Image.new("L", (cw, ch), color=255)
+            if face_box is not None:
+                fx, fy, fw, fh = face_box
+                extend_bottom = int(fh * 0.25)
+                protect_y0 = max(0, fy)
+                protect_y1 = min(ch, fy + fh + extend_bottom)
+                protect_x0 = max(0, fx - int(fw * 0.05))
+                protect_x1 = min(cw, fx + fw + int(fw * 0.05))
+                protect_mask.paste(0, (protect_x0, protect_y0, protect_x1, protect_y1))
+            else:
+                protect_until_y = max(0, int(neck_y - ch * 0.06))
+                protect_mask.paste(0, (0, 0, cw, protect_until_y))
+            return protect_mask
+
+        protect = _make_en_face_protect_mask(cw, ch, face_box, neck_y)
         r_ch, g_ch, b_ch, a_ch = layer.split()
         a_ch = ImageChops.multiply(a_ch, protect)
         layer = Image.merge("RGBA", (r_ch, g_ch, b_ch, a_ch))
@@ -1759,7 +1903,7 @@ def catvton_color_fidelity_enhance(
 
         result_img = Image.fromarray(result_np, mode="RGB")
 
-        _logger.info(
+        logger.info(
             "catvton_color_fidelity: region=[%d,%d,%d,%d] strength=%.2f",
             gar_x0,
             gar_y0,
@@ -1777,7 +1921,7 @@ def catvton_color_fidelity_enhance(
     except Exception as e:
         import traceback
 
-        _logger.warning("catvton_color_fidelity_enhance failed: %s\n%s", e, traceback.format_exc())
+        logger.warning("catvton_color_fidelity_enhance failed: %s\n%s", e, traceback.format_exc())
         return catvton_result, {"engine": "catvton_color_fidelity", "reason": str(e)}
 
 
@@ -1814,10 +1958,6 @@ def catvton_color_fidelity_spatial(
     Returns:
         (保真后的结果图, metadata_dict)
     """
-    import logging as _log
-
-    _logger = _log.getLogger(__name__)
-
     try:
         cr = catvton_result.convert("RGB")
         cw, ch = cr.size
@@ -1866,6 +2006,35 @@ def catvton_color_fidelity_spatial(
             bx0, bx1 = int(cw * 0.15), int(cw * 0.85)
             neck_y, waist_y = int(ch * 0.15), int(ch * 0.50)
 
+        # ── Step 1b: 精确检测面部区域（Haar cascade）─────────────────────
+        # neck_y 来自 MediaPipe 关键点，只能估算到下巴位置，精度不足。
+        # 实际面部可延伸到下巴以下、颈部以上。用 Haar cascade 精确定位，
+        # 确保面部区域绝不被子衣颜色覆盖（防止"脸部被清除"bug）。
+        # 仅上衣类需要此保护（下装/裙子不覆盖面部）。
+        face_box = None
+        if _is_top:
+            face_box = _detect_face_box_from_result(catvton_result, cw, ch)
+
+        def _make_face_protect_mask(
+            cw: int, ch: int, face_box: tuple[int, int, int, int] | None, neck_y: int
+        ) -> Image.Image:
+            """Build L mask: 0 (protected) = face region + small neck buffer, 255 (allow garment)."""
+            protect_mask = Image.new("L", (cw, ch), color=255)
+            if face_box is not None:
+                fx, fy, fw, fh = face_box
+                # Extend face box downward by ~25% of face height to cover chin → neck transition
+                extend_bottom = int(fh * 0.25)
+                protect_y0 = max(0, fy)
+                protect_y1 = min(ch, fy + fh + extend_bottom)
+                protect_x0 = max(0, fx - int(fw * 0.05))
+                protect_x1 = min(cw, fx + fw + int(fw * 0.05))
+                protect_mask.paste(0, (protect_x0, protect_y0, protect_x1, protect_y1))
+            else:
+                # Fallback: protect area just above neck (coarse but better than nothing)
+                protect_until_y = max(0, int(neck_y - ch * 0.06))
+                protect_mask.paste(0, (0, 0, cw, protect_until_y))
+            return protect_mask
+
         # 计算衣服区域
         if _is_top:
             gar_x0 = max(0, bx0 - int(cw * 0.05))
@@ -1886,9 +2055,7 @@ def catvton_color_fidelity_spatial(
         gar_w = gar_x1 - gar_x0
         gar_h = gar_y1 - gar_y0
         if gar_w < 16 or gar_h < 16:
-            _logger.warning(
-                "catvton_color_fidelity_spatial: region too small (%dx%d)", gar_w, gar_h
-            )
+            logger.warning("catvton_color_fidelity_spatial: region too small (%dx%d)", gar_w, gar_h)
             return catvton_result, {
                 "engine": "catvton_color_fidelity_spatial",
                 "reason": "region_too_small",
@@ -1934,8 +2101,8 @@ def catvton_color_fidelity_spatial(
         warped_layer = _feather_alpha(warped_layer, radius_px=feather_px)
 
         # ── Step 4: 保护面部 ─────────────────────────────────────────
-        protect_y = max(0, int(neck_y - ch * 0.08))
-        protect = _upper_protect_mask((cw, ch), protect_until_y=protect_y)
+        # 使用精确 Haar cascade 检测面部（_is_top 专享；下装不覆盖面部无需此步骤）
+        protect = _make_face_protect_mask(cw, ch, face_box, neck_y)
         r_ch, g_ch, b_ch, a_ch = warped_layer.split()
         a_ch = ImageChops.multiply(a_ch, protect)
         warped_layer = Image.merge("RGBA", (r_ch, g_ch, b_ch, a_ch))
@@ -1954,7 +2121,7 @@ def catvton_color_fidelity_spatial(
         result_np = np.clip(result_np, 0, 255).astype(np.uint8)
         result_img = Image.fromarray(result_np, mode="RGB")
 
-        _logger.info(
+        logger.info(
             "catvton_color_fidelity_spatial: region=[%d,%d,%d,%d] "
             "strength=%.2f gar=%dx%d scaled=%dx%d",
             gar_x0,
@@ -1978,5 +2145,5 @@ def catvton_color_fidelity_spatial(
     except Exception as e:
         import traceback
 
-        _logger.warning("catvton_color_fidelity_spatial failed: %s\n%s", e, traceback.format_exc())
+        logger.warning("catvton_color_fidelity_spatial failed: %s\n%s", e, traceback.format_exc())
         return catvton_result, {"engine": "catvton_color_fidelity_spatial", "reason": str(e)}

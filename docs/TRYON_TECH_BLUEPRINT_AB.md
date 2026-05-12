@@ -1,44 +1,64 @@
 # 虚拟试衣技术蓝图（方案 A + 方案 B + 扩展模式）
 
-最后更新：2026-04-24
-适用范围：下装（裤子/裙装）优先，目标是“保留本人身份，只替换服饰”。
+最后更新：2026-05-10
+适用范围：下装（裤子/裙装）优先，目标是"保留本人身份，只替换服饰"。
 
-## 0. 实施现状（截至 2026-04-21）
+## 0. 实施现状（截至 2026-05-10）
 
-已落地（方案 A MVP + 扩展模式 + 客户端接入）：
+已落地（方案 A MVP + 扩展模式 + 客户端接入 + CatVTON 端到端验证）：
 
 **基础管线（方案 A）**
-- 后端 v2 API：`POST /api/v2/tryon/validate-input`、`POST /api/v2/tryon/garment`、`GET /api/v2/tryon/capabilities`、`GET /api/v2/tryon/model-status`
+- 后端 v2 API：`POST /api/v2/tryon/validate-input`、`POST /api/v2/tryon/garment`、`POST /api/v2/tryon/preprocess`、`GET /api/v2/tryon/capabilities`、`GET /api/v2/tryon/model-status`
 - 输入门障模块：`backend/app/services/tryon_v2/input_gate.py`（包含可解释失败码与分数）
 - 流水线模块：`backend/app/services/tryon_v2/pipeline_a.py`（门障 -> 身份保护试衣 -> 统一结果）
 - 质量评估模块：`backend/app/services/tryon_v2/qc.py`（identity/boundary/occlusion + aggregate）
 - Warp 引擎：`backend/app/services/tryon_v2/warp_engine.py`（分段仿射 + TPS，几何贴合保留身份）
 
-**扩展模式**
-- `replace` 模式：融合 Warp / 百炼 / 远程 VTON / CatVTON / Diffusion 多引擎 AI 生成式合成（引擎优先级可配置：`TRYON_V2_REPLACE_ENGINE_PRIORITY`，默认 `warp,bailian,remote,catvton,diffusion`）
-- `realistic` 模式：CatVTON 深度学习 + 边缘感知 + 光照匹配 + Poisson 融合（`realism_engine.py`）
-- `professional` 模式：多步管线（分割 + 姿态 + 消除 + 贴合 + 光照 + 验证）（`professional_tryon.py`）
-- CatVTON 本地引擎：subprocess 调用 `vton_inference_service/catvton_runner.py`，MediaPipe PoseLandmarker 替代 SCHP/DensePose（`catvton_engine_client.py`）
-- 后处理流水线：边缘融合、颜色匹配、细节增强、去噪、接缝消除（`postprocess.py`）
-- `hybrid` 模式：Warp 保真 + CatVTON 真实感，饱和度感知 alpha 混合（`warp_engine.py` 中 `tryon_hybrid_warp_catvton`）
+**扩展模式（全部 7 种模式均已支持）**
+- `strict` 模式：严格保真模式，几何贴图 + 严格QC校验，最保守/身份保持最强
+- `balanced` 模式（对应 Flutter `stable`）：中等严格度，几何贴图 + 宽松QC
+- `replace` 模式：融合 Warp / 百炼 / 远程 VTON / CatVTON / Diffusion 多引擎 AI 生成式合成
+- `realistic` 模式：CatVTON 深度学习 + 边缘感知 + 光照匹配 + Poisson 融合
+- `realistic_v2` 模式：CatVTON v2 增强版
+- `professional` 模式：多步管线（分割 + 姿态 + 消除 + 贴合 + 光照 + 验证）
+- `hybrid` 模式：Warp 保真（100%衣服图案/颜色）+ CatVTON 光影增强，饱和度感知 alpha 混合
+- CatVTON 本地引擎：subprocess 调用 `vton_inference_service/catvton_runner.py`，MediaPipe PoseLandmarker
+- 后处理流水线：边缘融合、颜色匹配、细节增强，去噪、接缝消除
 
 **集成与客户端**
-- 移动端接入：预检面板、失败码可视化、action_hint 展示、多模式选择、v2 不可用自动回退 v1（`virtual_tryon_screen.dart`）
-- CLI 接入：`--v2 --precheck-only --skip-precheck --mode --garment-category`
+- 移动端接入：预检面板、失败码可视化、action_hint 展示、**2 种模式选择**（professional=细节保真 / hybrid=混合模式），默认 hybrid，v2 不可用自动回退 v1。`apiValue` 映射到 `/garment` 端点接受的 `detail_fidelity|stable_fast`；`validateApiValue` 映射到 `/validate-input` 端点接受的 `professional|hybrid`
+- Flutter API 客户端：`virtualTryonV2Garment` 支持 `debug_mode` 参数（`off`/`preprocess_only`/`full`）
+- CLI 接入：`--v2 --preprocess-only --skip-precheck --mode --garment-category`
 - 配置项：`TRYON_BOTTOM_FORCE_FALLBACK`、`TRYON_V2_*` 阈值/开关、`CATVTON_*` 引擎参数
+
+**CatVTON 端到端验证（2026-05-10 实测）**
+- CatVTON subprocess 引擎验证完成：推理耗时 **~15 秒**（steps=20, guidance=1.5, VAE slicing 启用）
+- 完整管线测试通过（`tryon_20260510_080729_175_1c80df`）：
+  - 人物图：906x1382 RGB，上装（cloth_type=upper）
+  - 衣服图：768x768，rembg 分割 + 33 个姿态关键点
+  - CatVTON 推理：`inference_time_s=14.99`，`status=success`
+  - 后处理：`repaint=true`，优化：`vae_slicing` + `flash_attention_fallback`
+  - 输出：`09_result_raw.jpg`（CatVTON 原始）+ `10_result_final.jpg`（后处理结果）
+
+**2026-05-10 修复**
+- 修复 `validate-input` 422 错误：`TryOnV2ValidateResponse` 新增 `recognized_tryon_category: str`、`recognized_raw_category: str`、`recognized_confidence: float` 独立字段，`thresholds` 保持 `dict[str, float]` 纯数值类型
+- 修复 `/garment` mode 枚举不一致：新增 `_MODE_FALLBACK` 映射，旧值自动转换（professional→detail_fidelity, hybrid/mixed→blend, fast/replace→stable_fast）
+- 修复 Flutter 端 `apiValue` 映射：`professional` → `detail_fidelity`，`hybrid` → `stable_fast`
+- 启动警告：CatVTON + CUDA 环境下禁止使用 `uvicorn --reload`，避免 CUDA context 销毁与显存碎片
 
 **验证状态**
 - `tests/test_tryon_v2_api.py` 与 `tests/test_tryon_guards.py` 已稳定通过
 - `tests/test_tryon_v2_qc.py` 已覆盖方案 A 质量评分通过/失败分支
 - `tests/test_tryon_v2_warp_engine.py` 已覆盖 Warp 引擎 identity 保护测试
 - 预检失败码与错误 envelope 字段已在客户端解析并展示
+- **CatVTON 端到端管线验证通过（2026-05-10 实测）**
 
 **尚未落地**
 - 方案 B（2.5D 深度遮挡增强）仍处于蓝图阶段
 
 ## 1. 背景与目标
 
-当前生成式链路容易出现“换人、换脸、换场景”。本蓝图将主链路切换为可控几何贴合：人体结构识别 + 服饰分段贴图 + 遮挡融合。
+当前生成式链路容易出现"换人、换脸、换场景"。本蓝图将主链路切换为可控几何贴合：人体结构识别 + 服饰分段贴图 + 遮挡融合。
 
 核心目标：
 - 输入人像必须全身正面，腿部完整可见。
@@ -108,7 +128,7 @@
 
 ### 3.4 工程收益
 
-- 显著降低“换人图”概率
+- 显著降低"换人图"概率
 - 行为可预测，测试可覆盖
 - 性能和资源成本可控
 
@@ -158,6 +178,8 @@ API 层：
 - POST /api/v2/tryon/garment（主无线）
 - POST /api/v2/tryon/pants（已废弃，向后兼容）
 - POST /api/v2/tryon/validate-input
+- POST /api/v2/tryon/preprocess（预处理：去背景白底 + 品类识别）
+- POST /api/v2/tryon/preprocess-batch（批量预处理）
 - GET /api/v2/tryon/capabilities
 - GET /api/v2/tryon/model-status
 
@@ -170,35 +192,45 @@ API 层：
 - TRYON_V2_MIN_LEG_VISIBILITY_SCORE
 - TRYON_V2_QC_THRESHOLD
 - TRYON_V2_TIMEOUT_MS
+- TRYON_V2_AUTO_PREPROCESS=true|false
 - CATVTON_ENABLED/CATVTON_PATH/CATVTON_WIDTH/CATVTON_HEIGHT/CATVTON_STEPS/CATVTON_GUIDANCE/CATVTON_REPAINT/CATVTON_TIMEOUT_SECONDS
+- CATVTON_DEBUG_DIR=/path/to/debug/output（白盒调试输出目录）
 
 ## 7. 接口字段设计
 
-### 7.1 请求：POST /api/v2/tryon/pants（multipart/form-data）
+### 7.1 请求：POST /api/v2/tryon/garment（multipart/form-data）
 
 必填：
-- person_file
 - garment_file
-- garment_category=bottom
+- person_file
 
 可选：
-- mode=strict|balanced
-- debug=true|false
+- garment_image_url（已预处理的标准图 URL）
+- garment_category=auto|top|bottom|skirt|outfit
+- garment_file_2（第二件衣服，用于套装）
+- garment_image_url_2
+- garment_category_2=bottom|skirt
+- prompt
+- mode=detail_fidelity|blend|stable_fast（也接受旧值：strict→detail_fidelity, balanced→stable_fast, hybrid→blend, professional→detail_fidelity, replace→stable_fast，由后端 mode fallback 自动转换）
+- model_gender=male|female|neutral
+- debug_mode=off|preprocess_only|full
 
 ### 7.2 成功响应
 
 - status=success
 - result_image_url
-- pipeline=A|B
+- preview_white_url（白底预览图 URL，letterbox 保持比例）
+- pipeline=A
 - qc_scores
   - full_body_score
   - leg_visibility_score
   - identity_preserve_score
   - boundary_artifact_score
-  - occlusion_correctness_score（B）
+  - occlusion_validity_score
 - metadata
   - latency_ms
-  - model_versions
+  - engine（引擎标识：catvton, pants_warp_v2_pose, top_warp_v2_pose 等）
+  - debug_session_dir（debug_mode != off 时返回）
 
 ### 7.3 失败响应
 
@@ -208,7 +240,7 @@ API 层：
 - retryable
 - action_hint
 
-## 8. 失败码设计（建议）
+## 8. 失败码设计
 
 - TRYON_V2_PERSON_NOT_FULL_BODY
 - TRYON_V2_PERSON_LEG_NOT_VISIBLE
@@ -216,10 +248,14 @@ API 层：
 - TRYON_V2_GARMENT_NOT_FRONT_VIEW
 - TRYON_V2_GARMENT_TOO_SMALL
 - TRYON_V2_GARMENT_MULTI_OBJECT
+- TRYON_V2_GARMENT_CONTAINS_MODEL
+- TRYON_V2_UNSUPPORTED_CATEGORY
 - TRYON_V2_OCCLUSION_TOO_COMPLEX
 - TRYON_V2_QC_NOT_PASSED
 - TRYON_V2_INTERNAL_WARP_FAILED
 - TRYON_V2_TIMEOUT
+- TRYON_V2_DISABLED
+- QUOTA_TRYON_EXCEEDED
 
 ## 9. 里程碑排期（8 周）
 

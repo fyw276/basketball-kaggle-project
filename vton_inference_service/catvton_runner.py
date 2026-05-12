@@ -452,11 +452,13 @@ def _make_garment_mask_rembg(
 
         # =========================
         # 更宽松的上衣映射区域
-        # 修复：衣服只贴胸口
+        # 修复：衣服只贴胸口，但 expansion 不足会导致 mask 太小（mask_area_ratio ~0.05），
+        # 造成 CatVTON 无法完全覆盖躯干，原衣服阴影残留。
+        # 增大 expand ratios 并增加 dilation iterations。
         # =========================
-        shoulder_expand_ratio = 0.22
-        body_expand_ratio = 0.18
-        height_expand_ratio = 0.20
+        shoulder_expand_ratio = 0.40
+        body_expand_ratio = 0.35
+        height_expand_ratio = 0.30
 
         # 原始人体框
         x_left_px = min(ls[0], rs[0])
@@ -529,13 +531,14 @@ def _make_garment_mask_rembg(
             person_mask[y0_i:y1_i, x0_i:x1_i] = gar_mask_resized[:actual_h, :actual_w]
 
         # =========================
-        # 修复 mask 太小
+        # 修复 mask 太小：增加 dilation iterations 让 mask 覆盖更大区域
+        # iterations=2 (替代1) 使 mask 更饱满，帮助 CatVTON 完全覆盖躯干
         # =========================
         kernel = np.ones((7, 7), np.uint8)
         person_mask = cv2.dilate(
             person_mask,
             kernel,
-            iterations=1,
+            iterations=2,
         )
         person_mask = cv2.GaussianBlur(
             person_mask,
@@ -2342,8 +2345,34 @@ def main():
             f"size={pw}x{ph}, white_pixels={mask_white}, area_ratio={mask_area_ratio:.3f}"
         )
 
-        # ── 面积过小时仅记录警告（不再自动扩张，避免衣物溢出） ──────────
-        if mask_area_ratio < 0.14:
+        # ── Mask auto-expansion for upper garment ────────────────────────────────
+        # For upper garments, mask_area_ratio 0.05 is too small — CatVTON won't fully cover
+        # the torso area and old garment shadows bleed through. Expand up to 0.09 for upper.
+        # For lower/overall, the 0.14 threshold is reasonable.
+        if args.type == "upper" and mask_area_ratio < 0.09:
+            target_ratio = 0.12
+            current_pixels = mask_white
+            # Use 9x9 kernel for faster area gain, no blur (it erodes dilation)
+            mask_np = np.array(cloth_mask.convert("L"))
+            kernel = np.ones((9, 9), np.uint8)
+            for _dilate_iter in range(12):
+                if current_pixels / max(pw * ph, 1) >= target_ratio:
+                    break
+                mask_np = cv2.dilate(mask_np, kernel, iterations=1)
+                _, mask_np = cv2.threshold(mask_np, 100, 255, cv2.THRESH_BINARY)
+                current_pixels = int(np.sum(mask_np > 128))
+            # Light smoothing only at the end to remove jagged edges
+            mask_np = cv2.GaussianBlur(mask_np, (3, 3), 0)
+            _, mask_np = cv2.threshold(mask_np, 100, 255, cv2.THRESH_BINARY)
+            current_pixels = int(np.sum(mask_np > 128))
+            cloth_mask = Image.fromarray(mask_np, mode="L")
+            mask_area_ratio = current_pixels / max(pw * ph, 1)
+            logger.info(
+                f"[MASK-FIX] upper garment mask expanded: "
+                f"ratio {mask_white / max(pw * ph, 1):.3f} -> {mask_area_ratio:.3f} "
+                f"(target={target_ratio:.3f})"
+            )
+        elif mask_area_ratio < 0.14:
             logger.warning(
                 f"[MASK-FIX] mask area ratio small ({mask_area_ratio:.3f}), "
                 f"skipping auto-expansion to avoid garment overflow"

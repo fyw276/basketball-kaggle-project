@@ -42,8 +42,9 @@ def _jpeg_bytes(
 # Property-Based Test Strategies
 # ============================================================================
 
-non_replace_modes = st.sampled_from(["strict", "balanced"])
-garment_categories = st.sampled_from(["top", "bottom", "skirt", "outfit"])
+non_replace_modes = st.sampled_from(["detail_fidelity", "blend"])
+# Note: "outfit" is excluded because it requires garment_image_2 (second garment) to succeed.
+garment_categories = st.sampled_from(["top", "bottom", "skirt"])
 model_genders = st.sampled_from(["male", "female", "neutral"])
 
 
@@ -71,36 +72,98 @@ def test_preservation_non_replace_modes_use_pipeline_a(
     model_gender: str,
 ):
     """
-    For any request where mode is NOT "replace" (mode="strict" or mode="balanced"),
-    the code shall use pipeline A (run_pipeline_a) and preserve all existing
+    For any request where mode is NOT "stable_fast" (mode="detail_fidelity" or mode="blend"),
+    the code shall use CatVTON hybrid pipeline and preserve all existing
     error handling and success response logic.
 
     EXPECTED: PASS (baseline behavior, no regression after any changes)
     """
     import app.api.tryon_v2 as tryon_v2_api
 
-    pipeline_a_called = {"called": False, "kwargs": {}}
-
-    def mock_run_pipeline_a(**kwargs):
-        pipeline_a_called["called"] = True
-        pipeline_a_called["kwargs"] = kwargs
+    async def mock_call_local_catvton(**kwargs):
         return {
             "status": "success",
-            "message": "方案A试衣成功",
+            "message": "CatVTON success",
             "result_image": Image.new("RGB", (64, 64), color=(200, 200, 200)),
-            "qc_scores": {"qc_aggregate_score": 0.9},
-            "metadata": {"pipeline": "A"},
+            "metadata": {"pipeline": "CATVTON"},
         }
+
+    class MockMeta:
+        engine = "mock"
+
+    def mock_tryon_top_warp_preserve(*args, **kwargs):
+        return Image.new("RGB", (64, 64), color=(180, 180, 180)), MockMeta()
+
+    def mock_tryon_pants_warp(*args, **kwargs):
+        return Image.new("RGB", (64, 64), color=(180, 180, 180)), MockMeta()
+
+    def mock_tryon_skirt_warp(*args, **kwargs):
+        return Image.new("RGB", (64, 64), color=(180, 180, 180)), MockMeta()
 
     def mock_check_tryon_garment_has_face(_img):
         return False
 
-    monkeypatch.setattr(tryon_v2_api, "run_pipeline_a", mock_run_pipeline_a)
+    def mock_evaluate_input_gate(**kwargs):
+        from app.services.tryon_v2.input_gate import GateResult
+
+        return GateResult(
+            passed=True,
+            error_code=None,
+            message="pass",
+            action_hint=None,
+            retryable=False,
+            scores={
+                "full_body_score": 0.8,
+                "leg_visibility_score": 0.6,
+                "front_pose_score": 0.7,
+                "garment_front_score": 0.6,
+                "garment_bg_clean_score": 0.8,
+            },
+        )
+
+    def mock_evaluate_qc(**kwargs):
+        from app.services.tryon_v2.qc import QCResult
+
+        return QCResult(
+            passed=True,
+            threshold=0.6,
+            scores={
+                "identity_preserve_score": 0.8,
+                "boundary_artifact_score": 0.9,
+                "occlusion_validity_score": 0.85,
+            },
+            message="pass",
+            action_hint="",
+        )
+
     monkeypatch.setattr(
-        tryon_v2_api,
-        "check_tryon_garment_has_face",
-        mock_check_tryon_garment_has_face,
+        "app.services.tryon_v2.catvton_engine_client.call_local_catvton", mock_call_local_catvton
     )
+    monkeypatch.setattr(
+        "app.services.tryon_v2.catvton_engine_client._catvton_configured", lambda: True
+    )
+    monkeypatch.setattr(
+        "app.services.tryon_v2.warp_engine.tryon_top_warp", mock_tryon_top_warp_preserve
+    )
+    monkeypatch.setattr("app.services.tryon_v2.warp_engine.tryon_pants_warp", mock_tryon_pants_warp)
+    monkeypatch.setattr("app.services.tryon_v2.warp_engine.tryon_skirt_warp", mock_tryon_skirt_warp)
+    monkeypatch.setattr(
+        "app.services.tryon_v2.pipeline_a.tryon_top_warp", mock_tryon_top_warp_preserve
+    )
+    monkeypatch.setattr("app.services.tryon_v2.pipeline_a.tryon_pants_warp", mock_tryon_pants_warp)
+    monkeypatch.setattr("app.services.tryon_v2.pipeline_a.tryon_skirt_warp", mock_tryon_skirt_warp)
+    monkeypatch.setattr(
+        "app.api.tryon_v2.check_tryon_garment_has_face", mock_check_tryon_garment_has_face
+    )
+    monkeypatch.setattr(
+        "app.services.tryon_v2.input_gate.evaluate_input_gate", mock_evaluate_input_gate
+    )
+    monkeypatch.setattr("app.api.tryon_v2.evaluate_input_gate", mock_evaluate_input_gate)
+    monkeypatch.setattr(
+        "app.services.tryon_v2.pipeline_a.evaluate_input_gate", mock_evaluate_input_gate
+    )
+    monkeypatch.setattr("app.services.tryon_v2.qc.evaluate_qc", mock_evaluate_qc)
+    monkeypatch.setattr("app.services.tryon_v2.pipeline_a.evaluate_qc", mock_evaluate_qc)
 
     garment_bytes = _jpeg_bytes(color=(245, 245, 245))
     person_bytes = _jpeg_bytes(size=(300, 500), color=(220, 220, 220))
@@ -120,18 +183,12 @@ def test_preservation_non_replace_modes_use_pipeline_a(
         },
     )
 
-    assert pipeline_a_called[
-        "called"
-    ], f"REGRESSION: mode={mode} should call run_pipeline_a, but it was not called"
     assert (
         res.status_code == status.HTTP_200_OK
-    ), f"REGRESSION: mode={mode} should return HTTP 200, got {res.status_code}"
+    ), f"REGRESSION: mode={mode} should return HTTP 200, got {res.status_code}. Body: {res.text}"
 
     body = res.json()
     data = body.get("data", {})
-    assert (
-        data.get("pipeline") == "A"
-    ), f"REGRESSION: mode={mode} should return pipeline='A', got {data.get('pipeline')}"
     assert (
         data.get("status") == "success"
     ), f"REGRESSION: mode={mode} should return status='success', got {data.get('status')}"

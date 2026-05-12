@@ -77,6 +77,20 @@ def _catvton_configured() -> bool:
             return True
 
     logger.info("CatVTON _catvton_configured: OK (path=%s)", catvton_path)
+
+    # Warn about uvicorn --reload incompatibility with CatVTON
+    # Hot reload destroys CUDA contexts, fragments VRAM, and causes unstable inference.
+    # Only warn at startup, not on every inference call.
+    if os.environ.get("UVICORN_RELOAD") == "1":
+        logger.warning(
+            "[DEV-WARNING] uvicorn --reload is active. "
+            "CatVTON + CUDA + hot reload can cause CUDA context destruction, "
+            "VRAM fragmentation, and unstable/dirty inference outputs. "
+            "For CatVTON development, use: "
+            "python -m uvicorn app.main:app --port 8010 --no-reload "
+            "(or set UVICORN_RELOAD=0 and restart manually)"
+        )
+
     return True
 
 
@@ -112,11 +126,11 @@ def _get_catvton_path() -> str:
 def _catvton_category_hint(garment_category: Optional[str]) -> str:
     """Map garment category string to CatVTON type."""
     s = (garment_category or "").strip().lower()
-    if any(k in s for k in ("裙", "连衣裙", "dress")):
+    if any(k in s for k in ("裙", "连衣裙", "dress", "skirt", "裙装")):
         return "overall"
-    if any(k in s for k in ("下装", "裤", "裤装", "bottom", "短裤")):
+    if any(k in s for k in ("下装", "裤", "裤装", "bottom", "短裤", "pants", "长裤")):
         return "lower"
-    if any(k in s for k in ("上装", "上衣", "外套", "top", "t恤", "毛衣")):
+    if any(k in s for k in ("上装", "上衣", "外套", "top", "t恤", "毛衣", "shirt", "T恤", "卫衣")):
         return "upper"
     return "upper"
 

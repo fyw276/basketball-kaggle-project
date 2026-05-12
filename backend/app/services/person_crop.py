@@ -58,7 +58,7 @@ def _detect_mediapipe_pose(image: Image.Image) -> tuple[list, Image.Image | None
         seg_mask: PIL L image of person segmentation (or None)
     """
     try:
-                from mediapipe import Image as MPImage
+        from mediapipe import Image as MPImage
         from mediapipe.tasks.python.vision import PoseLandmarker, PoseLandmarkerOptions, RunningMode
     except ImportError:
         return [], None

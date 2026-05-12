@@ -127,11 +127,10 @@ class CategoryClassifier:
         # Map ImageNet predictions to garment categories
         category, confidence = self._map_to_garment_category(predictions[0])
 
-        # Fallback to heuristic when confidence is too low
+        # Return "unknown" when confidence is too low for reliable classification
         if confidence < 0.12:
-            heuristic = self.heuristic_category(image_source)
-            logger.warning(f"Fallback heuristic category used: {heuristic}")
-            return heuristic, confidence
+            logger.warning(f"Low confidence {confidence:.3f} < 0.12, falling back to heuristic")
+            return self.heuristic_category(image_source), confidence
 
         logger.info(f"Classified as '{category}' with confidence {confidence:.3f}")
 

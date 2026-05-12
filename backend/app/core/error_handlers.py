@@ -142,7 +142,10 @@ async def validation_exception_handler(
         Standardized error response
     """
     errors = []
-    for error in exc.errors():
+    exc_errors_list = exc.errors()
+    exc_body = getattr(exc, "body", None)
+
+    for error in exc_errors_list:
         errors.append(
             {
                 "field": ".".join(str(loc) for loc in error["loc"]),
@@ -151,16 +154,35 @@ async def validation_exception_handler(
             }
         )
 
-    logger.bind(path=request.url.path, errors=errors).warning(
-        "Validation error: {} field(s) failed validation",
+    # Safely log exc_body
+    try:
+        import json as _json
+
+        _json.dumps(exc_body)
+        body_for_log = exc_body
+    except Exception:
+        body_for_log = f"<non-serializable: {type(exc_body).__name__ if exc_body else 'None'}>"
+
+    logger.bind(
+        path=request.url.path,
+        errors=errors,
+        exc_errors=exc_errors_list,
+        exc_body=body_for_log,
+    ).warning(
+        "Validation error: {} field(s) failed validation\n" "exc.errors() = {}\n" "exc.body = {}",
         len(errors),
+        exc_errors_list,
+        body_for_log,
     )
+
+    # Only include body in details if it is JSON-serializable (avoid crashes in JSONResponse)
+    details = {"errors": errors}
 
     return create_error_response(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         message="Validation error",
         error_type="ValidationError",
-        details={"errors": errors},
+        details=details,
         path=request.url.path,
     )
 

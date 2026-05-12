@@ -297,6 +297,7 @@ def enhance_tryon_result(
     garment_mask: np.ndarray | None = None,
     garment_region: Tuple[int, int, int, int] | None = None,
     strength: str = "medium",
+    is_white_garment: bool = False,
 ) -> Image.Image:
     """
     完整后处理流程 - 安全版本，不会误伤衣物区域。
@@ -308,10 +309,19 @@ def enhance_tryon_result(
         garment_mask: 衣物区域掩码（可选）
         garment_region: 衣物区域 (x0, y0, x1, y1)
         strength: 增强强度 'light' | 'medium' | 'strong'
+        is_white_garment: 是否为白色/低饱和度衣物（跳过后处理以避免污染）
 
     Returns:
         增强后的图像
     """
+    # 白色/低饱和度衣物跳过后处理，避免褐色阴影、边缘污染、fidelity 误采样
+    if is_white_garment:
+        logger.info(
+            "White/low-saturation garment detected (is_white_garment=True) — "
+            "skipping post-processing to preserve CatVTON's clean white output"
+        )
+        return result
+
     logger.info(f"Applying safe post-processing (strength={strength})...")
 
     # 确定处理强度参数
@@ -341,6 +351,33 @@ def enhance_tryon_result(
         )
 
     logger.info("Safe post-processing completed")
+    return result
+
+
+def catvton_safe_enhance(
+    result: Image.Image,
+    person: Image.Image,
+    garment_mask: np.ndarray | None = None,
+) -> Image.Image:
+    """
+    CatVTON 安全后处理 — 只做去噪 + 接缝消除 + 轻度锐化，
+    不与原图混合（避免贴纸/幽灵效果）。
+    """
+    logger.info("CatVTON safe enhance: denoise + seam removal + sharpen")
+
+    # Step 1: 保边去噪
+    result = denoise_while_preserving_edges(result, strength=1)
+
+    # Step 2: 消除接缝线
+    result = remove_seam_lines(result, person, garment_mask)
+
+    # Step 3: 轻度全局锐化
+    result_arr = np.array(result.convert("RGB"), dtype=np.float32)
+    gaussian = cv2.GaussianBlur(result_arr.astype(np.uint8), (0, 0), 1.0)
+    sharpened = cv2.addWeighted(result_arr.astype(np.uint8), 1.08, gaussian, -0.08, 0)
+    result = Image.fromarray(np.clip(sharpened, 0, 255).astype(np.uint8), mode="RGB")
+
+    logger.info("CatVTON safe enhance completed")
     return result
 
 

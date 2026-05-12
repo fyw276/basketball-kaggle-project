@@ -23,6 +23,7 @@ def run_pipeline_a(
     strict_identity: bool = True,
     thresholds: dict[str, float] | None = None,
     qc_threshold: float = 0.6,
+    garment_confidence: float | None = None,
 ) -> dict[str, Any]:
     gate = evaluate_input_gate(
         person_image=person_image,
@@ -30,6 +31,7 @@ def run_pipeline_a(
         garment_category=garment_category,
         strict=bool(strict_identity),
         thresholds=thresholds,
+        garment_confidence=garment_confidence,
     )
     if not gate.passed:
         return {

@@ -57,7 +57,7 @@ def test_tryon_v2_returns_structured_gate_error(
         "/api/v2/tryon/pants",
         headers=auth_headers,
         files=files,
-        data={"garment_category": "bottom", "mode": "strict"},
+        data={"garment_category": "bottom", "mode": "blend"},
     )
 
     assert res.status_code == status.HTTP_400_BAD_REQUEST
@@ -106,7 +106,7 @@ def test_tryon_v2_returns_structured_qc_error(
         "/api/v2/tryon/pants",
         headers=auth_headers,
         files=files,
-        data={"garment_category": "bottom", "mode": "strict"},
+        data={"garment_category": "bottom", "mode": "blend"},
     )
 
     assert res.status_code == status.HTTP_400_BAD_REQUEST
@@ -125,7 +125,7 @@ def test_tryon_v2_passes_qc_threshold_to_pipeline(
     captured: dict[str, float] = {}
 
     def _stub_run_pipeline_a(**kwargs):
-        captured["qc_threshold"] = float(kwargs.get("qc_threshold"))
+        captured["qc_threshold"] = float(kwargs.get("qc_threshold", 0))
         return {
             "status": "success",
             "message": "方案A试衣成功",
@@ -134,15 +134,7 @@ def test_tryon_v2_passes_qc_threshold_to_pipeline(
             "metadata": {"pipeline": "A"},
         }
 
-    def _stub_check_tryon_garment_has_face(_img):
-        return False
-
     monkeypatch.setattr(tryon_v2_api, "run_pipeline_a", _stub_run_pipeline_a)
-    monkeypatch.setattr(
-        tryon_v2_api,
-        "check_tryon_garment_has_face",
-        _stub_check_tryon_garment_has_face,
-    )
     monkeypatch.setattr(tryon_v2_api.settings, "TRYON_V2_QC_THRESHOLD", 0.73)
 
     garment_bytes = _jpeg_bytes(color=(245, 245, 245))
@@ -156,7 +148,7 @@ def test_tryon_v2_passes_qc_threshold_to_pipeline(
         "/api/v2/tryon/pants",
         headers=auth_headers,
         files=files,
-        data={"garment_category": "bottom", "mode": "strict"},
+        data={"garment_category": "bottom", "mode": "blend"},
     )
     assert res.status_code == status.HTTP_200_OK
     assert captured["qc_threshold"] == 0.73
@@ -181,15 +173,7 @@ def test_tryon_v2_success_returns_pipeline_a_result(
             "metadata": {"pipeline": "A", "strict_identity": True},
         }
 
-    def _stub_check_tryon_garment_has_face(_img):
-        return False
-
     monkeypatch.setattr(tryon_v2_api, "run_pipeline_a", _stub_run_pipeline_a)
-    monkeypatch.setattr(
-        tryon_v2_api,
-        "check_tryon_garment_has_face",
-        _stub_check_tryon_garment_has_face,
-    )
 
     garment_bytes = _jpeg_bytes(color=(245, 245, 245))
     person_bytes = _jpeg_bytes(size=(300, 500), color=(220, 220, 220))
@@ -202,7 +186,7 @@ def test_tryon_v2_success_returns_pipeline_a_result(
         "/api/v2/tryon/pants",
         headers=auth_headers,
         files=files,
-        data={"garment_category": "bottom", "mode": "strict"},
+        data={"garment_category": "bottom", "mode": "blend"},
     )
 
     assert res.status_code == status.HTTP_200_OK

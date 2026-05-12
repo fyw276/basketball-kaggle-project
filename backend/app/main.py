@@ -66,14 +66,14 @@ _cors_permissive = (
 class ApiEnvelopeMiddleware(BaseHTTPMiddleware):
     """Wrap successful JSON responses in the standard envelope."""
 
+    # Paths that must be returned as-is (binary or raw formats).
+    _RAW_PREFIXES = ("/openapi.json", "/docs", "/redoc", "/uploads/")
+
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
         path = request.url.path
-        # Keep OpenAPI schema/docs raw so Swagger/Redoc can parse correctly.
-        if path == "/openapi.json" or path.startswith("/docs") or path.startswith("/redoc"):
-            return response
-        content_type = response.headers.get("content-type", "")
-        if response.status_code >= 400 or "application/json" not in content_type.lower():
+        # Keep OpenAPI schema/docs and static uploads raw so they are served correctly.
+        if any(path.startswith(p) for p in self._RAW_PREFIXES):
             return response
 
         body = b""
@@ -89,7 +89,17 @@ class ApiEnvelopeMiddleware(BaseHTTPMiddleware):
         try:
             payload = json.loads(body.decode("utf-8"))
         except Exception:
-            return JSONResponse(status_code=response.status_code, content=body.decode("utf-8"))
+            # Non-JSON responses (e.g. binary images, plain text) cannot be parsed.
+            # Return the raw response as-is to avoid corruption (JSONResponse would
+            # try to JSON-encode bytes and break the response).
+            from starlette.responses import Response as StarletteResponse
+
+            return StarletteResponse(
+                content=body,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type=response.headers.get("content-type"),
+            )
 
         if isinstance(payload, dict) and {"success", "data", "error"}.issubset(payload.keys()):
             return JSONResponse(status_code=response.status_code, content=payload)
@@ -356,30 +366,24 @@ app = FastAPI(
 )
 
 
-class PrivateNetworkAccessMiddleware(BaseHTTPMiddleware):
-    """为预检/跨站请求补充 Chrome 私有网络访问 (PNA) 所需响应头。"""
+# ── 中间件注册顺序 ────────────────────────────────────────────────
+# add_middleware 的注册顺序决定 ASGI 洋葱模型：
+#   先注册 = 最外层（最先处理请求，最后处理响应）
+#   后注册 = 最内层（最后处理请求，最先处理响应）
+#
+# CORSMiddleware 是原生 ASGI 中间件，通过包裹 send 在 http.response.start
+# 消息中注入 CORS 头。它必须在所有 BaseHTTPMiddleware 之内（即后注册），
+# 这样 BaseHTTPMiddleware 创建新 response 时，CORS 包裹的 send 仍在链中。
+# ─────────────────────────────────────────────────────────────────
 
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        response.headers["Access-Control-Allow-Private-Network"] = "true"
-        return response
-
-
-# 最内层先统一包裹 JSON 响应，让外层 CORS / PNA 仍能补齐响应头
-app.add_middleware(ApiEnvelopeMiddleware)
-
-# 添加请求日志中间件（显示每个 API 请求）
+# 最外层：日志（BaseHTTPMiddleware）
 app.add_middleware(RequestLoggingMiddleware)
 
-# 再补充 PNA 头，供外层 CORS 最终返回给浏览器
-app.add_middleware(PrivateNetworkAccessMiddleware)
+# 中间层：API envelope 包裹（BaseHTTPMiddleware）
+app.add_middleware(ApiEnvelopeMiddleware)
 
-# 最外层 CORS 必须最后注册，这样它才能给最终响应补上 ACAO 等头
-# Flutter Web 端口随机；页面 Origin 为 http://localhost:<port>，API 常为 http://127.0.0.1:<后端端口>，属跨域。
-# 请求带 Authorization 时，部分浏览器对 ACAO: * 与实际 Origin 组合较严，易报「无 ACAO」类 CORS 错误。
-# 开发宽松模式改为 allow_origin_regex + 回显具体 Origin（Starlette fullmatch），避免通配符。
-# 预检请求若仅返回 Allow-Headers: *，部分浏览器不把 Authorization 视为已允许，导致带 Bearer 的 POST 失败
-# （XHR onError）；须显式列出 Authorization、Content-Type 等。
+# 最内层：CORS + PNA（原生 ASGI，包裹 send）
+# 确保 BaseHTTPMiddleware 创建新 response 后 send 仍经过 CORS 包裹。
 _CORS_ALLOW_HEADERS = [
     "Authorization",
     "Content-Type",
@@ -387,7 +391,6 @@ _CORS_ALLOW_HEADERS = [
     "Accept-Language",
     "Origin",
     "X-Requested-With",
-    # Chrome 从 http://localhost:<flutter> 访问本机 API 时，预检可能携带
     "Access-Control-Request-Private-Network",
 ]
 _localhost_origin_re = r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
@@ -400,7 +403,6 @@ if _cors_permissive:
         allow_headers=_CORS_ALLOW_HEADERS,
     )
 else:
-    # 生产等环境：显式域名 + 可选正则；localhost/127.0.0.1 任意端口可与 CORS_ALLOW_PATTERN 同时生效
     _localhost_re = _localhost_origin_re
     _pattern = (settings.CORS_ALLOW_PATTERN or "").strip()
     _allow_regex: str | None = None
@@ -420,6 +422,32 @@ else:
         allow_headers=_CORS_ALLOW_HEADERS,
     )
 
+
+# Chrome Private Network Access: Starlette CORSMiddleware 不处理此头，
+# 但 Chrome 从 localhost → 127.0.0.1 时要求 Access-Control-Allow-Private-Network: true。
+# 此原生 ASGI 中间件在最内层包裹 send，给所有带 CORS-Allow-Origin 的响应补上 PNA 头。
+class _PrivateNetworkAccessMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_pna(message):
+            if message["type"] == "http.response.start":
+                headers = dict(message.get("headers", []))
+                if b"access-control-allow-origin" in headers:
+                    headers[b"access-control-allow-privatenetwork"] = b"true"
+                    message["headers"] = list(headers.items())
+            await send(message)
+
+        await self.app(scope, receive, send_with_pna)
+
+
+app.add_middleware(_PrivateNetworkAccessMiddleware)
+
 if settings.ENABLE_RATE_LIMIT and settings.RATE_LIMIT_PER_MINUTE > 0:
     from app.middleware.rate_limit import SlidingWindowRateLimitMiddleware
 
@@ -428,7 +456,6 @@ if settings.ENABLE_RATE_LIMIT and settings.RATE_LIMIT_PER_MINUTE > 0:
         limit=settings.RATE_LIMIT_PER_MINUTE,
         window_seconds=60,
     )
-
 
 # Register exception handlers
 app.add_exception_handler(AppException, app_exception_handler)

@@ -21,49 +21,48 @@ enum _GarmentCategoryChoice {
 
 /// 试衣质量模式枚举
 enum _TryOnQualityMode {
-  stable, // 方案A几何贴图，速度快但更像叠图
-  replace, // AI替换试衣，真实感强但衣服细节可能有变化
-  realistic, // 增强保真引擎：100%衣服细节 + 真实贴合
-  professional, // 专业模式：精准分割+姿态贴合+光影融合+强制校验
+  professional, // CatVTON 深度学习 + 颜色保真（真实贴合，细节完整）
+  hybrid, // Warp保真 + CatVTON光影增强（100%图案保留 + 自然贴合）
 }
 
 extension _TryOnQualityModeApi on _TryOnQualityMode {
+  /// 传给 /garment 端点的 mode 值
   String get apiValue {
     switch (this) {
-      case _TryOnQualityMode.stable:
-        return 'balanced';
-      case _TryOnQualityMode.replace:
-        return 'replace';
-      case _TryOnQualityMode.realistic:
-        return 'realistic';
+      case _TryOnQualityMode.professional:
+        return 'detail_fidelity';
+      case _TryOnQualityMode.hybrid:
+        return 'stable_fast';
+    }
+  }
+
+  /// 传给 /validate-input 端点的 mode 值（该端点接受 professional/hybrid）
+  String get validateApiValue {
+    switch (this) {
       case _TryOnQualityMode.professional:
         return 'professional';
+      case _TryOnQualityMode.hybrid:
+        return 'hybrid';
     }
   }
 
   String get label {
     switch (this) {
-      case _TryOnQualityMode.stable:
-        return '稳定快速';
-      case _TryOnQualityMode.replace:
-        return '真实贴身';
-      case _TryOnQualityMode.realistic:
-        return '细节保真';
       case _TryOnQualityMode.professional:
-        return '专业模式';
+        return '细节保真';
+      case _TryOnQualityMode.hybrid:
+        return '混合模式';
     }
   }
 
   String get description {
     switch (this) {
-      case _TryOnQualityMode.stable:
-        return '走方案A几何贴图，速度快更稳定但更像叠图';
-      case _TryOnQualityMode.replace:
-        return '走AI替换试衣（百炼/远程VTON），更真实但耗时更长';
-      case _TryOnQualityMode.realistic:
-        return '100%保留衣服细节（图案/纹理）+ 真实光影贴合';
       case _TryOnQualityMode.professional:
-        return '【推荐】精准分割+姿态贴合+原有衣物擦除+光影融合，效果最佳';
+        return 'CatVTON 深度学习试衣 + 颜色保真增强；'
+            '真实贴合衣服光影，颜色和图案细节完整保留';
+      case _TryOnQualityMode.hybrid:
+        return 'Warp保真（100%衣服图案/颜色）+ CatVTON光影增强；'
+            '衣服区域完全保留原始颜色和图案，同时叠加AI生成的自然光影和褶皱效果';
     }
   }
 }
@@ -118,7 +117,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
   String? _garmentQualityHint;
   XFile? _personFront;
   _GarmentCategoryChoice _garmentCategory = _GarmentCategoryChoice.auto;
-  _TryOnQualityMode _qualityMode = _TryOnQualityMode.professional;
+  _TryOnQualityMode _qualityMode = _TryOnQualityMode.hybrid;
   bool _loading = false;
   bool _usedFallback = false;
   bool? _precheckPassed;
@@ -248,7 +247,8 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
       return;
     }
 
-    final url = res['standardized_image_url']?.toString();
+    final url =
+        (res['preview_white_url'] ?? res['standardized_image_url'])?.toString();
     final cat = res['tryon_category']?.toString();
     setState(() {
       if (primary) {
@@ -490,7 +490,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
     }
 
     final category = (_garmentCategory.apiValue ?? 'auto').trim();
-    final mode = _qualityMode.apiValue;
+    final mode = _qualityMode.validateApiValue;
     final isOutfit = _garmentCategory == _GarmentCategoryChoice.outfit;
     final remote = await apiClient.tryonV2ValidateInput(
       garmentImage: garment,
@@ -1112,7 +1112,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
               style: TextStyle(
                   fontSize: 12, height: 1.35, color: palette.textBody),
             ),
-            // 专业模式特别提示
+            // 细节保真特别提示
             if (_qualityMode == _TryOnQualityMode.professional) ...[
               const SizedBox(height: 8),
               Container(
@@ -1140,7 +1140,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            '专业模式流程：精准分割 → 姿态贴合 → 原有衣物擦除 → 光影融合',
+                            'CatVTON 深度学习 + 颜色保真增强',
                             style: TextStyle(
                               fontSize: 11,
                               color: Colors.purple.shade700,
@@ -1153,7 +1153,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '自动识别并去除手/背景/水印，确保衣服精准穿在身上',
+                      'AI 重新生成贴合光影，同时用原始衣服图的颜色修正图案细节',
                       style: TextStyle(
                         fontSize: 10,
                         color: Colors.purple.shade600,
@@ -1164,6 +1164,61 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                 ),
               ),
             ],
+
+            // 混合模式特别提示
+            if (_qualityMode == _TryOnQualityMode.hybrid) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      Colors.teal.withValues(alpha: 0.15),
+                      Colors.green.withValues(alpha: 0.10),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: Colors.teal.withValues(alpha: 0.3),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.layers_outlined,
+                            size: 16, color: Colors.teal.shade700),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '混合模式原理：Warp保真 + CatVTON光影增强',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.teal.shade700,
+                              height: 1.3,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '100%保留衣服原始图案/颜色（来自Warp）+ AI光影/褶皱（来自CatVTON），'
+                      '两者叠加得到自然贴合效果',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.teal.shade600,
+                        height: 1.2,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
             const SizedBox(height: 12),
             Container(
               width: double.infinity,

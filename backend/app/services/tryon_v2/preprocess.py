@@ -5,13 +5,19 @@ Pipeline:
 2) Composite on white background to get a standardized product photo
 3) Auto recognize garment category and map to try-on categories: top/bottom/skirt
 
+Two distinct outputs for different consumers:
+  - preview_white: user-visible white-background garment photo (letterbox, preserves aspect ratio)
+  - image: model-internal standardized 768x768 (for warp engine consumption)
+
 Designed to be CPU-friendly and deterministic.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -20,34 +26,150 @@ from PIL import Image
 from app.services.garment_alignment import align_garment
 from app.services.tryon_v2.garment_struct import cutout_garment_rgba
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class PreprocessResult:
     image: Image.Image
-    tryon_category: str
-    confidence: float
-    raw_category: str
-    metadata: dict[str, Any]
+    preview_white: Image.Image | None = None
+    tryon_category: str = "unknown"
+    confidence: float = 0.0
+    raw_category: str = "unknown"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    cutout_rgba: Image.Image | None = None
 
 
-def _pil_to_jpeg_bytes(img: Image.Image, quality: int = 92) -> bytes:
-    rgb = img.convert("RGB")
-    buf = BytesIO()
-    rgb.save(buf, format="JPEG", quality=int(quality), optimize=False)
-    return buf.getvalue()
+def letterbox_resize(
+    img: Image.Image,
+    canvas_size: int = 768,
+    background_color: tuple[int, int, int] = (255, 255, 255),
+) -> Image.Image:
+    """Resize image to canvas_size while preserving aspect ratio, padding with background color.
+
+    This is the CORRECT way to resize garment product photos. Unlike simple resize (which
+    stretches the garment and distorts patterns), letterbox resize:
+      - Preserves the original aspect ratio
+      - Pads with white (background_color) on the shorter side
+      - Centers the garment within the canvas
+      - Never distorts, stretches, or warps the garment
+
+    Args:
+        img: Input PIL Image (will be converted to RGBA internally)
+        canvas_size: Target canvas size (default 768). Output will be canvas_size x canvas_size.
+        background_color: RGB tuple for padding. Default white (255, 255, 255).
+
+    Returns:
+        PIL Image of exactly canvas_size x canvas_size with letterbox padding.
+    """
+    im = img.convert("RGBA")
+    w, h = im.size
+    if w <= 0 or h <= 0:
+        return Image.new("RGB", (canvas_size, canvas_size), background_color)
+
+    scale = canvas_size / max(w, h)
+    new_w = max(1, int(w * scale))
+    new_h = max(1, int(h * scale))
+    resized = im.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+    canvas = Image.new("RGB", (canvas_size, canvas_size), background_color)
+    paste_x = (canvas_size - new_w) // 2
+    paste_y = (canvas_size - new_h) // 2
+    canvas.paste(
+        resized.convert("RGB"),
+        (paste_x, paste_y),
+        resized.split()[3] if resized.mode == "RGBA" else None,
+    )
+
+    logger.debug(
+        f"[letterbox_resize] {w}x{h} -> {new_w}x{new_h} (scale={scale:.3f}), "
+        f"canvas={canvas_size}, pad=({paste_x},{paste_y})"
+    )
+    return canvas
+
+
+def generate_preview_white(
+    original_garment: Image.Image,
+    cloth_type: str = "upper",
+) -> Image.Image | None:
+    """Generate a user-visible white-background garment preview.
+
+    This produces the image that users see in the UI as "白底商品图". It is NOT
+    warped, NOT stretched, and NOT resized to a distorted shape. Instead it:
+      1. Removes background (via cutout_garment_rgba)
+      2. Composites the garment on a pure white background
+      3. Applies letterbox resize to preserve aspect ratio
+      4. Does NOT apply TPS warp, geometric deformation, or any body-fitting transform
+
+    This is purely for user display. The model internally uses the separate
+    `image` field (768x768 standardized for warp consumption).
+
+    Args:
+        original_garment: Raw garment product photo (RGB PIL Image).
+        cloth_type: Hint for segmentation ("upper" | "lower" | "dress").
+
+    Returns:
+        PIL RGB Image of canvas_size x canvas_size with letterboxed white background,
+        or None if cutout fails.
+    """
+    try:
+        cutout = cutout_garment_rgba(original_garment, cloth_type=cloth_type)
+        rgba = cutout.rgba
+        if rgba is None:
+            return None
+
+        # Apply tight crop: crop RGBA to alpha bbox before any resize/letterbox.
+        # This removes surrounding white/transparent background, making the
+        # garment fill more of the preview canvas and improving classifier signal.
+        rgba_w, rgba_h = rgba.size
+        alpha = rgba.split()[-1]
+        bbox = alpha.getbbox()
+        if bbox:
+            rgba = rgba.crop(bbox)
+            logger.info(
+                f"[CROP] generate_preview_white tight bbox: "
+                f"{rgba_w}x{rgba_h} -> {rgba.size[0]}x{rgba.size[1]} (bbox={bbox})"
+            )
+        else:
+            logger.warning("[CROP] generate_preview_white: alpha bbox is None, no crop applied")
+
+        rgb = rgba.convert("RGB")
+        preview = letterbox_resize(rgb, canvas_size=768, background_color=(255, 255, 255))
+        logger.info(
+            f"[generate_preview_white] generated preview from {original_garment.size} "
+            f"-> {preview.size}, cutout area={rgba.size}"
+        )
+        return preview
+    except Exception as e:
+        logger.warning(f"[generate_preview_white] failed: {e}")
+        return None
 
 
 def _standardize_white_background(rgba: Image.Image, canvas: int = 768) -> Image.Image:
+    """Convert RGBA cutout to 768x768 white-background image for model consumption.
+
+    This is the MODEL-INTERNAL standardized image used for warp/TPS processing.
+    It is NOT intended for user display — use generate_preview_white() for UI.
+
+    This function uses letterbox resize to minimize distortion while still
+    producing a fixed-size 768x768 tensor input for the warp engine.
+    """
     im = rgba.convert("RGBA")
+    orig_w, orig_h = im.size
     bbox = im.split()[3].getbbox()
     if bbox:
         im = im.crop(bbox)
+        cropped_w, cropped_h = im.size
+        logger.info(
+            f"[CROP] _standardize_white_background tight bbox: "
+            f"{orig_w}x{orig_h} → {cropped_w}x{cropped_h} (bbox={bbox})"
+        )
+    else:
+        logger.warning("[CROP] _standardize_white_background: alpha bbox is None, no crop applied")
 
-    # Composite onto white background.
     white = Image.new("RGB", im.size, (255, 255, 255))
     white.paste(im.convert("RGB"), (0, 0), im.split()[3])
 
-    # Pad to square canvas and resize.
     w, h = white.size
     side = max(w, h, 64)
     padded = Image.new("RGB", (side, side), (255, 255, 255))
@@ -55,6 +177,13 @@ def _standardize_white_background(rgba: Image.Image, canvas: int = 768) -> Image
     if side != int(canvas):
         padded = padded.resize((int(canvas), int(canvas)), Image.Resampling.LANCZOS)
     return padded
+
+
+def _pil_to_jpeg_bytes(img: Image.Image, quality: int = 92) -> bytes:
+    rgb = img.convert("RGB")
+    buf = BytesIO()
+    rgb.save(buf, format="JPEG", quality=int(quality), optimize=False)
+    return buf.getvalue()
 
 
 def _recognize_category(image_bytes: bytes) -> tuple[str, float]:
@@ -82,12 +211,25 @@ def _recognize_category(image_bytes: bytes) -> tuple[str, float]:
         return "unknown", 0.0
 
 
-def _map_to_tryon_category(raw_category: str) -> str:
+def _map_to_tryon_category(
+    raw_category: str, confidence: float = 1.0, cropped_image_size: tuple[int, int] | None = None
+) -> str:
     c = (raw_category or "").strip().lower()
     if not c:
         return "unknown"
     # Chinese labels from ImageRecognizer / CLIP candidates.
     if any(k in c for k in ("鞋", "shoes", "shoe", "boot", "包", "bag", "handbag", "backpack")):
+        # Low-confidence shoe/bag → treat as upper garment instead of blocking try-on.
+        # This prevents T-shirt misclassifications from being rejected as accessories.
+        if confidence < 0.20:
+            ratio = 0.0
+            if cropped_image_size is not None:
+                w, h = cropped_image_size
+                ratio = w / max(h, 1)
+            logger.warning(
+                f"[CATEGORY] accessory ignored " f"(ratio={ratio:.2f}, confidence={confidence:.3f})"
+            )
+            return "top"
         return "accessory"
     if any(
         k in c
@@ -145,15 +287,30 @@ def preprocess_garment_image(
     *,
     canvas: int = 768,
     cloth_type_hint: str | None = None,
+    debug_dir: str | Path | None = None,
 ) -> PreprocessResult:
     """Preprocess a garment image for CatVTON try-on.
+
+    Returns TWO distinct images:
+      - image (768x768): model-internal standardized for warp consumption
+      - preview_white: user-visible white-background garment photo (letterbox)
 
     Args:
         garment_image: Raw garment product photo.
         canvas: Output canvas size (default 768).
         cloth_type_hint: Optional hint for SAM segmentation ("upper" | "lower" | "dress").
             If not provided, uses a fast heuristic based on image aspect ratio.
+        debug_dir: Optional directory path to save intermediate debug images:
+            01_original.jpg, 02_cutout.png, 03_aligned.jpg, 04_preview_white.jpg,
+            05_standardized.jpg
     """
+    import hashlib
+
+    debug_path: Path | None = None
+    if debug_dir:
+        debug_path = Path(debug_dir)
+        debug_path.mkdir(parents=True, exist_ok=True)
+
     # Fast cloth type heuristic (needed for SAM hints before category recognition).
     # Recognition via _recognize_category happens after cutout, so we need a quick guess.
     if cloth_type_hint:
@@ -161,27 +318,96 @@ def preprocess_garment_image(
     else:
         w, h = garment_image.size
         aspect = h / max(w, 1)
-        # Tall narrow = likely bottom/skirt; wide = likely upper
         cloth_type = "upper" if aspect < 1.8 else "lower"
 
+    # Debug: save original
+    if debug_path:
+        try:
+            garment_image_rgb = garment_image.convert("RGB")
+            garment_image_rgb.save(debug_path / "01_original.jpg", quality=95)
+        except Exception as e:
+            logger.warning(f"[DEBUG] failed to save 01_original: {e}")
+
     cutout = cutout_garment_rgba(garment_image, cloth_type=cloth_type)
+
+    # Debug: save cutout RGBA
+    if debug_path:
+        try:
+            rgba_debug = cutout.rgba.convert("RGBA")
+            rgba_debug.save(debug_path / "02_cutout.png")
+        except Exception as e:
+            logger.warning(f"[DEBUG] failed to save 02_cutout: {e}")
+
     try:
         aligned = align_garment(cutout.cropped, cloth_type=cloth_type, canvas_size=canvas)
         alignment_applied = True
     except Exception:
         aligned = cutout.cropped
         alignment_applied = False
+
+    # Debug: save aligned
+    if debug_path:
+        try:
+            aligned_rgb = aligned.convert("RGB") if aligned.mode != "RGB" else aligned
+            aligned_rgb.save(debug_path / "03_aligned.jpg", quality=95)
+        except Exception as e:
+            logger.warning(f"[DEBUG] failed to save 03_aligned: {e}")
+
     standardized = _standardize_white_background(aligned, canvas=canvas)
+
+    # Generate preview_white: user-visible white-background image (letterbox, no stretch)
+    preview_white = generate_preview_white(garment_image, cloth_type=cloth_type)
+
+    # Debug: save preview_white and standardized
+    if debug_path:
+        try:
+            if preview_white is not None:
+                preview_white.save(debug_path / "04_preview_white.jpg", quality=95)
+            standardized_rgb = (
+                standardized.convert("RGB") if standardized.mode != "RGB" else standardized
+            )
+            standardized_rgb.save(debug_path / "05_standardized.jpg", quality=95)
+        except Exception as e:
+            logger.warning(f"[DEBUG] failed to save debug images: {e}")
+
     img_bytes = _pil_to_jpeg_bytes(standardized)
 
     raw_cat, conf = _recognize_category(img_bytes)
-    tryon_cat = _map_to_tryon_category(raw_cat)
+    cropped_size = cutout.cropped.size
+    tryon_cat = _map_to_tryon_category(raw_cat, conf, cropped_size)
     accessory_shape = _looks_like_scarf_or_accessory_shape(cutout.cropped)
-    if accessory_shape and tryon_cat in {"top", "unknown"}:
+
+    # When the model is uncertain (conf < 0.15) AND classifies as accessory,
+    # use aspect-ratio heuristic instead of blindly treating it as accessory.
+    # White/light garments on white backgrounds often get misclassified as shoes
+    # by the ImageNet-based classifier. Aspect ratio is a reliable fallback.
+    if tryon_cat == "accessory" and conf < 0.15:
+        w, h = garment_image.size
+        aspect = h / max(w, 1)
+        if aspect < 1.8:
+            tryon_cat = "top"
+            logger.info(
+                f"[AUTO-PREPROCESS] Low-confidence accessory (conf={conf:.3f}) "
+                f"reclassified as 'top' based on aspect ratio ({aspect:.2f})"
+            )
+        else:
+            tryon_cat = "bottom"
+            logger.info(
+                f"[AUTO-PREPROCESS] Low-confidence accessory (conf={conf:.3f}) "
+                f"reclassified as 'bottom' based on aspect ratio ({aspect:.2f})"
+            )
+    elif accessory_shape and tryon_cat in {"top", "unknown"}:
         tryon_cat = "accessory"
+
+    logger.info(
+        f"[preprocess_garment_image] category={tryon_cat} confidence={conf:.3f} "
+        f"cloth_type={cloth_type} alignment_applied={alignment_applied} "
+        f"preview_white={'OK' if preview_white else 'FAILED'}"
+    )
 
     return PreprocessResult(
         image=standardized,
+        preview_white=preview_white,
         tryon_category=tryon_cat,
         confidence=float(conf),
         raw_category=raw_cat,
@@ -190,5 +416,10 @@ def preprocess_garment_image(
             "accessory_shape": bool(accessory_shape),
             "cloth_type_used": cloth_type,
             "alignment_applied": alignment_applied,
+            "preview_white_generated": preview_white is not None,
+            "cutout_size": cutout.rgba.size,
+            "cropped_size": cutout.cropped.size,
+            "debug_session_dir": str(debug_path) if debug_path else None,
         },
+        cutout_rgba=cutout.rgba,
     )

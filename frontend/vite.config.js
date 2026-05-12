@@ -8,11 +8,21 @@ export default defineConfig({
     port: 5173,
     strictPort: false,
     proxy: {
-      // 可选：与 fetch 直连预测 API 二选一；默认与 aiScore.js 使用 8765
       '/api': {
-        target: 'http://127.0.0.1:8765',
+        target: 'http://127.0.0.1:8010',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
+      },
+      '/predict': {
+        target: 'http://127.0.0.1:8010',
+        changeOrigin: true,
+      },
+      '/uploads': {
+        target: 'http://127.0.0.1:8010',
+        changeOrigin: true,
+      },
+      '/static': {
+        target: 'http://127.0.0.1:8010',
+        changeOrigin: true,
       },
     },
   },

@@ -25,6 +25,7 @@ _TOP_KEYWORDS = (
     "t-shirt",
     "shirt",
     "top",
+    "upper",  # returned by _map_to_tryon_category as fallback for misclassified shoes/bags
     "hoodie",
     "sweater",
     "外套",
@@ -50,19 +51,15 @@ _OUTFIT_KEYWORDS = (
     "top_bottom",
 )
 
+# NOTE: "shoes", "shoe", "bag", "hat" removed — these are often misclassified
+# from T-shirt / top images and should not block try-on. Only clear accessory
+# keywords (scarf, shawl, scarf) trigger accessory blocking here.
 _ACCESSORY_KEYWORDS = (
     "accessory",
     "围巾",
     "披肩",
     "scarf",
     "shawl",
-    "帽",
-    "hat",
-    "鞋",
-    "shoe",
-    "shoes",
-    "包",
-    "bag",
 )
 
 
@@ -141,12 +138,16 @@ def _has_any_keyword(garment_category: str | None, keywords: tuple[str, ...]) ->
     return any(k in gc for k in keywords)
 
 
-def _category_kind(garment_category: str | None) -> str:
+def _category_kind(garment_category: str | None, confidence: float | None = None) -> str:
     """Return one of: top|bottom|skirt|outfit|accessory|auto|unknown."""
     gc = (garment_category or "").strip().lower()
     if not gc:
         return "auto"
     if _has_any_keyword(gc, _ACCESSORY_KEYWORDS):
+        # Only block high-confidence accessory classifications.
+        # Low-confidence accessory (e.g., T-shirt misclassified as shoes) → unknown.
+        if confidence is not None and confidence < 0.20:
+            return "unknown"
         return "accessory"
     if _has_any_keyword(gc, _OUTFIT_KEYWORDS):
         return "outfit"
@@ -167,6 +168,7 @@ def evaluate_input_gate(
     garment_category: str | None,
     strict: bool = True,
     thresholds: dict[str, float] | None = None,
+    garment_confidence: float | None = None,
 ) -> GateResult:
     thresholds = thresholds or {}
     full_body_min = float(thresholds.get("full_body", 0.55 if strict else 0.45))
@@ -182,7 +184,7 @@ def evaluate_input_gate(
         "garment_bg_clean_score": _score_garment_background_cleanliness(garment_image),
     }
 
-    kind = _category_kind(garment_category)
+    kind = _category_kind(garment_category, garment_confidence)
     if kind == "accessory":
         return GateResult(
             passed=False,

@@ -40,7 +40,7 @@ class TryOnV2Response(BaseModel):
         description=(
             "用户可见白底预览图 URL。用于 UI 展示标准电商白底商品图外观。"
             "此图使用 letterbox 缩放（保持原始比例），不经过 warp/TPS 变形。"
-            "仅当 auto_preprocess 启用时返回。",
+            "仅当 auto_preprocess 启用时返回。"
         ),
     )
     error_code: str | None = Field(None, description="Stable error code")
@@ -101,7 +101,7 @@ class TryOnV2PreprocessItem(BaseModel):
             "用户可见白底预览图 URL。与 standardized_image_url 的区别："
             "preview_white 使用 letterbox 缩放（保持原始比例，白边填充），"
             "用于 UI 展示真实商品图外观；"
-            "standardized_image 用于模型 warp 处理。",
+            "standardized_image 用于模型 warp 处理。"
         ),
     )
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -546,6 +546,15 @@ async def tryon_garment_v2(
     # This preview is for user display only (letterbox, no warp/stretch).
     preview_white_url: str | None = None
     preview_white_url_2: str | None = None
+
+    # ── 保留原始衣服图用于颜色保真 ─────────────────────────────────────────────
+    # _maybe_auto_preprocess 会将 garment_image 替换为标准化后的 768x768 图片。
+    # 颜色保真函数需要原始商品图（如白底/抠图后）才能正确注入颜色/图案。
+    # 这里保存原始图，传递给 color_fidelity_spatial / color_fidelity_enhance。
+    original_garment_image = garment_image
+    original_garment_image_2 = garment_image_2
+    # ─────────────────────────────────────────────────────────────────────────
+
     try:
         import hashlib
 
@@ -1149,7 +1158,7 @@ async def tryon_garment_v2(
                             catvton_color_fidelity_spatial,
                         )
 
-                        arr_check = np.array(garment_image.convert("RGB"))
+                        arr_check = np.array(original_garment_image.convert("RGB"))
                         hsv_check = cv2.cvtColor(arr_check, cv2.COLOR_RGB2HSV).astype(np.float32)
                         sat_check = hsv_check[:, :, 1]
                         v_check = hsv_check[:, :, 2]
@@ -1169,41 +1178,44 @@ async def tryon_garment_v2(
                         if len(fg_sat_check) >= 30:
                             sat_mean = float(fg_sat_check.mean()) / 255.0
                             sat_max = float(fg_sat_check.max()) / 255.0
-                            # 如果最大饱和度 > 0.15，说明有彩色区域
                             has_color = sat_max > 0.15
+                            v_fg = v_check[fg_mask_check]
+                            bright_mean = float(v_fg.mean()) / 255.0 if len(v_fg) > 0 else 0.0
+                            is_white_garment = bright_mean > 0.78 and sat_mean < 0.08
                         else:
                             sat_mean = 0.0
                             sat_max = 0.0
                             has_color = False
+                            is_white_garment = True
 
-                            # 降低阈值到 0.05，并检查 max 饱和度
-                            # 原来 sat_mean > 0.08 太严格了，蓝白格子会被误判
-                            # 改为: max_sat > 0.15 (有彩色) 或 sat_mean > 0.05 (有彩色区域但混合了白色)
-                            color_threshold = 0.05  # 降低阈值
-                        if sat_mean > color_threshold or has_color:
+                        color_threshold = 0.05  # 降低阈值：原 0.08 太严格
+                        if is_white_garment:
+                            logger.info(
+                                "Realistic mode: skipping color fidelity "
+                                "(is_white_garment=True, bright_mean=%.3f, sat_mean=%.3f, "
+                                "white garment looks correct from CatVTON — skip to preserve purity)",
+                                bright_mean,
+                                sat_mean,
+                            )
+                        elif sat_mean > color_threshold or has_color:
                             # 高对比度图案（格子/条纹/彩色印花）使用空间感知保真
                             # 均匀 LAB 混合会把蓝白格子变成褐色——必须用像素级替换
                             # 使用 max 饱和度判断是否需要 spatial 保真
-                            if sat_max > 0.25:
+                            if sat_max > 0.25 and sat_mean >= 0.18:
                                 logger.info(
                                     "Realistic mode: applying SPATIAL color fidelity "
                                     "(sat_mean=%.3f, sat_max=%.3f, pattern detected)",
                                     sat_mean,
                                     sat_max,
                                 )
-                                logger.info(
-                                    "Realistic mode: applying SPATIAL color fidelity "
-                                    "(saturation=%.3f > 0.15, pattern detected)",
-                                    sat_mean,
-                                )
                                 result_img, cf_meta = catvton_color_fidelity_spatial(
                                     catvton_result=result_img,
-                                    original_garment=garment_image,
+                                    original_garment=original_garment_image,
                                     person_image=person_image,
                                     garment_category=gc or "top",
                                     fidelity_strength=fidelity_strength,
                                 )
-                            else:
+                            elif sat_mean >= 0.05:
                                 logger.info(
                                     "Realistic mode: applying uniform color fidelity "
                                     "(saturation=%.3f, solid garment)",
@@ -1211,7 +1223,7 @@ async def tryon_garment_v2(
                                 )
                                 result_img, cf_meta = catvton_color_fidelity_enhance(
                                     catvton_result=result_img,
-                                    original_garment=garment_image,
+                                    original_garment=original_garment_image,
                                     person_image=person_image,
                                     garment_category=gc or "top",
                                     fidelity_strength=fidelity_strength,
@@ -1247,16 +1259,32 @@ async def tryon_garment_v2(
                     )
 
                 # ── 后处理增强（消除拼接痕迹）──────────────────────────────
+                # 注意：CatVTON 输出尺寸 (512x768 或 768x1024) 与原始人物图尺寸不同。
+                # enhance_tryon_result 需要 result 和 person 尺寸一致，需要先对齐。
                 try:
-                    from app.services.tryon_v2.postprocess import enhance_tryon_result
+                    from app.services.tryon_v2.postprocess import catvton_safe_enhance
 
-                    result_img = enhance_tryon_result(
-                        result=result_img,
+                    # 将 CatVTON 输出 resize 到原始人物图尺寸（保持宽高比，填充白边）
+                    pw, ph = person_image.size
+                    if result_img.size != (pw, ph):
+                        result_img_resized = result_img.resize((pw, ph), Image.LANCZOS)
+                        logger.info(
+                            "Realistic mode: resizing CatVTON result from %sx%s to %sx%s "
+                            "for post-processing compatibility",
+                            result_img.size[0],
+                            result_img.size[1],
+                            pw,
+                            ph,
+                        )
+                    else:
+                        result_img_resized = result_img
+
+                    # CatVTON-safe: denoise + seam removal + sharpen (no blending)
+                    result_img = catvton_safe_enhance(
+                        result=result_img_resized,
                         person=person_image,
-                        original_garment=garment_image,
-                        strength="medium",
                     )
-                    logger.info("Realistic mode: post-processing applied")
+                    logger.info("Realistic mode: CatVTON-safe post-processing applied")
                 except Exception as pp_err:
                     logger.warning(
                         "Realistic mode: post-processing failed (continuing): %s", pp_err
@@ -1426,7 +1454,7 @@ async def tryon_garment_v2(
                             catvton_color_fidelity_spatial,
                         )
 
-                        arr_check = np.array(garment_image.convert("RGB"))
+                        arr_check = np.array(original_garment_image.convert("RGB"))
                         hsv_check = cv2.cvtColor(arr_check, cv2.COLOR_RGB2HSV).astype(np.float32)
                         sat_check = hsv_check[:, :, 1]
                         v_check = hsv_check[:, :, 2]
@@ -1442,15 +1470,27 @@ async def tryon_garment_v2(
                             sat_mean = float(fg_sat_check.mean()) / 255.0
                             sat_max = float(fg_sat_check.max()) / 255.0
                             has_color = sat_max > 0.15
+                            v_fg = v_check[fg_mask_check]
+                            bright_mean = float(v_fg.mean()) / 255.0 if len(v_fg) > 0 else 0.0
+                            is_white_garment = bright_mean > 0.78 and sat_mean < 0.08
                         else:
                             sat_mean = 0.0
                             sat_max = 0.0
                             has_color = False
+                            is_white_garment = True
 
                         color_threshold = 0.05
-                        if sat_mean > color_threshold or has_color:
+                        if is_white_garment:
+                            logger.info(
+                                "Professional mode: skipping color fidelity "
+                                "(is_white_garment=True, bright_mean=%.3f, sat_mean=%.3f, "
+                                "white garment looks correct from CatVTON — skip to preserve purity)",
+                                bright_mean,
+                                sat_mean,
+                            )
+                        elif sat_mean > color_threshold or has_color:
                             # 高对比度图案（格子/条纹/彩色印花）使用空间感知保真
-                            if sat_max > 0.25:
+                            if sat_max > 0.25 and sat_mean >= 0.18:
                                 logger.info(
                                     "Professional mode: applying SPATIAL color fidelity "
                                     "(sat_mean=%.3f, sat_max=%.3f, pattern detected)",
@@ -1459,12 +1499,12 @@ async def tryon_garment_v2(
                                 )
                                 result_img, cf_meta = catvton_color_fidelity_spatial(
                                     catvton_result=result_img,
-                                    original_garment=garment_image,
+                                    original_garment=original_garment_image,
                                     person_image=person_image,
                                     garment_category=gc or "top",
                                     fidelity_strength=fidelity_strength,
                                 )
-                            else:
+                            elif sat_mean >= 0.05:
                                 logger.info(
                                     "Professional mode: applying uniform color fidelity "
                                     "(sat_mean=%.3f, sat_max=%.3f)",
@@ -1473,7 +1513,7 @@ async def tryon_garment_v2(
                                 )
                                 result_img, cf_meta = catvton_color_fidelity_enhance(
                                     catvton_result=result_img,
-                                    original_garment=garment_image,
+                                    original_garment=original_garment_image,
                                     person_image=person_image,
                                     garment_category=gc or "top",
                                     fidelity_strength=fidelity_strength,
@@ -1685,7 +1725,7 @@ async def tryon_garment_v2(
                             catvton_color_fidelity_spatial,
                         )
 
-                        arr_check = np.array(garment_image.convert("RGB"))
+                        arr_check = np.array(original_garment_image.convert("RGB"))
                         hsv_check = cv2.cvtColor(arr_check, cv2.COLOR_RGB2HSV).astype(np.float32)
                         sat_check = hsv_check[:, :, 1]
                         v_check = hsv_check[:, :, 2]
@@ -1700,15 +1740,27 @@ async def tryon_garment_v2(
                             sat_mean = float(fg_sat_check.mean()) / 255.0
                             sat_max = float(fg_sat_check.max()) / 255.0
                             has_color = sat_max > 0.15
+                            v_fg = v_check[fg_mask_check]
+                            bright_mean = float(v_fg.mean()) / 255.0 if len(v_fg) > 0 else 0.0
+                            is_white_garment = bright_mean > 0.78 and sat_mean < 0.08
                         else:
                             sat_mean = 0.0
                             sat_max = 0.0
                             has_color = False
+                            is_white_garment = True
 
                         color_threshold = 0.05
-                        if sat_mean > color_threshold or has_color:
+                        if is_white_garment:
+                            logger.info(
+                                "Realistic_v2: skipping color fidelity "
+                                "(is_white_garment=True, bright_mean=%.3f, sat_mean=%.3f, "
+                                "white garment looks correct from CatVTON — skip to preserve purity)",
+                                bright_mean,
+                                sat_mean,
+                            )
+                        elif sat_mean > color_threshold or has_color:
                             # 高对比度图案使用空间感知保真
-                            if sat_max > 0.25:
+                            if sat_max > 0.25 and sat_mean >= 0.18:
                                 logger.info(
                                     "Realistic_v2: applying SPATIAL color fidelity "
                                     "(sat_mean=%.3f, sat_max=%.3f)",
@@ -1717,12 +1769,12 @@ async def tryon_garment_v2(
                                 )
                                 result_img, cf_meta = catvton_color_fidelity_spatial(
                                     catvton_result=result_img,
-                                    original_garment=garment_image,
+                                    original_garment=original_garment_image,
                                     person_image=person_image,
                                     garment_category=gc or "top",
                                     fidelity_strength=fidelity_strength,
                                 )
-                            else:
+                            elif sat_mean >= 0.05:
                                 logger.info(
                                     "Realistic_v2: applying uniform color fidelity "
                                     "(sat_mean=%.3f, sat_max=%.3f)",
@@ -1731,7 +1783,7 @@ async def tryon_garment_v2(
                                 )
                                 result_img, cf_meta = catvton_color_fidelity_enhance(
                                     catvton_result=result_img,
-                                    original_garment=garment_image,
+                                    original_garment=original_garment_image,
                                     person_image=person_image,
                                     garment_category=gc or "top",
                                     fidelity_strength=fidelity_strength,
