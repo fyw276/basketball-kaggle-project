@@ -6,12 +6,22 @@ import io
 import json
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from PIL import Image
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
+from app.core.logging import setup_logging
 from app.db.session import get_db
 from app.ml.image_recognizer import ImageRecognizer, RecognitionResult
 from app.models.user import User
@@ -26,6 +36,7 @@ from app.services.similarity_category import (
 )
 from app.services.user_profile import get_profile_by_user_id
 
+logger = setup_logging()
 router = APIRouter(prefix="/analysis", tags=["Analysis"])
 
 
@@ -59,7 +70,9 @@ def _merge_clip_like_results(results: List[dict]) -> dict:
     max_len = max(len(v) for v in vecs)
     padded = [v + [0.0] * (max_len - len(v)) for v in vecs]
     n0 = max_len
-    avg = [sum(padded[i][j] for i in range(len(padded))) / len(padded) for j in range(n0)]
+    avg = [
+        sum(padded[i][j] for i in range(len(padded))) / len(padded) for j in range(n0)
+    ]
     tag_seen = set()
     tags: List[str] = []
     for r in results:
@@ -145,7 +158,8 @@ def _find_similarity_matches_with_fallback(
             continue
 
         wardrobe_features = [
-            (garment.garment_id, np.array(garment.feature_vector)) for garment in candidate_garments
+            (garment.garment_id, np.array(garment.feature_vector))
+            for garment in candidate_garments
         ]
         similarity_matches = analyzer.find_similar_garments(
             target_feature=target_feature,
@@ -291,7 +305,9 @@ async def analyze_similarity(
         target_decision = detect_similarity_category(
             image_bytes=image_bytes,
             clip_category=recognition_result.category,
-            clip_confidence=float(getattr(recognition_result, "category_confidence", 0.0) or 0.0),
+            clip_confidence=float(
+                getattr(recognition_result, "category_confidence", 0.0) or 0.0
+            ),
         )
 
         target_group = target_decision.group
@@ -319,16 +335,34 @@ async def analyze_similarity(
         for match in similarity_matches:
             garment = garment_dict.get(match.garment_id)
             if garment:
+                # Validate and fix image_url if needed
+                image_url = (garment.image_url or "").strip()
+                if not image_url:
+                    # Try to derive from image_path
+                    from app.services.garment import _derive_upload_url_from_path
+
+                    image_url = _derive_upload_url_from_path(
+                        garment.image_path, garment.user_id
+                    )
+                    logger.warning(
+                        f"Garment {garment.garment_id} had empty image_url, derived: {image_url}"
+                    )
+
                 similar_garments_info.append(
                     SimilarGarmentInfo(
                         garment_id=str(garment.garment_id),
                         similarity_score=match.similarity_score,
                         similarity_level=match.similarity_level,
-                        image_url=garment.image_url,
+                        image_url=image_url,
                         category=garment.category,
                         main_color=ColorSchema(**garment.main_color),
                     )
                 )
+
+        # Debug: log image URLs being returned
+        logger.info(f"Returning {len(similar_garments_info)} similar garments")
+        for info in similar_garments_info:
+            logger.info(f"  - {info.garment_id}: image_url={info.image_url}")
 
         # Check for duplicate warning
         has_duplicate = analyzer.has_duplicate_warning(similarity_matches)
@@ -338,16 +372,19 @@ async def analyze_similarity(
         budget_range = user_profile.budget_range if user_profile else None
 
         # Generate recommendation message
-        recommendation = analyzer.get_recommendation_message(similarity_matches, budget_range)
+        recommendation = analyzer.get_recommendation_message(
+            similarity_matches, budget_range
+        )
 
         return SimilarityAnalysisResponse(
             target_garment={
-                "category": target_decision.category,
+                "category": target_decision.group,
                 "category_group": target_group,
                 "category_confidence": target_decision.confidence,
-                "category_source": target_decision.source,
                 "main_color": recognition_result.main_color.model_dump(),
-                "secondary_colors": [c.model_dump() for c in recognition_result.secondary_colors],
+                "secondary_colors": [
+                    c.model_dump() for c in recognition_result.secondary_colors
+                ],
                 "style_tags": recognition_result.style_tags,
             },
             similar_garments=similar_garments_info,
@@ -512,9 +549,13 @@ async def recommend_outfits(
 
         # Get user's profile for scene and body type inference
         user_profile = get_profile_by_user_id(db, current_user.user_id)
-        user_style_prefs = _coerce_str_list(user_profile.style_preference if user_profile else [])
+        user_style_prefs = _coerce_str_list(
+            user_profile.style_preference if user_profile else []
+        )
         user_body_type = user_profile.body_type if user_profile else None
-        avoid_body_parts = _coerce_str_list(user_profile.avoid_body_parts if user_profile else [])
+        avoid_body_parts = _coerce_str_list(
+            user_profile.avoid_body_parts if user_profile else []
+        )
         engine_scene = _map_ui_scene_to_engine(scene)
 
         # 无性别推荐系统（修正版）：从 profile 获取性别信息
@@ -523,7 +564,9 @@ async def recommend_outfits(
             getattr(user_profile, "gender_expression", None) if user_profile else None
         )
         explore_cross_gender = (
-            getattr(user_profile, "explore_cross_gender", False) if user_profile else False
+            getattr(user_profile, "explore_cross_gender", False)
+            if user_profile
+            else False
         )
 
         # API 传参优先；若未传参且用户为女性，使用 profile 中的值
@@ -570,7 +613,9 @@ async def recommend_outfits(
         elif feature_dim == 512:
             feature_vector = clip_features + [0.0] * 768
         else:
-            feature_vector = clip_features[:1280] + [0.0] * max(0, 1280 - len(clip_features))
+            feature_vector = clip_features[:1280] + [0.0] * max(
+                0, 1280 - len(clip_features)
+            )
 
         target_garment = Garment(
             garment_id=uuid4(),
@@ -647,12 +692,20 @@ async def recommend_outfits(
 class SuitabilityAnalysisResponse(BaseModel):
     """Suitability analysis response"""
 
-    garment: dict = Field(..., description="Garment recognition result (CLIP + color extraction)")
-    suitability_score: int = Field(..., ge=0, le=100, description="Overall suitability score")
+    garment: dict = Field(
+        ..., description="Garment recognition result (CLIP + color extraction)"
+    )
+    suitability_score: int = Field(
+        ..., ge=0, le=100, description="Overall suitability score"
+    )
     color_score: int = Field(..., ge=0, le=100, description="Color suitability score")
-    fit_score: int = Field(..., ge=0, le=100, description="Body fit suitability score (体型适配)")
+    fit_score: int = Field(
+        ..., ge=0, le=100, description="Body fit suitability score (体型适配)"
+    )
     style_score: int = Field(..., ge=0, le=100, description="Style suitability score")
-    explanation: Dict[str, str] = Field(..., description="Score explanations per dimension")
+    explanation: Dict[str, str] = Field(
+        ..., description="Score explanations per dimension"
+    )
     scene_match_reason: str = Field("", description="场景匹配原因说明")
     body_fit_reason: str = Field("", description="体型适配原因说明")
     style_coordination_reason: str = Field("", description="风格协调原因说明")
@@ -665,7 +718,9 @@ class SuitabilityAnalysisResponse(BaseModel):
     recommended_occasions: List[str] = Field(
         default_factory=list, description="Recommended occasions"
     )
-    suggestions: List[str] = Field(default_factory=list, description="Improvement suggestions")
+    suggestions: List[str] = Field(
+        default_factory=list, description="Improvement suggestions"
+    )
 
     class Config:
         json_schema_extra = {
@@ -820,9 +875,7 @@ async def analyze_suitability(
                 return "缺少可用的风格标签，场景适配主要参考你的偏好与服装类别。"
             if key == "body":
                 if body_type and gfit and gcat:
-                    return (
-                        f"{gcat}的{gfit}版型会影响整体比例，与{body_type}体型的重点修饰方向相关。"
-                    )
+                    return f"{gcat}的{gfit}版型会影响整体比例，与{body_type}体型的重点修饰方向相关。"
                 if body_type:
                     return f"体型适配会结合你的体型（{body_type}）与衣物的版型/剪裁特征进行判断。"
                 return "体型信息不足，建议先在个人设置完善体型与希望修饰部位。"
@@ -830,7 +883,9 @@ async def analyze_suitability(
                 if pref_str and gst_str:
                     return f"服装风格标签（{gst_str}）与个人偏好（{pref_str}）共同决定风格协调度。"
                 if pref_str:
-                    return f"风格协调度主要参考你的风格偏好（{pref_str}）与衣物风格特征。"
+                    return (
+                        f"风格协调度主要参考你的风格偏好（{pref_str}）与衣物风格特征。"
+                    )
                 return "风格偏好信息不足，建议先在个人设置补充风格偏好。"
             return ""
 
@@ -841,7 +896,10 @@ async def analyze_suitability(
         overall = float(suitability_result.suitability_score) / 100.0
         scene_score = float(getattr(suitability_result, "scene_score", 0) or 0) / 100.0
         body_score = (
-            float(getattr(suitability_result, "body_score", suitability_result.fit_score) or 0)
+            float(
+                getattr(suitability_result, "body_score", suitability_result.fit_score)
+                or 0
+            )
             / 100.0
         )
 

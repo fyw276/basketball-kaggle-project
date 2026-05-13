@@ -1,4 +1,0 @@
-{
-  "cloth_type": "upper",
-  "note": "白色区域=将被AI编辑（rembg精确分割+边界refinement），黑色=保留原样"
-}

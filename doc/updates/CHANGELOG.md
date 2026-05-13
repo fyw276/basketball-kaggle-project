@@ -1,6 +1,16 @@
 # 更新日志
 
-## 2026-05-10
+## 2026-05-13
+### 修复
+- **文档：虚拟试衣 v2 模式数量**：修正 README、VTON_INTEGRATION.md、SERVICE_MODULES_GUIDE.md、TRYON_TECH_BLUEPRINT_AB.md 中的模式数量从 6 种到 7 种（新增 `realistic_v2`）
+- **文档：replace 模式引擎优先级**：修正所有相关文档中的引擎优先级描述，默认 `warp,bailian,remote,catvton,diffusion`（warp 优先运行以保证衣服像素保真）；`TRYON_V2_REPLACE_SKIP_WARP=true` 可跳过 warp
+- **后端：相似度分析**：修复 `SimilarityDecision` 属性访问错误（`.group` 非 `.category`），添加 logger 导入，添加 `image_url` 空值时的路径推导兜底
+- **后端：tryon v2 质量**：修复 `cv2` 导入作用域防止 `UnboundLocalError`，改进衣物预处理（形态学 CLOSE+DILATE、小 mask 自动扩展_bbox），修复后处理人脸保护 cascade，修复 Windows 中文用户名下 cascade 路径
+- **Flutter：相似度界面**：修复图片 URL 构建逻辑（去除 `/api/v1` 前缀后拼接相对上传路径）
+
+### 验证
+- `pytest tests_lite tests/test_release_and_observability.py` — **87 passed**
+- `flutter test --no-pub` — **11 passed**
 ### 新增
 - Flutter 虚拟试衣界面新增 2 种模式：严格保真（strict）和混合模式（hybrid）
 - Flutter API 客户端 `virtualTryonV2Garment` 新增 `debug_mode` 参数（`off`/`preprocess_only`/`full`）

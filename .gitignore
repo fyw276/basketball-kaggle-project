@@ -175,6 +175,9 @@ backend/scripts/test_garment.jpg
 backend/scripts/test_garment.jpg.jpg
 
 # CatVTON debug output (white-box debugging artifacts)
+debug_output/
+
+# CatVTON debug output (white-box debugging artifacts)
 debug_*.png
 test_results.txt
 backend/.hypothesis/

@@ -17,7 +17,7 @@
 **扩展模式（全部 7 种模式均已支持）**
 - `strict` 模式：严格保真模式，几何贴图 + 严格QC校验，最保守/身份保持最强
 - `balanced` 模式（对应 Flutter `stable`）：中等严格度，几何贴图 + 宽松QC
-- `replace` 模式：融合 Warp / 百炼 / 远程 VTON / CatVTON / Diffusion 多引擎 AI 生成式合成
+- `replace` 模式：融合 bailian / 远程 VTON / CatVTON / Diffusion 多引擎 AI 生成式合成（warp 先运行以保衣服像素保真；可通过 `TRYON_V2_REPLACE_ENGINE_PRIORITY` 配置，默认 `warp,bailian,remote,catvton,diffusion`）
 - `realistic` 模式：CatVTON 深度学习 + 边缘感知 + 光照匹配 + Poisson 融合
 - `realistic_v2` 模式：CatVTON v2 增强版
 - `professional` 模式：多步管线（分割 + 姿态 + 消除 + 贴合 + 光照 + 验证）

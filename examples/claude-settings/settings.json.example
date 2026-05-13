@@ -1,17 +1,10 @@
 {
   "env": {
     "ANTHROPIC_BASE_URL": "https://token-plan-cn.xiaomimimo.com/anthropic",
-    "ANTHROPIC_AUTH_TOKEN": "tp-co4d478wifsf86yok2brncamav3bskrvzl9rto1voujyyqed",
-    "ANTHROPIC_MODEL": "mimo-v2.5-pro",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "mimo-v2.5-pro",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "mimo-v2.5-pro",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "mimo-v2.5-pro"
+    "ANTHROPIC_AUTH_TOKEN": "YOUR_MIMO_API_KEY",
+    "ANTHROPIC_MODEL": "mimo-v2.5-pro[1m]",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "mimo-v2.5-pro[1m]",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "mimo-v2.5-pro[1m]",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "mimo-v2.5-pro[1m]"
   }
 }
-
-/*
-替换说明：
-- 将 "BASE_URL" 替换为你的 Anthropic 兼容 BASE URL（如果使用官方 Anthropic 服务，可置空或删除此项）。
-- 将 "MIMO_API_KEY" 替换为你的 MiMo API Key（不要在公网回话中粘贴真实密钥）。
-- 如果想启用 1M 上下文支持，可将模型 ID 更改为例如 "mimo-v2.5-pro[1m]"。
-*/

@@ -6,8 +6,10 @@ import '../../../core/providers/auth_provider.dart';
 import '../../../core/services/feature_local_store.dart';
 import '../../../core/providers/theme_provider.dart';
 import '../../../core/utils/app_snackbar.dart';
+import '../../../core/utils/media_url.dart';
 import '../../../core/widgets/analysis_feature_layout.dart';
 import '../../../core/widgets/image_picker_section.dart';
+import '../../../core/widgets/platform_image.dart';
 
 /// 相似衣物检测：与后端 `/analysis/similarity` 字段对齐。
 class SimilarityAnalysisScreen extends StatefulWidget {
@@ -29,38 +31,64 @@ class _SimilarityAnalysisScreenState extends State<SimilarityAnalysisScreen> {
   void initState() {
     super.initState();
     FeatureLocalStore.loadJson(_cacheKey).then((m) {
-      if (m != null && mounted) setState(() => _result = m);
+      if (m != null && mounted) {
+        // Normalize cached data to ensure image_url is present (old caches may lack it)
+        setState(() => _result = _normalizeApiResult(m));
+      }
     });
   }
 
   /// 将后端 SimilarityAnalysisResponse 转为界面使用的结构
   Map<String, dynamic> _normalizeApiResult(Map<String, dynamic> raw) {
-    if (raw.containsKey('similar_items')) {
-      return raw;
+    // Handle raw API response (has similar_garments)
+    if (raw.containsKey('similar_garments') &&
+        !raw.containsKey('similar_items')) {
+      final list = raw['similar_garments'];
+      final similarItems = <Map<String, dynamic>>[];
+      if (list is List) {
+        for (final e in list) {
+          if (e is! Map) continue;
+          final m = Map<String, dynamic>.from(e);
+          similarItems.add({
+            'category': m['category']?.toString() ?? '—',
+            'similarity': (m['similarity_score'] as num?)?.toDouble() ?? 0.0,
+            'note': m['similarity_level']?.toString() ?? '',
+            'image_url': m['image_url']?.toString(),
+          });
+        }
+      }
+      return {
+        'tip': raw['recommendation']?.toString() ?? '',
+        'similar_items': similarItems,
+        'avoid_duplicates': raw['has_duplicate_warning'] == true,
+      };
     }
-    final list = raw['similar_garments'];
-    final similarItems = <Map<String, dynamic>>[];
-    if (list is List) {
-      for (final e in list) {
-        if (e is! Map) continue;
-        final m = Map<String, dynamic>.from(e);
-        similarItems.add({
-          'category': m['category']?.toString() ?? '—',
-          'similarity': (m['similarity_score'] as num?)?.toDouble() ?? 0.0,
-          'note': m['similarity_level']?.toString() ?? '',
-          'image_url': m['image_url']?.toString(),
-        });
+    // Handle already-normalized data (from cache) — ensure image_url is preserved
+    if (raw.containsKey('similar_items')) {
+      final list = raw['similar_items'];
+      if (list is List) {
+        final fixed = <Map<String, dynamic>>[];
+        for (final e in list) {
+          if (e is! Map) continue;
+          final m = Map<String, dynamic>.from(e);
+          // Ensure image_url is always present as a string key
+          m.putIfAbsent('image_url', () => null);
+          fixed.add(m);
+        }
+        return {
+          'tip': raw['tip']?.toString() ?? '',
+          'similar_items': fixed,
+          'avoid_duplicates': raw['avoid_duplicates'] == true,
+        };
       }
     }
-    return {
-      'tip': raw['recommendation']?.toString() ?? '',
-      'similar_items': similarItems,
-      'avoid_duplicates': raw['has_duplicate_warning'] == true,
-    };
+    return raw;
   }
 
   Future<void> _analyze() async {
     if (_images.isEmpty) return;
+    // Clear old cache to ensure fresh data
+    await FeatureLocalStore.clear(_cacheKey);
     setState(() {
       _loading = true;
       _result = null;
@@ -78,7 +106,16 @@ class _SimilarityAnalysisScreenState extends State<SimilarityAnalysisScreen> {
         return;
       }
 
+      // ignore: avoid_print
+      print('[Similarity] raw API response: $raw');
       final normalized = _normalizeApiResult(Map<String, dynamic>.from(raw));
+      // ignore: avoid_print
+      print(
+          '[Similarity] normalized similar_items count: ${(normalized['similar_items'] as List?)?.length}');
+      for (final item in (normalized['similar_items'] as List? ?? [])) {
+        // ignore: avoid_print
+        print('[Similarity] item image_url: ${item['image_url']}');
+      }
       setState(() {
         _result = normalized;
         _loading = false;
@@ -95,6 +132,7 @@ class _SimilarityAnalysisScreenState extends State<SimilarityAnalysisScreen> {
   @override
   Widget build(BuildContext context) {
     final palette = context.watch<ThemeProvider>().palette;
+    final apiBase = context.read<AuthProvider>().apiClient.baseUrl;
     return AnalysisFeatureLayout(
       title: '相似衣物检测',
       body: SingleChildScrollView(
@@ -302,6 +340,11 @@ class _SimilarityAnalysisScreenState extends State<SimilarityAnalysisScreen> {
                     : sim >= 0.5
                         ? Colors.orange
                         : Colors.green;
+                final rawUrl = row['image_url']?.toString();
+                final imageUrl = resolveGarmentImageUrl(rawUrl, apiBase);
+                // ignore: avoid_print
+                print(
+                    '[Similarity] rawUrl=$rawUrl, resolved=$imageUrl, apiBase=$apiBase');
                 return Card(
                   margin: const EdgeInsets.only(bottom: 8),
                   elevation: 0,
@@ -310,20 +353,44 @@ class _SimilarityAnalysisScreenState extends State<SimilarityAnalysisScreen> {
                     side: BorderSide(color: palette.divider),
                   ),
                   child: ListTile(
-                    leading: Container(
-                      width: 48,
-                      height: 48,
-                      decoration: BoxDecoration(
-                        color: color.withValues(alpha: 0.1),
+                    leading: SizedBox(
+                      width: 56,
+                      height: 56,
+                      child: ClipRRect(
                         borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Center(
-                        child: Text(
-                          '${(sim * 100).toInt()}%',
-                          style: TextStyle(
-                              color: color,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12),
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            if (imageUrl != null)
+                              PlatformImage(
+                                networkUrl: imageUrl,
+                                fit: BoxFit.cover,
+                              )
+                            else
+                              ColoredBox(
+                                color: palette.primary.withValues(alpha: 0.08),
+                              ),
+                            Positioned(
+                              right: 2,
+                              bottom: 2,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 4, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: color.withValues(alpha: 0.85),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  '${(sim * 100).toInt()}%',
+                                  style: const TextStyle(
+                                    fontSize: 10,
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ),

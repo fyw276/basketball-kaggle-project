@@ -211,6 +211,17 @@ class _SimilarityScreenState extends State<SimilarityScreen> {
               ),
               const SizedBox(height: 16),
 
+              // Debug: print full result
+              Builder(
+                builder: (context) {
+                  print(
+                      'SimilarityScreen: full _analysisResult = $_analysisResult');
+                  print(
+                      'SimilarityScreen: similar_garments = ${_analysisResult!['similar_garments']}');
+                  return const SizedBox.shrink();
+                },
+              ),
+
               // 识别信息
               Card(
                 child: Padding(
@@ -259,15 +270,50 @@ class _SimilarityScreenState extends State<SimilarityScreen> {
                 const SizedBox(height: 8),
                 ...(_analysisResult!['similar_garments'] as List)
                     .map((garment) {
+                  // Build full image URL from relative path
+                  // baseUrl is like http://host:port/api/v1, but image_url is /uploads/...
+                  // We need server base URL: http://host:port
+                  final imageUrl = garment['image_url'] as String?;
+                  String? fullImageUrl;
+                  if (imageUrl != null && imageUrl.startsWith('/')) {
+                    // Extract server base URL by removing /api/v1 suffix
+                    final serverBaseUrl =
+                        _apiClient.baseUrl.replaceAll(RegExp(r'/api/v1$'), '');
+                    fullImageUrl = '$serverBaseUrl$imageUrl';
+                  } else {
+                    fullImageUrl = imageUrl;
+                  }
+
+                  // Debug: print URL info
+                  print('SimilarityScreen: garment image_url = $imageUrl');
+                  print('SimilarityScreen: baseUrl = ${_apiClient.baseUrl}');
+                  print('SimilarityScreen: fullImageUrl = $fullImageUrl');
+
                   return Card(
                     margin: const EdgeInsets.only(bottom: 8),
                     child: ListTile(
-                      leading: garment['image_url'] != null
+                      leading: fullImageUrl != null
                           ? Image.network(
-                              garment['image_url'],
+                              fullImageUrl,
                               width: 60,
                               height: 60,
                               fit: BoxFit.cover,
+                              loadingBuilder:
+                                  (context, child, loadingProgress) {
+                                if (loadingProgress == null) return child;
+                                return const SizedBox(
+                                  width: 60,
+                                  height: 60,
+                                  child: Center(
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2)),
+                                );
+                              },
+                              errorBuilder: (context, error, stackTrace) {
+                                print('Image load error: $error');
+                                print('Image URL: $fullImageUrl');
+                                return const Icon(Icons.checkroom, size: 40);
+                              },
                             )
                           : const Icon(Icons.checkroom, size: 40),
                       title: Text(garment['category'] ?? '未分类'),

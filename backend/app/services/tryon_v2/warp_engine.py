@@ -37,7 +37,10 @@ import numpy as np
 from PIL import Image, ImageChops, ImageFilter
 
 from app.services.tryon_v2.garment_struct import cutout_garment_rgba, split_pants_parts
-from app.services.tryon_v2.pose_utils import detect_pose_keypoints, get_body_bounds_from_keypoints
+from app.services.tryon_v2.pose_utils import (
+    detect_pose_keypoints,
+    get_body_bounds_from_keypoints,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +85,10 @@ def _detect_pattern_strength(img: Image.Image) -> float:
     # Small scale (4px): fine checkered / thin stripes
     gy, gx = np.gradient(gray.astype(np.float32))
     grad = np.sqrt(gx**2 + gy**2)
-    threshold = np.percentile(grad[grad > 0], 75)
+    grad_nonzero = grad[grad > 0]
+    if grad_nonzero.size == 0:
+        return 0.0  # Solid color image — no pattern
+    threshold = np.percentile(grad_nonzero, 75)
     edge_density_small = float((grad > threshold).mean())
     scores.append(edge_density_small)
 
@@ -191,7 +197,9 @@ def _detect_face_box_from_result(
                 )
 
                 if orig_faces is not None and len(orig_faces) > 0:
-                    orig_face_list = sorted(orig_faces, key=lambda f: f[2] * f[3], reverse=True)
+                    orig_face_list = sorted(
+                        orig_faces, key=lambda f: f[2] * f[3], reverse=True
+                    )
                     ofx, ofy, ofw, ofh = [int(v) for v in orig_face_list[0]]
 
                     # Scale from original person coords → catvton_result coords
@@ -323,7 +331,9 @@ def _bounds_from_mask(
 
     row = fg[:, x0:x1].mean(axis=1)
     seg = row[y0:y1]
-    rthr = float(np.quantile(seg, row_q)) if seg.size else float(np.quantile(row, row_q))
+    rthr = (
+        float(np.quantile(seg, row_q)) if seg.size else float(np.quantile(row, row_q))
+    )
     ys = np.where(row >= max(rthr, 0.06))[0]
     ys = ys[(ys >= y0) & (ys <= y1)]
     if ys.size < 10:
@@ -369,9 +379,15 @@ def _estimate_lower_body_bounds(gray: np.ndarray) -> tuple[int, int, int, int]:
     waist_search0 = int(h * 0.26)
     waist_search1 = int(h * 0.60)
     seg = row_energy[waist_search0:waist_search1]
-    rthr = float(np.quantile(seg, 0.70)) if seg.size else float(np.quantile(row_energy, 0.70))
+    rthr = (
+        float(np.quantile(seg, 0.70))
+        if seg.size
+        else float(np.quantile(row_energy, 0.70))
+    )
     candidates = np.where(row_energy >= rthr)[0]
-    candidates = candidates[(candidates >= waist_search0) & (candidates <= waist_search1)]
+    candidates = candidates[
+        (candidates >= waist_search0) & (candidates <= waist_search1)
+    ]
     waist_y = int(candidates.min()) if candidates.size else int(h * 0.40)
 
     ankle_search0 = int(h * 0.65)
@@ -379,7 +395,9 @@ def _estimate_lower_body_bounds(gray: np.ndarray) -> tuple[int, int, int, int]:
     seg2 = row_energy[ankle_search0:ankle_search1]
     rthr2 = float(np.quantile(seg2, 0.55)) if seg2.size else rthr
     candidates2 = np.where(row_energy >= rthr2)[0]
-    candidates2 = candidates2[(candidates2 >= ankle_search0) & (candidates2 <= ankle_search1)]
+    candidates2 = candidates2[
+        (candidates2 >= ankle_search0) & (candidates2 <= ankle_search1)
+    ]
     ankle_y = int(candidates2.max()) if candidates2.size else int(h * 0.96)
 
     waist_y = _clamp_int(waist_y, int(h * 0.30), int(h * 0.55))
@@ -419,7 +437,11 @@ def _estimate_upper_body_bounds(gray: np.ndarray) -> tuple[int, int, int, int]:
     neck_search0 = int(h * 0.06)
     neck_search1 = int(h * 0.30)
     seg = row_energy[neck_search0:neck_search1]
-    rthr = float(np.quantile(seg, 0.72)) if seg.size else float(np.quantile(row_energy, 0.72))
+    rthr = (
+        float(np.quantile(seg, 0.72))
+        if seg.size
+        else float(np.quantile(row_energy, 0.72))
+    )
     candidates = np.where(row_energy >= rthr)[0]
     candidates = candidates[(candidates >= neck_search0) & (candidates <= neck_search1)]
     neck_y = int(candidates.min()) if candidates.size else int(h * 0.14)
@@ -429,7 +451,9 @@ def _estimate_upper_body_bounds(gray: np.ndarray) -> tuple[int, int, int, int]:
     seg2 = row_energy[waist_search0:waist_search1]
     rthr2 = float(np.quantile(seg2, 0.58)) if seg2.size else rthr
     candidates2 = np.where(row_energy >= rthr2)[0]
-    candidates2 = candidates2[(candidates2 >= waist_search0) & (candidates2 <= waist_search1)]
+    candidates2 = candidates2[
+        (candidates2 >= waist_search0) & (candidates2 <= waist_search1)
+    ]
     waist_y = int(candidates2.max()) if candidates2.size else int(h * 0.62)
 
     neck_y = _clamp_int(neck_y, int(h * 0.08), int(h * 0.28))
@@ -437,19 +461,25 @@ def _estimate_upper_body_bounds(gray: np.ndarray) -> tuple[int, int, int, int]:
     return x0, x1, neck_y, waist_y
 
 
-def _compute_target_boxes(person_image: Image.Image) -> tuple[tuple[int, int, int, int], ...]:
+def _compute_target_boxes(
+    person_image: Image.Image,
+) -> tuple[tuple[int, int, int, int], ...]:
     """Adaptive target boxes (waist, left leg, right leg) in person coordinates."""
     gray = np.asarray(person_image.convert("L"), dtype=np.float32)
     ph, pw = gray.shape[:2]
 
     fg = _person_foreground_mask(person_image)
     if fg is not None:
-        b = _bounds_from_mask(fg, y0=int(ph * 0.28), y1=int(ph * 0.98), col_q=0.70, row_q=0.55)
+        b = _bounds_from_mask(
+            fg, y0=int(ph * 0.28), y1=int(ph * 0.98), col_q=0.70, row_q=0.55
+        )
     else:
         b = None
     if b is not None:
         x0, x1, y_top, y_bottom = b
-        waist_y = _clamp_int(int(y_top + (y_bottom - y_top) * 0.20), int(ph * 0.30), int(ph * 0.55))
+        waist_y = _clamp_int(
+            int(y_top + (y_bottom - y_top) * 0.20), int(ph * 0.30), int(ph * 0.55)
+        )
         ankle_y = _clamp_int(int(y_bottom), int(ph * 0.75), int(ph * 0.98))
     else:
         x0, x1, waist_y, ankle_y = _estimate_lower_body_bounds(gray)
@@ -525,7 +555,9 @@ def tryon_pants_warp(
         if ratios:
             avg = sum(ratios) / len(ratios)
             _knee_garment_ratio = max(0.30, min(0.65, avg))
-            parts = split_pants_parts(cutout.cropped, knee_garment_ratio=_knee_garment_ratio)
+            parts = split_pants_parts(
+                cutout.cropped, knee_garment_ratio=_knee_garment_ratio
+            )
         else:
             parts = split_pants_parts(cutout.cropped)
     else:
@@ -555,7 +587,9 @@ def tryon_pants_warp(
             right_leg_box: tuple[int, int, int, int] = (mid, leg_y0, x1, leg_y1)
             _used_pose = True
         else:
-            waistband_box, left_leg_box, right_leg_box = _compute_target_boxes(person_image)
+            waistband_box, left_leg_box, right_leg_box = _compute_target_boxes(
+                person_image
+            )
             _used_pose = False
     else:
         waistband_box, left_leg_box, right_leg_box = _compute_target_boxes(person_image)
@@ -663,7 +697,9 @@ def tryon_pants_warp(
         layer_left = _warp_into_box(parts.left_leg, left_leg_box)
         layer_right = _warp_into_box(parts.right_leg, right_leg_box)
 
-    merged = Image.alpha_composite(Image.alpha_composite(layer_left, layer_right), layer_waist)
+    merged = Image.alpha_composite(
+        Image.alpha_composite(layer_left, layer_right), layer_waist
+    )
 
     # Feather alpha edges for smoother boundary.
     feather_px = _clamp_int(int(max(pw, ph) * float(alpha_feather_ratio)), 1, 12)
@@ -734,10 +770,14 @@ def tryon_top_warp(
                 y_top = int(rows[0])
                 y_bottom = int(rows[-1])
                 neck_y = _clamp_int(
-                    int(y_top + (y_bottom - y_top) * 0.15), int(ph * 0.12), int(ph * 0.32)
+                    int(y_top + (y_bottom - y_top) * 0.15),
+                    int(ph * 0.12),
+                    int(ph * 0.32),
                 )
                 waist_y = _clamp_int(
-                    int(y_top + (y_bottom - y_top) * 0.70), int(ph * 0.45), int(ph * 0.82)
+                    int(y_top + (y_bottom - y_top) * 0.70),
+                    int(ph * 0.45),
+                    int(ph * 0.82),
                 )
                 _shoulder_w_px = max(2, x1 - x0)
                 _hip_w_px = max(2, int(_shoulder_w_px * 0.85))
@@ -750,7 +790,9 @@ def tryon_top_warp(
                     waist_y,
                 )
     except Exception as schp_err:
-        logger.debug("[SCHP] SCHP parsing unavailable, falling back to MediaPipe: %s", schp_err)
+        logger.debug(
+            "[SCHP] SCHP parsing unavailable, falling back to MediaPipe: %s", schp_err
+        )
 
     # ── MediaPipe fallback 路径 ──────────────────────────────────────────────
     if not _used_pose:
@@ -772,12 +814,18 @@ def tryon_top_warp(
         fg = _person_foreground_mask(person_image)
         b = None
         if fg is not None:
-            b = _bounds_from_mask(fg, y0=int(ph * 0.06), y1=int(ph * 0.74), col_q=0.72, row_q=0.55)
+            b = _bounds_from_mask(
+                fg, y0=int(ph * 0.06), y1=int(ph * 0.74), col_q=0.72, row_q=0.55
+            )
         if b is not None:
             x0, x1, y_top, y_bottom = b
             span = max(2, int(y_bottom - y_top))
-            neck_y = _clamp_int(int(y_top + span * 0.18), int(ph * 0.12), int(ph * 0.32))
-            waist_y = _clamp_int(int(y_top + span * 0.70), int(ph * 0.45), int(ph * 0.82))
+            neck_y = _clamp_int(
+                int(y_top + span * 0.18), int(ph * 0.12), int(ph * 0.32)
+            )
+            waist_y = _clamp_int(
+                int(y_top + span * 0.70), int(ph * 0.45), int(ph * 0.82)
+            )
         else:
             x0, x1, neck_y, waist_y = _estimate_upper_body_bounds(gray)
         # Stabilize horizontal center.
@@ -836,12 +884,16 @@ def tryon_top_warp(
                         tps_keypoints[name] = kpts[name]
             if len(tps_keypoints) >= 4:
                 g_rgb = g.convert("RGB")
-                g_warped = tps_engine.warp(g_rgb, tps_keypoints, (itw, ith), cloth_type="upper")
+                g_warped = tps_engine.warp(
+                    g_rgb, tps_keypoints, (itw, ith), cloth_type="upper"
+                )
                 g = g_warped.convert("RGBA")
                 if g.mode != "RGBA":
                     # Restore alpha from original
                     g.putalpha(g.split()[3] if len(g.split()) > 3 else 255)
-                logger.info("[TPS] Applied TPS warp with %d keypoints", len(tps_keypoints))
+                logger.info(
+                    "[TPS] Applied TPS warp with %d keypoints", len(tps_keypoints)
+                )
         except Exception as tps_err:
             logger.warning("[TPS] TPS warp failed, using fallback quad: %s", tps_err)
             # Fallback to PIL QUAD transform
@@ -884,8 +936,12 @@ def tryon_top_warp(
     # For patterns (checkered/striped), we skip the LAB transfer but still apply
     # fold lines + edge darkening since those are boundary-only effects (harmless).
     _pattern_strength = _detect_pattern_strength(g)
-    _skip_lab_transfer = _pattern_strength > 0.35  # Raised threshold to preserve more colors
-    _skip_fold_lines = _pattern_strength > 0.50  # Also skip fold lines for high-contrast patterns
+    _skip_lab_transfer = (
+        _pattern_strength > 0.35
+    )  # Raised threshold to preserve more colors
+    _skip_fold_lines = (
+        _pattern_strength > 0.50
+    )  # Also skip fold lines for high-contrast patterns
     _skip_edge_darken = _pattern_strength > 0.45  # Skip edge darkening for patterns
 
     if not _skip_lab_transfer or not _skip_fold_lines or not _skip_edge_darken:
@@ -911,14 +967,14 @@ def tryon_top_warp(
                 fg_mask = layer_np[y0:y1, x0:x1, 3] > 200
 
                 if body_roi.size > 0 and fg_mask.sum() > 0:
-                    body_lab = cv2.cvtColor(body_roi.astype(np.uint8), cv2.COLOR_RGB2LAB).astype(
-                        np.float32
-                    )
+                    body_lab = cv2.cvtColor(
+                        body_roi.astype(np.uint8), cv2.COLOR_RGB2LAB
+                    ).astype(np.float32)
                     body_L_mean = body_lab[:, :, 0].mean()
 
-                    gar_lab = cv2.cvtColor(gar_roi.astype(np.uint8), cv2.COLOR_RGB2LAB).astype(
-                        np.float32
-                    )
+                    gar_lab = cv2.cvtColor(
+                        gar_roi.astype(np.uint8), cv2.COLOR_RGB2LAB
+                    ).astype(np.float32)
 
                     gar_L_roi = gar_lab[:, :, 0][fg_mask]
                     if len(gar_L_roi) > 0:
@@ -936,20 +992,25 @@ def tryon_top_warp(
                             # Moderate-brightness garment — gentle LAB transfer.
                             blend_ratio = 0.20  # Much gentler: preserve 80% of original brightness
                             L_scale = (
-                                body_L_mean * blend_ratio + (1 - blend_ratio) * gar_L_mean
+                                body_L_mean * blend_ratio
+                                + (1 - blend_ratio) * gar_L_mean
                             ) / gar_L_mean
                             L_scale = np.clip(L_scale, 0.85, 1.15)
-                            gar_lab[:, :, 0] = np.clip(gar_lab[:, :, 0] * L_scale, 0, 255)
-                            gar_rgb = cv2.cvtColor(gar_lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+                            gar_lab[:, :, 0] = np.clip(
+                                gar_lab[:, :, 0] * L_scale, 0, 255
+                            )
+                            gar_rgb = cv2.cvtColor(
+                                gar_lab.astype(np.uint8), cv2.COLOR_LAB2RGB
+                            )
                             roi_region = layer_np[y0:y1, x0:x1]
                             roi_region[fg_mask] = gar_rgb[fg_mask]
                             layer_np[y0:y1, x0:x1] = roi_region
 
             _is_white_garment = False
             if not _skip_lab_transfer and gar_roi.size > 0 and fg_mask.sum() > 0:
-                gar_lab_check = cv2.cvtColor(gar_roi.astype(np.uint8), cv2.COLOR_RGB2LAB).astype(
-                    np.float32
-                )
+                gar_lab_check = cv2.cvtColor(
+                    gar_roi.astype(np.uint8), cv2.COLOR_RGB2LAB
+                ).astype(np.float32)
                 gar_L_check = gar_lab_check[:, :, 0][fg_mask]
                 if len(gar_L_check) > 0 and float(gar_L_check.mean()) > 220:
                     _is_white_garment = True
@@ -962,9 +1023,14 @@ def tryon_top_warp(
                 for fx in fold_positions:
                     abs_x = ox + min(fx, tw - 1)
                     if 0 < abs_x < pw - 1:
-                        fade = max(0, 1.0 - abs(fx - itw / 2) / (itw * 0.25)) * fold_strength
+                        fade = (
+                            max(0, 1.0 - abs(fx - itw / 2) / (itw * 0.25))
+                            * fold_strength
+                        )
                         if fade > 0.005:
-                            region = layer_np[oy : oy + th, max(0, abs_x - 1) : abs_x + 1]
+                            region = layer_np[
+                                oy : oy + th, max(0, abs_x - 1) : abs_x + 1
+                            ]
                             if region.size > 0:
                                 alpha_aware = region[:, :, 3:4].astype(float) / 255.0
                                 darken = (1.0 - fade) * alpha_aware
@@ -989,7 +1055,8 @@ def tryon_top_warp(
                                 )  # Reduced from 0.12
                                 if falloff > 0.005:
                                     layer_np[abs_y, abs_x, :3] = np.clip(
-                                        layer_np[abs_y, abs_x, :3].astype(float) * (1.0 - falloff),
+                                        layer_np[abs_y, abs_x, :3].astype(float)
+                                        * (1.0 - falloff),
                                         0,
                                         255,
                                     ).astype(np.uint8)
@@ -1062,7 +1129,9 @@ def tryon_skirt_warp(
         fg = _person_foreground_mask(person_image)
         b = None
         if fg is not None:
-            b = _bounds_from_mask(fg, y0=int(ph * 0.28), y1=int(ph * 0.98), col_q=0.70, row_q=0.55)
+            b = _bounds_from_mask(
+                fg, y0=int(ph * 0.28), y1=int(ph * 0.98), col_q=0.70, row_q=0.55
+            )
         if b is not None:
             x0, x1, y_top, y_bottom = b
             waist_y = _clamp_int(
@@ -1196,12 +1265,18 @@ def tryon_top_warp_preserve(
         fg = _person_foreground_mask(person_image)
         b = None
         if fg is not None:
-            b = _bounds_from_mask(fg, y0=int(ph * 0.06), y1=int(ph * 0.74), col_q=0.72, row_q=0.55)
+            b = _bounds_from_mask(
+                fg, y0=int(ph * 0.06), y1=int(ph * 0.74), col_q=0.72, row_q=0.55
+            )
         if b is not None:
             x0, x1, y_top, y_bottom = b
             span = max(2, int(y_bottom - y_top))
-            neck_y = _clamp_int(int(y_top + span * 0.18), int(ph * 0.12), int(ph * 0.32))
-            waist_y = _clamp_int(int(y_top + span * 0.70), int(ph * 0.45), int(ph * 0.82))
+            neck_y = _clamp_int(
+                int(y_top + span * 0.18), int(ph * 0.12), int(ph * 0.32)
+            )
+            waist_y = _clamp_int(
+                int(y_top + span * 0.70), int(ph * 0.45), int(ph * 0.82)
+            )
         else:
             x0, x1, neck_y, waist_y = _estimate_upper_body_bounds(gray)
         mid = (x0 + x1) // 2
@@ -1227,7 +1302,9 @@ def tryon_top_warp_preserve(
     g = g.resize((itw, ith), Image.Resampling.LANCZOS)
 
     if _used_pose:
-        from app.services.tryon_v2.pose_utils import get_body_bounds_from_keypoints as _gbk
+        from app.services.tryon_v2.pose_utils import (
+            get_body_bounds_from_keypoints as _gbk,
+        )
 
         kpts2 = detect_pose_keypoints(person_image)
         if kpts2:
@@ -1268,7 +1345,9 @@ def tryon_top_warp_preserve(
     layer = Image.merge("RGBA", (r, gg, b, a))
 
     out = Image.alpha_composite(base, layer).convert("RGB")
-    engine_tag = "top_warp_preserve_pose" if _used_pose else "top_warp_preserve_gradient"
+    engine_tag = (
+        "top_warp_preserve_pose" if _used_pose else "top_warp_preserve_gradient"
+    )
     meta = WarpMetadata(
         engine=engine_tag,
         waistband_box=(x0, y0, x1, y0 + max(2, int((y1 - y0) * 0.18))),
@@ -1357,13 +1436,16 @@ def overlay_draping_from_ai(
         result = np.zeros_like(warp_rgb)
         for c in range(3):
             result[:, :, c] = (
-                warp_rgb[:, :, c] * (1.0 - blend_weight) + ai_rgb[:, :, c] * blend_weight
+                warp_rgb[:, :, c] * (1.0 - blend_weight)
+                + ai_rgb[:, :, c] * blend_weight
             )
         result = np.clip(result, 0, 255).astype(np.uint8)
 
         # ── Step 4: Restore garment pixels 100% from warp ──────────────────────────
         gar_region = fg_warp[g_y0:g_y1, g_x0:g_x1]
-        result[g_y0:g_y1, g_x0:g_x1][gar_region] = warp_rgb[g_y0:g_y1, g_x0:g_x1][gar_region]
+        result[g_y0:g_y1, g_x0:g_x1][gar_region] = warp_rgb[g_y0:g_y1, g_x0:g_x1][
+            gar_region
+        ]
 
         out_img = Image.fromarray(result, mode="RGB")
 
@@ -1393,7 +1475,9 @@ def overlay_draping_from_ai(
     except Exception as e:
         import traceback
 
-        logger.warning("overlay_draping_from_ai failed: %s\n%s", e, traceback.format_exc())
+        logger.warning(
+            "overlay_draping_from_ai failed: %s\n%s", e, traceback.format_exc()
+        )
         return warp_result, {"engine": "overlay_draping", "reason": str(e)}
 
 
@@ -1567,7 +1651,9 @@ def overlay_top_onto_ai_result(
     except Exception as e:
         import traceback
 
-        logger.warning("overlay_top_onto_ai_result failed: %s\n%s", e, traceback.format_exc())
+        logger.warning(
+            "overlay_top_onto_ai_result failed: %s\n%s", e, traceback.format_exc()
+        )
         return ai_result, {"engine": "ai_only", "reason": str(e)}
 
 
@@ -1671,6 +1757,101 @@ def tryon_hybrid_warp_catvton(
     return result, meta
 
 
+def _estimate_face_region_from_original_pose(
+    original_person: Image.Image,
+    catvton_w: int,
+    catvton_h: int,
+) -> tuple[int, int, int, int] | None:
+    """Estimate face bounding box from original person pose keypoints.
+
+    Uses MediaPipe pose detection on the ORIGINAL person image (clear, reliable),
+    then scales the nose/eye keypoints to catvton_result coordinates.
+
+    Returns (x, y, w, h) in catvton_result pixel coordinates, or None if pose fails.
+    This is the LAST RESORT fallback when Haar cascade detection has failed.
+    """
+    try:
+        from app.services.tryon_v2.pose_utils import detect_pose_keypoints
+
+        kpts = detect_pose_keypoints(original_person)
+        if not kpts:
+            return None
+
+        # Get nose position (most reliable face proxy)
+        nose = kpts.get("nose")
+        left_eye = kpts.get("left_eye")
+        right_eye = kpts.get("right_eye")
+
+        orig_arr = np.asarray(original_person.convert("RGB"))
+        orig_h, orig_w = orig_arr.shape[:2]
+
+        if nose is None:
+            return None
+
+        # Keypoints are normalized [0,1]. Convert to pixel coords first.
+        nose_px_x = nose[0] * orig_w
+        nose_px_y = nose[1] * orig_h
+
+        # Face height estimate: distance from nose to bottom of face ≈ 12-18% of image height
+        # Use eye midpoint if available, otherwise use fixed ratio
+        if left_eye and right_eye:
+            eye_mid_y_px = (left_eye[1] + right_eye[1]) / 2.0 * orig_h
+            face_top_px = max(0.0, nose_px_y - orig_h * 0.06)
+            face_bot_px = min(float(orig_h), eye_mid_y_px + orig_h * 0.10)
+        else:
+            face_top_px = max(0.0, nose_px_y - orig_h * 0.10)
+            face_bot_px = min(float(orig_h), nose_px_y + orig_h * 0.08)
+
+        # Face width estimate: based on interpupillary distance or fixed ratio
+        if left_eye and right_eye:
+            eye_px_x0 = left_eye[0] * orig_w
+            eye_px_x1 = right_eye[0] * orig_w
+            eye_dist_px = abs(eye_px_x1 - eye_px_x0)
+            face_w_px = eye_dist_px * 2.8  # ~2.8x IPD = full face width
+        else:
+            face_w_px = float(orig_w) * 0.18
+
+        face_cx_px = nose_px_x
+        face_left_px = max(0.0, face_cx_px - face_w_px / 2)
+        face_right_px = min(float(orig_w), face_cx_px + face_w_px / 2)
+
+        # Scale to catvton coordinates
+        scale_x = catvton_w / float(orig_w)
+        scale_y = catvton_h / float(orig_h)
+        fw = max(1, int((face_right_px - face_left_px) * scale_x))
+        fh = max(1, int((face_bot_px - face_top_px) * scale_y))
+        fx = _clamp_int(int(face_left_px * scale_x), 0, catvton_w - fw)
+        fy = _clamp_int(int(face_top_px * scale_y), 0, catvton_h - fh)
+
+        # Clamp fw/fh to valid ranges
+        fw = _clamp_int(fw, 4, catvton_w)
+        fh = _clamp_int(fh, 4, catvton_h)
+
+        logger.info(
+            "catvton_color_fidelity: pose-based face estimate from original person "
+            "([%d,%d,%d,%d] at %dx%d) -> catvton([%d,%d,%d,%d] at %dx%d)",
+            int(face_left_px),
+            int(face_top_px),
+            int(face_right_px - face_left_px),
+            int(face_bot_px - face_top_px),
+            orig_w,
+            orig_h,
+            fx,
+            fy,
+            fw,
+            fh,
+            catvton_w,
+            catvton_h,
+        )
+        return (fx, fy, fw, fh)
+
+    except Exception as e:
+        logger.debug(
+            "catvton_color_fidelity: pose-based face estimation failed (%s)", e
+        )
+        return None
+
+
 def catvton_color_fidelity_enhance(
     catvton_result: Image.Image,
     original_garment: Image.Image,
@@ -1720,7 +1901,9 @@ def catvton_color_fidelity_enhance(
         # ── Step 2: 估算衣服区域在 CatVTON 结果中的位置 ─────────────────────
         kpts = detect_pose_keypoints(catvton_result)
         if kpts:
-            bounds = get_body_bounds_from_keypoints(kpts, cw, ch, "top" if _is_top else "bottom")
+            bounds = get_body_bounds_from_keypoints(
+                kpts, cw, ch, "top" if _is_top else "bottom"
+            )
             if bounds.get("valid"):
                 bx0 = int(bounds["x0"])
                 bx1 = int(bounds["x1"])
@@ -1769,22 +1952,24 @@ def catvton_color_fidelity_enhance(
         # 确保面部（含下巴到颈部过渡）不被子衣颜色覆盖。
         face_box = None
         if _is_top:
-            face_box = _detect_face_box_from_result(catvton_result, cw, ch)
+            face_box = _detect_face_box_from_result(
+                catvton_result, cw, ch, original_person=person_image
+            )
 
         # ── Step 3: 计算衣服区域 ─────────────────────────────────────────────
         if _is_top:
-            gar_x0 = max(0, bx0 - int(cw * 0.03))
-            gar_x1 = min(cw, bx1 + int(cw * 0.03))
-            gar_y0 = max(0, min(int(neck_y - ch * 0.02), int(ch * 0.40)))
+            gar_x0 = max(0, bx0 - int(cw * 0.02))
+            gar_x1 = min(cw, bx1 + int(cw * 0.02))
+            gar_y0 = max(0, min(int(neck_y - ch * 0.05), int(ch * 0.40)))
             gar_y1 = min(ch, max(gar_y0 + 2, int(waist_y + ch * 0.06)))
         elif _is_skirt:
-            gar_x0 = max(0, bx0 - int(cw * 0.05))
-            gar_x1 = min(cw, bx1 + int(cw * 0.05))
+            gar_x0 = max(0, bx0 - int(cw * 0.03))
+            gar_x1 = min(cw, bx1 + int(cw * 0.03))
             gar_y0 = max(0, int(waist_y - ch * 0.04))
             gar_y1 = min(ch, int(ch * 0.92))
         else:
-            gar_x0 = max(0, bx0 - int(cw * 0.04))
-            gar_x1 = min(cw, bx1 + int(cw * 0.04))
+            gar_x0 = max(0, bx0 - int(cw * 0.03))
+            gar_x1 = min(cw, bx1 + int(cw * 0.03))
             gar_y0 = max(0, int(waist_y - ch * 0.02))
             gar_y1 = min(ch, int(ch * 0.92))
 
@@ -1828,7 +2013,10 @@ def catvton_color_fidelity_enhance(
         fit_w = min(s_w, cw - paste_x)
         fit_h = min(s_h, ch - paste_y)
         if fit_w < 2 or fit_h < 2:
-            return catvton_result, {"engine": "catvton_color_fidelity", "reason": "fit_too_small"}
+            return catvton_result, {
+                "engine": "catvton_color_fidelity",
+                "reason": "fit_too_small",
+            }
 
         gar_fitted = gar_scaled.crop((0, 0, fit_w, fit_h))
 
@@ -1855,8 +2043,17 @@ def catvton_color_fidelity_enhance(
                 protect_x1 = min(cw, fx + fw + int(fw * 0.05))
                 protect_mask.paste(0, (protect_x0, protect_y0, protect_x1, protect_y1))
             else:
-                protect_until_y = max(0, int(neck_y - ch * 0.06))
-                protect_mask.paste(0, (0, 0, cw, protect_until_y))
+                # Cascade fallback: pose-based estimation -> coarse ratio
+                pose_face = _estimate_face_region_from_original_pose(
+                    person_image, cw, ch
+                )
+                if pose_face is not None:
+                    fx2, fy2, fw2, fh2 = pose_face
+                    extend2 = int(fh2 * 0.30)
+                    protect_mask.paste(0, (0, 0, cw, min(ch, fy2 + fh2 + extend2)))
+                else:
+                    protect_until_y = max(0, int(neck_y - ch * 0.06))
+                    protect_mask.paste(0, (0, 0, cw, protect_until_y))
             return protect_mask
 
         protect = _make_en_face_protect_mask(cw, ch, face_box, neck_y)
@@ -1882,8 +2079,12 @@ def catvton_color_fidelity_enhance(
         valid = roi_alpha > 0.12
 
         if valid.sum() > 100:
-            roi_catvton_lab = cv2.cvtColor(roi_catvton.astype(np.uint8), cv2.COLOR_RGB2LAB)
-            roi_layer_lab = cv2.cvtColor(roi_layer[:, :, :3].astype(np.uint8), cv2.COLOR_RGB2LAB)
+            roi_catvton_lab = cv2.cvtColor(
+                roi_catvton.astype(np.uint8), cv2.COLOR_RGB2LAB
+            )
+            roi_layer_lab = cv2.cvtColor(
+                roi_layer[:, :, :3].astype(np.uint8), cv2.COLOR_RGB2LAB
+            )
 
             # 对每个通道进行加权混合
             for c in range(3):
@@ -1891,7 +2092,9 @@ def catvton_color_fidelity_enhance(
                 roi_layer_c = roi_layer_lab[:, :, c].astype(np.float32)
 
                 # 颜色转移：原衣服 * strength + CatVTON * (1 - strength)
-                blended = roi_layer_c * roi_strength + roi_catvton_c * (1.0 - roi_strength)
+                blended = roi_layer_c * roi_strength + roi_catvton_c * (
+                    1.0 - roi_strength
+                )
                 blended = np.clip(blended, 0, 255).astype(np.uint8)
 
                 # 只在有效区域更新 result
@@ -1921,7 +2124,9 @@ def catvton_color_fidelity_enhance(
     except Exception as e:
         import traceback
 
-        logger.warning("catvton_color_fidelity_enhance failed: %s\n%s", e, traceback.format_exc())
+        logger.warning(
+            "catvton_color_fidelity_enhance failed: %s\n%s", e, traceback.format_exc()
+        )
         return catvton_result, {"engine": "catvton_color_fidelity", "reason": str(e)}
 
 
@@ -1977,7 +2182,9 @@ def catvton_color_fidelity_spatial(
         body_valid = False
 
         if kpts:
-            bounds = get_body_bounds_from_keypoints(kpts, cw, ch, "top" if _is_top else "bottom")
+            bounds = get_body_bounds_from_keypoints(
+                kpts, cw, ch, "top" if _is_top else "bottom"
+            )
             if bounds.get("valid"):
                 bx0 = int(bounds["x0"])
                 bx1 = int(bounds["x1"])
@@ -2013,12 +2220,14 @@ def catvton_color_fidelity_spatial(
         # 仅上衣类需要此保护（下装/裙子不覆盖面部）。
         face_box = None
         if _is_top:
-            face_box = _detect_face_box_from_result(catvton_result, cw, ch)
+            face_box = _detect_face_box_from_result(
+                catvton_result, cw, ch, original_person=person_image
+            )
 
         def _make_face_protect_mask(
             cw: int, ch: int, face_box: tuple[int, int, int, int] | None, neck_y: int
         ) -> Image.Image:
-            """Build L mask: 0 (protected) = face region + small neck buffer, 255 (allow garment)."""
+            """Build face/neck protect mask: 0=protected, 255=allow garment."""
             protect_mask = Image.new("L", (cw, ch), color=255)
             if face_box is not None:
                 fx, fy, fw, fh = face_box
@@ -2030,32 +2239,42 @@ def catvton_color_fidelity_spatial(
                 protect_x1 = min(cw, fx + fw + int(fw * 0.05))
                 protect_mask.paste(0, (protect_x0, protect_y0, protect_x1, protect_y1))
             else:
-                # Fallback: protect area just above neck (coarse but better than nothing)
-                protect_until_y = max(0, int(neck_y - ch * 0.06))
-                protect_mask.paste(0, (0, 0, cw, protect_until_y))
+                # Cascade fallback: pose-based estimation -> coarse ratio
+                pose_face = _estimate_face_region_from_original_pose(
+                    person_image, cw, ch
+                )
+                if pose_face is not None:
+                    fx2, fy2, fw2, fh2 = pose_face
+                    extend2 = int(fh2 * 0.30)
+                    protect_mask.paste(0, (0, 0, cw, min(ch, fy2 + fh2 + extend2)))
+                else:
+                    protect_until_y = max(0, int(neck_y - ch * 0.06))
+                    protect_mask.paste(0, (0, 0, cw, protect_until_y))
             return protect_mask
 
         # 计算衣服区域
         if _is_top:
-            gar_x0 = max(0, bx0 - int(cw * 0.05))
-            gar_x1 = min(cw, bx1 + int(cw * 0.05))
-            gar_y0 = max(0, min(int(neck_y - ch * 0.02), int(ch * 0.40)))
+            gar_x0 = max(0, bx0 - int(cw * 0.03))
+            gar_x1 = min(cw, bx1 + int(cw * 0.03))
+            gar_y0 = max(0, min(int(neck_y - ch * 0.05), int(ch * 0.40)))
             gar_y1 = min(ch, max(gar_y0 + 2, int(waist_y + ch * 0.08)))
         elif _is_skirt:
-            gar_x0 = max(0, bx0 - int(cw * 0.05))
-            gar_x1 = min(cw, bx1 + int(cw * 0.05))
+            gar_x0 = max(0, bx0 - int(cw * 0.03))
+            gar_x1 = min(cw, bx1 + int(cw * 0.03))
             gar_y0 = max(0, int(waist_y - ch * 0.04))
             gar_y1 = min(ch, int(ch * 0.92))
         else:
-            gar_x0 = max(0, bx0 - int(cw * 0.04))
-            gar_x1 = min(cw, bx1 + int(cw * 0.04))
+            gar_x0 = max(0, bx0 - int(cw * 0.03))
+            gar_x1 = min(cw, bx1 + int(cw * 0.03))
             gar_y0 = max(0, int(waist_y - ch * 0.02))
             gar_y1 = min(ch, int(ch * 0.92))
 
         gar_w = gar_x1 - gar_x0
         gar_h = gar_y1 - gar_y0
         if gar_w < 16 or gar_h < 16:
-            logger.warning("catvton_color_fidelity_spatial: region too small (%dx%d)", gar_w, gar_h)
+            logger.warning(
+                "catvton_color_fidelity_spatial: region too small (%dx%d)", gar_w, gar_h
+            )
             return catvton_result, {
                 "engine": "catvton_color_fidelity_spatial",
                 "reason": "region_too_small",
@@ -2071,11 +2290,132 @@ def catvton_color_fidelity_spatial(
                 "reason": "garment_too_small",
             }
 
-        # 缩放衣服使其覆盖目标区域
-        scale = max(gar_w / float(sw), gar_h / float(sh))
+        # ── Constraint 1: 方向校正 ─────────────────────────────────────
+        # 上衣类：服装应为竖长方向（高 > 宽）。如果商品图是横向的（宽 > 高），
+        # 说明可能被旋转了 90°，需要转正。
+        # 下装类：同理，裤子/裙子应为竖长方向。
+        if _is_top or _is_skirt:
+            if sw > sh * 1.3:
+                gar_src = gar_src.transpose(Image.Transpose.ROTATE_90)
+                sw, sh = gar_src.size
+                logger.info(
+                    "catvton_color_fidelity_spatial: garment rotated 90° "
+                    "(was wider than tall: %dx%d → %dx%d)",
+                    sh,
+                    sw,
+                    sw,
+                    sh,
+                )
+
+        # ── Constraint 2: 基于身体比例的等比缩放 ──────────────────────
+        # 主缩放基准：目标区域宽度（gar_w），确保服装覆盖身体区域
+        # 约束上限：肩宽 * 1.5，防止服装过度拉伸超出身体轮廓
+        _shoulder_w = (
+            max(2, int(bounds.get("shoulder_width", gar_w))) if body_valid else gar_w
+        )
+
+        # 以目标区域宽度为基准缩放，服装宽度覆盖整个区域
+        scale = gar_w / float(sw)
+
+        # 肩宽约束：防止服装宽度超过肩宽的 1.5 倍
+        if _shoulder_w > 0:
+            max_scale = (_shoulder_w * 1.5) / float(sw)
+            scale = min(scale, max_scale)
+
+        # 高度约束：防止过度拉伸
+        max_h = gar_h * 1.3
+        if sh * scale > max_h:
+            scale = max_h / float(sh)
+
         s_w = max(2, int(sw * scale))
         s_h = max(2, int(sh * scale))
         gar_scaled = gar_src.resize((s_w, s_h), Image.Resampling.LANCZOS)
+        logger.info(
+            "catvton_color_fidelity_spatial: proportional scaling "
+            "(shoulder_w=%d, gar_w=%d, scale=%.3f, garment %dx%d → %dx%d)",
+            _shoulder_w,
+            gar_w,
+            scale,
+            sw,
+            sh,
+            s_w,
+            s_h,
+        )
+
+        # ── TPS 变形：根据身体关键点对衣服进行非刚性变换 ───────────────
+        _tps_applied = False
+        if kpts and s_w >= 16 and s_h >= 16:
+            try:
+                from app.services.cloth_warp import TPSWarpEngine
+
+                tps_engine = TPSWarpEngine()
+                tps_keypoints = {}
+                for name in (
+                    "left_shoulder",
+                    "right_shoulder",
+                    "left_hip",
+                    "right_hip",
+                    "left_elbow",
+                    "right_elbow",
+                    "left_wrist",
+                    "right_wrist",
+                ):
+                    if name in kpts:
+                        tps_keypoints[name] = kpts[name]
+                if len(tps_keypoints) >= 4:
+                    gar_rgb = gar_scaled.convert("RGB")
+                    gar_warped = tps_engine.warp(
+                        gar_rgb,
+                        tps_keypoints,
+                        (s_w, s_h),
+                        cloth_type="upper" if _is_top else "bottom",
+                    )
+                    gar_scaled = gar_warped.convert("RGBA")
+                    _tps_applied = True
+                    logger.info(
+                        "catvton_color_fidelity_spatial: TPS warp applied "
+                        "with %d keypoints",
+                        len(tps_keypoints),
+                    )
+            except Exception as tps_err:
+                logger.debug(
+                    "catvton_color_fidelity_spatial: TPS warp failed (%s), "
+                    "using simple scaling",
+                    tps_err,
+                )
+
+        # ── Quad 透视变形（TPS 失败时的 fallback）──────────────────────
+        if not _tps_applied and s_w >= 16 and s_h >= 16:
+            try:
+                shoulder_w = (
+                    max(2, int(bounds.get("shoulder_width", gar_w)))
+                    if body_valid
+                    else gar_w
+                )
+                hip_w = (
+                    max(2, int(bounds.get("hip_width", gar_w * 0.85)))
+                    if body_valid
+                    else int(gar_w * 0.85)
+                )
+                top_half_w = _clamp_int(int(min(s_w, shoulder_w * scale)), 4, s_w)
+                bot_half_w = _clamp_int(int(min(s_w, hip_w * scale)), 4, s_w)
+                if abs(top_half_w - bot_half_w) > 4:
+                    top_inset = (s_w - top_half_w) // 2
+                    bot_inset = (s_w - bot_half_w) // 2
+                    quad = (
+                        top_inset,
+                        0,
+                        s_w - top_inset,
+                        0,
+                        s_w - bot_inset,
+                        s_h,
+                        bot_inset,
+                        s_h,
+                    )
+                    gar_scaled = _pil_quad_warp(gar_scaled, (s_w, s_h), quad)
+                    logger.info("catvton_color_fidelity_spatial: quad warp applied")
+            except Exception:
+                pass
 
         # 居中粘贴
         paste_x = gar_x0 + (gar_w - s_w) // 2
@@ -2100,9 +2440,29 @@ def catvton_color_fidelity_spatial(
         feather_px = max(2, int(min(cw, ch) * 0.012))
         warped_layer = _feather_alpha(warped_layer, radius_px=feather_px)
 
-        # ── Step 4: 保护面部 ─────────────────────────────────────────
-        # 使用精确 Haar cascade 检测面部（_is_top 专享；下装不覆盖面部无需此步骤）
+        # ── Step 4: 保护面部和手部 ─────────────────────────────────────
+        # 面部：Haar cascade 精确检测（_is_top 专享）
         protect = _make_face_protect_mask(cw, ch, face_box, neck_y)
+
+        # 手部：用 wrist 关键点估算手部区域，防止衣物覆盖手部
+        if kpts:
+            for wrist_name in ("left_wrist", "right_wrist"):
+                if wrist_name in kpts:
+                    wx_n, wy_n = kpts[wrist_name]
+                    wx_px = int(wx_n * cw)
+                    wy_px = int(wy_n * ch)
+                    # 手部保护半径：图像宽度的 10%
+                    r = max(8, int(cw * 0.10))
+                    protect.paste(
+                        0,
+                        (
+                            max(0, wx_px - r),
+                            max(0, wy_px - r),
+                            min(cw, wx_px + r),
+                            min(ch, wy_px + r),
+                        ),
+                    )
+
         r_ch, g_ch, b_ch, a_ch = warped_layer.split()
         a_ch = ImageChops.multiply(a_ch, protect)
         warped_layer = Image.merge("RGBA", (r_ch, g_ch, b_ch, a_ch))
@@ -2116,6 +2476,73 @@ def catvton_color_fidelity_spatial(
         for c in range(3):
             result_np[:, :, c] = layer_np[:, :, c] * strength + result_np[:, :, c] * (
                 1.0 - strength
+            )
+
+        # ── Step 5b: 褶皱暗化 + 边缘投影 ─────────────────────────────
+        # 参考 tryon_top_warp 的 realism pass，增加立体感
+        # 图案衣服跳过，避免破坏图案
+        _pattern_score = _detect_pattern_strength(original_garment)
+        _skip_realism = _pattern_score > 0.40
+
+        if not _skip_realism:
+            # 褶皱暗化：在衣物区域 33% 和 67% 宽度处添加垂直暗线
+            fold_positions = [int(fit_w * 0.33), int(fit_w * 0.67)]
+            fold_strength = 0.04
+            for fx in fold_positions:
+                abs_x = paste_x + min(fx, fit_w - 1)
+                if 0 < abs_x < cw - 1:
+                    fade = (
+                        max(0, 1.0 - abs(fx - fit_w / 2) / (fit_w * 0.25))
+                        * fold_strength
+                    )
+                    if fade > 0.005:
+                        region = result_np[
+                            paste_y : paste_y + fit_h, max(0, abs_x - 1) : abs_x + 1
+                        ]
+                        if region.size > 0:
+                            region_alpha = layer_alpha[
+                                paste_y : paste_y + fit_h, max(0, abs_x - 1) : abs_x + 1
+                            ]
+                            darken = (1.0 - fade) * np.clip(region_alpha, 0, 1)[
+                                ..., np.newaxis
+                            ]
+                            region[:] = np.clip(
+                                region.astype(np.float32) * darken, 0, 255
+                            )
+
+            # 边缘投影暗化：衣物边缘附近添加暗化（模拟衣物投射到身体上的阴影）
+            edge_px = max(2, int(feather_px * 1.5))
+            for dx in range(-edge_px, edge_px + 1):
+                for dy in range(-edge_px, edge_px + 1):
+                    abs_x = paste_x + dx
+                    abs_y = paste_y + dy
+                    if 0 <= abs_x < cw and 0 <= abs_y < ch:
+                        alpha_at = (
+                            layer_np[abs_y, abs_x, 3]
+                            if abs_y < layer_np.shape[0] and abs_x < layer_np.shape[1]
+                            else 0
+                        )
+                        if 10 < alpha_at < 245:
+                            edge_dist = max(abs(dx), abs(dy))
+                            falloff = max(0, 1.0 - edge_dist / float(edge_px)) * 0.06
+                            if falloff > 0.005:
+                                result_np[abs_y, abs_x, :3] = np.clip(
+                                    result_np[abs_y, abs_x, :3].astype(float)
+                                    * (1.0 - falloff),
+                                    0,
+                                    255,
+                                ).astype(np.uint8)
+
+            logger.info(
+                "catvton_color_fidelity_spatial: realism pass applied "
+                "(pattern_score=%.3f, fold+shadow)",
+                _pattern_score,
+            )
+        else:
+            logger.info(
+                "catvton_color_fidelity_spatial: realism pass skipped "
+                "(pattern_score=%.3f > 0.40)",
+                _pattern_score,
             )
 
         result_np = np.clip(result_np, 0, 255).astype(np.uint8)
@@ -2145,5 +2572,10 @@ def catvton_color_fidelity_spatial(
     except Exception as e:
         import traceback
 
-        logger.warning("catvton_color_fidelity_spatial failed: %s\n%s", e, traceback.format_exc())
-        return catvton_result, {"engine": "catvton_color_fidelity_spatial", "reason": str(e)}
+        logger.warning(
+            "catvton_color_fidelity_spatial failed: %s\n%s", e, traceback.format_exc()
+        )
+        return catvton_result, {
+            "engine": "catvton_color_fidelity_spatial",
+            "reason": str(e),
+        }

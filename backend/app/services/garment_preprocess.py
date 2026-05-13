@@ -168,7 +168,7 @@ def preprocess_garment(image: Image.Image, canvas_size: int = 512) -> tuple[np.n
 
     Args:
         image: Input PIL Image (any size, any mode)
-        canvas_size: Output canvas size (default 512)
+        canvas_size: Output canvas size (default 768)
 
     Returns:
         Tuple of:

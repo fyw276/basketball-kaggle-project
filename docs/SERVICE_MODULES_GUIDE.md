@@ -258,7 +258,7 @@ AI_RECOMMENDER_API_KEY=sk-xxxxx
 
 ### 9. 虚拟试衣 v2 服务 (`tryon_v2/`)
 
-`backend/app/services/tryon_v2/` 是虚拟试衣 v2 的核心引擎包，提供六种试衣模式（strict/balanced/replace/realistic/professional/hybrid）。
+`backend/app/services/tryon_v2/` 是虚拟试衣 v2 的核心引擎包，提供七种试衣模式（strict/balanced/replace/realistic/realistic_v2/professional/hybrid）。
 
 #### 9.1 `pipeline_a.py` — 方案 A 主管道
 
@@ -403,14 +403,15 @@ score = occlusion_validity_score(person, result)
 
 用于 QC 模块：检测试穿后图像的变化区域，评估遮挡合理性。
 
-#### 9.11 六种试衣模式总结
+#### 9.11 七种试衣模式总结
 
 | 模式 | 引擎 | 特点 | 适用场景 |
 |------|------|------|---------|
 | `strict` | Warp + QC | 几何贴合 + 门禁，身份保护 | 日常快速预览 |
 | `balanced` | Warp + QC | 宽松 QC | 快速预览 |
-| `replace` | AI 生成（warp→bailian→remote→catvton→diffusion） | 像素级衣服保真 + AI 真实感 | 需要真实感时 |
-| `realistic` | CatVTON | 深度学习，真实褶皱光照，图案保护注入 | 商品展示 |
+| `replace` | AI 生成（warp → bailian → remote → catvton → diffusion；warp 先运行保衣服像素，`TRYON_V2_REPLACE_SKIP_WARP=true` 可跳过；默认 `warp,bailian,remote`） | 像素级衣服保真 + AI 真实感 | 需要真实感时 |
+| `realistic` | CatVTON | 深度学习，真实褶皱光照，颜色保真增强 | 商品展示 |
+| `realistic_v2` | CatVTON v2 | 饱和度感知颜色保真 + 面部/手部保护 | 高保真应用 |
 | `professional` | CatVTON + 后处理 | CatVTON + 质量评分，图案保护注入 (alpha=0.92) | 专业应用 |
 | `hybrid` | Warp + CatVTON + overlay_draping | 饱和度感知 drape_alpha，warp 保颜色 CatVTON 提供真实感 | 彩色高饱和度衣物 |
 

@@ -37,9 +37,9 @@ python backend/scripts/test_catvton_e2e.py          # 端到端测试
 cd backend && python scripts/test_catvton_direct.py # 直接测试（跳过 API 层）
 ```
 
-CatVTON 在 `replace` / `realistic` / `professional` / `strict` / `balanced` / `hybrid` 六种 v2 模式中均会被尝试使用。
+CatVTON 在 `replace` / `realistic` / `realistic_v2` / `professional` / `hybrid` 模式下均会被尝试使用；`strict` / `balanced` 为纯 Warp 几何贴合。
 
-> **2026-05-02 更新**：v2 模式已扩展为 6 种：`strict`（默认，方案 A 几何贴合）、`balanced`（宽松 QC）、`replace`（AI 生成，引擎优先级 warp→bailian→remote→catvton→diffusion，可通过 `TRYON_V2_REPLACE_ENGINE_PRIORITY` 配置）、`realistic`（CatVTON 深度学习）、`professional`（CatVTON + 后处理）、`hybrid`（Warp 保真 + CatVTON 真实感，饱和度感知 alpha 混合）。详见 [`backend/app/api/tryon_v2.py`](../backend/app/api/tryon_v2.py) 和 [`backend/app/services/tryon_v2/`](<../backend/app/services/tryon_v2/>)。
+> **2026-05-13 更新**：v2 模式已扩展为 7 种：`strict`（默认，方案 A 几何贴合）、`balanced`（宽松 QC）、`replace`（AI 生成，引擎优先级 warp → bailian → remote → catvton → diffusion，warp 先运行提供衣服像素保真，`TRYON_V2_REPLACE_SKIP_WARP=true` 可跳过 warp）、`realistic`（CatVTON 深度学习 + 颜色保真）、`realistic_v2`（CatVTON v2 + 饱和度感知保真）、`professional`（CatVTON + 后处理）、`hybrid`（Warp 保真 + CatVTON 真实感，饱和度感知 alpha 混合）。详见 [`backend/app/api/tryon_v2.py`](../backend/app/api/tryon_v2.py) 和 [`backend/app/services/tryon_v2/`](<../backend/app/services/tryon_v2/>)。
 
 ### 百炼（DashScope）试衣
 

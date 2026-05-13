@@ -17,12 +17,16 @@ from app.api.dependencies import get_current_user
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.user import User
-from app.observability.tryon_v2_metrics import record_tryon_v2_failure, record_tryon_v2_success
+from app.observability.tryon_v2_metrics import (
+    record_tryon_v2_failure,
+    record_tryon_v2_success,
+)
 from app.services.storage import get_storage_service
 from app.services.subscription_billing import consume_usage
 from app.services.tryon_v2 import run_pipeline_a
 from app.services.tryon_v2.input_gate import evaluate_input_gate
 from app.services.tryon_v2.preprocess import preprocess_garment_image
+from app.services.tryon_v2.postprocess import enhance_tryon_result
 from app.services.virtual_tryon import check_tryon_garment_has_face
 
 logger = logging.getLogger(__name__)
@@ -34,7 +38,9 @@ class TryOnV2Response(BaseModel):
     status: str = Field(..., description="Status: success/error")
     message: str = Field(..., description="Human-readable status message")
     pipeline: str = Field("A", description="Pipeline identifier")
-    result_image_url: str | None = Field(None, description="URL of the try-on result image")
+    result_image_url: str | None = Field(
+        None, description="URL of the try-on result image"
+    )
     preview_white_url: str | None = Field(
         None,
         description=(
@@ -46,8 +52,12 @@ class TryOnV2Response(BaseModel):
     error_code: str | None = Field(None, description="Stable error code")
     retryable: bool = Field(False, description="Whether client can retry later")
     action_hint: str | None = Field(None, description="Action guidance for UI")
-    qc_scores: dict[str, float] = Field(default_factory=dict, description="Input/QC scores")
-    metadata: dict[str, Any] = Field(default_factory=dict, description="Processing metadata")
+    qc_scores: dict[str, float] = Field(
+        default_factory=dict, description="Input/QC scores"
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict, description="Processing metadata"
+    )
     # ─── 白盒调试字段 ───────────────────────────────────────────────
     debug_session_dir: str | None = Field(
         None,
@@ -66,7 +76,9 @@ class TryOnV2ValidateResponse(BaseModel):
     message: str = Field(..., description="Validation message")
     retryable: bool = Field(False, description="Whether client can retry later")
     action_hint: str | None = Field(None, description="Action guidance for UI")
-    qc_scores: dict[str, float] = Field(default_factory=dict, description="Input quality scores")
+    qc_scores: dict[str, float] = Field(
+        default_factory=dict, description="Input quality scores"
+    )
     thresholds: dict[str, float] = Field(
         default_factory=dict, description="Numeric score thresholds applied"
     )
@@ -84,7 +96,9 @@ class TryOnV2ValidateResponse(BaseModel):
 class TryOnV2CapabilitiesResponse(BaseModel):
     enabled: bool = Field(..., description="Whether tryon v2 is enabled")
     pipeline_default: str = Field("A", description="Default pipeline")
-    strict_identity_default: bool = Field(..., description="Default strict identity mode")
+    strict_identity_default: bool = Field(
+        ..., description="Default strict identity mode"
+    )
     supported_garment_categories: list[str] = Field(default_factory=list)
     modes: list[str] = Field(default_factory=list)
     thresholds: dict[str, float] = Field(default_factory=dict)
@@ -109,9 +123,13 @@ class TryOnV2PreprocessItem(BaseModel):
 
 def _v2_thresholds(strict_mode: bool) -> dict[str, float]:
     full_body = float(getattr(settings, "TRYON_V2_MIN_FULL_BODY_SCORE", 0.55) or 0.55)
-    leg_visibility = float(getattr(settings, "TRYON_V2_MIN_LEG_VISIBILITY_SCORE", 0.45) or 0.45)
+    leg_visibility = float(
+        getattr(settings, "TRYON_V2_MIN_LEG_VISIBILITY_SCORE", 0.45) or 0.45
+    )
     front_pose = float(getattr(settings, "TRYON_V2_MIN_FRONT_POSE_SCORE", 0.35) or 0.35)
-    garment_front = float(getattr(settings, "TRYON_V2_MIN_GARMENT_FRONT_SCORE", 0.45) or 0.45)
+    garment_front = float(
+        getattr(settings, "TRYON_V2_MIN_GARMENT_FRONT_SCORE", 0.45) or 0.45
+    )
 
     if not strict_mode:
         return {
@@ -215,7 +233,9 @@ def _estimate_garment_region_for_postprocess(
 
 @router.post("/preprocess", response_model=TryOnV2PreprocessItem)
 async def tryon_v2_preprocess(
-    garment_file: UploadFile = File(..., alias="garment_file", description="Any garment image"),
+    garment_file: UploadFile = File(
+        ..., alias="garment_file", description="Any garment image"
+    ),
     _current_user: User = Depends(get_current_user),
 ):
     _ensure_tryon_v2_enabled()
@@ -306,9 +326,13 @@ async def tryon_v2_preprocess_batch(
                     pw_bytes = _pil_image_to_jpeg_bytes(r.preview_white, quality=95)
                     pw_key = hashlib.sha1(pw_bytes).hexdigest()[:20]
                     pw_path = f"preprocess/preview_white_{pw_key}.jpg"
-                    _, preview_white_url = get_storage_service()._save_bytes(pw_bytes, pw_path)
+                    _, preview_white_url = get_storage_service()._save_bytes(
+                        pw_bytes, pw_path
+                    )
                 except Exception as e:
-                    logger.warning(f"[PREPROCESS-BATCH] failed to save preview_white: {e}")
+                    logger.warning(
+                        f"[PREPROCESS-BATCH] failed to save preview_white: {e}"
+                    )
 
             out.append(
                 TryOnV2PreprocessItem(
@@ -331,7 +355,9 @@ async def tryon_garment_v2(
     garment_file: UploadFile = File(
         ..., alias="garment_file", description="Garment product photo"
     ),  # noqa: E501
-    person_file: UploadFile = File(..., alias="person_file", description="Person full-body photo"),
+    person_file: UploadFile = File(
+        ..., alias="person_file", description="Person full-body photo"
+    ),
     garment_image_url: str | None = Form(
         None, description="Optional /uploads/... url of standardized garment image"
     ),
@@ -349,7 +375,9 @@ async def tryon_garment_v2(
         "bottom", description="Second garment category for outfit: bottom|skirt"
     ),
     prompt: str = Form("", description="Optional text prompt"),
-    mode: str = Form("detail_fidelity", description="detail_fidelity|blend|stable_fast"),
+    mode: str = Form(
+        "detail_fidelity", description="detail_fidelity|blend|stable_fast"
+    ),
     model_gender: str = Form("neutral", description="male|female|neutral"),
     # ─── 白盒调试参数 ───────────────────────────────────────────────
     debug_mode: str = Form(
@@ -368,13 +396,17 @@ async def tryon_garment_v2(
     started = time.perf_counter()
     _ensure_tryon_v2_enabled()
 
-    if not garment_file.content_type or not garment_file.content_type.startswith("image/"):
+    if not garment_file.content_type or not garment_file.content_type.startswith(
+        "image/"
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="garment_file must be an image",
         )
 
-    if not person_file.content_type or not person_file.content_type.startswith("image/"):
+    if not person_file.content_type or not person_file.content_type.startswith(
+        "image/"
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="person_file must be an image",
@@ -478,7 +510,9 @@ async def tryon_garment_v2(
     garment_image = Image.open(BytesIO(garment_bytes)).convert("RGB")
     person_image = Image.open(BytesIO(person_bytes)).convert("RGB")
     garment_image_2 = (
-        Image.open(BytesIO(garment2_bytes)).convert("RGB") if len(garment2_bytes) else None
+        Image.open(BytesIO(garment2_bytes)).convert("RGB")
+        if len(garment2_bytes)
+        else None
     )
 
     def _load_uploads_url(url: str) -> Image.Image | None:
@@ -552,7 +586,6 @@ async def tryon_garment_v2(
     # 颜色保真函数需要原始商品图（如白底/抠图后）才能正确注入颜色/图案。
     # 这里保存原始图，传递给 color_fidelity_spatial / color_fidelity_enhance。
     original_garment_image = garment_image
-    original_garment_image_2 = garment_image_2
     # ─────────────────────────────────────────────────────────────────────────
 
     try:
@@ -576,7 +609,9 @@ async def tryon_garment_v2(
                     pw_img.save(debug_pw_path, quality=95)
                     logger.info(f"[DEBUG] preview_white saved to: {debug_pw_path}")
                 except Exception as ex:
-                    logger.warning(f"[DEBUG] failed to save preview_white to debug dir: {ex}")
+                    logger.warning(
+                        f"[DEBUG] failed to save preview_white to debug dir: {ex}"
+                    )
 
         # Generate preview for garment 2 (if exists)
         if garment_image_2 is not None:
@@ -585,17 +620,25 @@ async def tryon_garment_v2(
                 pw_bytes2 = _pil_image_to_jpeg_bytes(pw_img2, quality=95)
                 pw_key2 = hashlib.sha1(pw_bytes2).hexdigest()[:20]
                 pw_path2 = f"preprocess/preview_white_{pw_key2}.jpg"
-                _, preview_white_url_2 = get_storage_service()._save_bytes(pw_bytes2, pw_path2)
+                _, preview_white_url_2 = get_storage_service()._save_bytes(
+                    pw_bytes2, pw_path2
+                )
                 logger.info(f"[GARMENT] preview_white_2 saved: {preview_white_url_2}")
 
                 # Also save to debug_session_dir if available
                 if debug_session_dir:
                     try:
-                        debug_pw_path2 = Path(debug_session_dir) / "02c_preview_white_2.jpg"
+                        debug_pw_path2 = (
+                            Path(debug_session_dir) / "02c_preview_white_2.jpg"
+                        )
                         pw_img2.save(debug_pw_path2, quality=95)
-                        logger.info(f"[DEBUG] preview_white_2 saved to: {debug_pw_path2}")
+                        logger.info(
+                            f"[DEBUG] preview_white_2 saved to: {debug_pw_path2}"
+                        )
                     except Exception as ex:
-                        logger.warning(f"[DEBUG] failed to save preview_white_2 to debug dir: {ex}")
+                        logger.warning(
+                            f"[DEBUG] failed to save preview_white_2 to debug dir: {ex}"
+                        )
     except Exception as e:
         logger.warning(f"[GARMENT] failed to generate preview_white: {e}")
 
@@ -618,7 +661,10 @@ async def tryon_garment_v2(
     person_jpg = _pil_image_to_jpeg_bytes(person_image, quality=95)
 
     if mode == "stable_fast":
-        from app.services.bailian_tryon_client import _bailian_configured, call_bailian_tryon
+        from app.services.bailian_tryon_client import (
+            _bailian_configured,
+            call_bailian_tryon,
+        )
         from app.services.tryon_v2.catvton_engine_client import (
             _catvton_configured,
             call_local_catvton,
@@ -631,7 +677,10 @@ async def tryon_garment_v2(
             tryon_top_warp_preserve,
         )
         from app.services.virtual_tryon import get_tryon_service, sanitize_tryon_prompt
-        from app.services.vton_remote_client import _remote_url_configured, call_remote_vton
+        from app.services.vton_remote_client import (
+            _remote_url_configured,
+            call_remote_vton,
+        )
 
         prompt_clean = sanitize_tryon_prompt(prompt or None) or ""
         gc = (garment_category or "").strip()
@@ -643,9 +692,12 @@ async def tryon_garment_v2(
         # to inpaint. Passing warp result to CatVTON causes darkening / double-processing.
         # CatVTON can only be used standalone (when warp is skipped).
         priority_str = (
-            getattr(settings, "TRYON_V2_REPLACE_ENGINE_PRIORITY", "") or "warp,bailian,remote"
+            getattr(settings, "TRYON_V2_REPLACE_ENGINE_PRIORITY", "")
+            or "warp,bailian,remote"
         )
-        engine_priority = [e.strip().lower() for e in priority_str.split(",") if e.strip()]
+        engine_priority = [
+            e.strip().lower() for e in priority_str.split(",") if e.strip()
+        ]
         skip_warp = bool(getattr(settings, "TRYON_V2_REPLACE_SKIP_WARP", False))
 
         upstream: dict[str, Any] | None = None
@@ -681,12 +733,16 @@ async def tryon_garment_v2(
                             person_image, garment_image
                         )  # noqa: E501
                     elif _skirt_kw:
-                        _warp_img, _warp_meta = tryon_skirt_warp(person_image, garment_image)
+                        _warp_img, _warp_meta = tryon_skirt_warp(
+                            person_image, garment_image
+                        )
                     elif _outfit_kw:
                         img1, _m1 = tryon_top_warp_preserve(person_image, garment_image)
                         _warp_img, _warp_meta = tryon_pants_warp(img1, garment_image_2)
                     else:
-                        _warp_img, _warp_meta = tryon_pants_warp(person_image, garment_image)
+                        _warp_img, _warp_meta = tryon_pants_warp(
+                            person_image, garment_image
+                        )
                     used_warp = True
                     logger.info(
                         "Warp preserve for hybrid: %s",
@@ -722,7 +778,9 @@ async def tryon_garment_v2(
                     )
                     if catvton_ok:
                         ai_img = upstream.get("result_image")
-                        has_both = _warp_img is not None and ai_img is not None and _top_kw
+                        has_both = (
+                            _warp_img is not None and ai_img is not None and _top_kw
+                        )
                         if has_both:
                             # ── Warp + CatVTON 两阶段混合（新增）─────────────────
                             # Stage 1: warp_preserve → 像素级衣服保真（100% 原始颜色/图案）
@@ -763,7 +821,9 @@ async def tryon_garment_v2(
 
                         # ─── 预处理模式：直接返回中间产物 ─────────────────────────
                         if debug_mode == "preprocess_only":
-                            record_tryon_v2_success(int((time.perf_counter() - started) * 1000))
+                            record_tryon_v2_success(
+                                int((time.perf_counter() - started) * 1000)
+                            )
                             return TryOnV2Response(
                                 status="preprocess_only_success",
                                 message=(
@@ -883,20 +943,28 @@ async def tryon_garment_v2(
                         chosen = remote
                         logger.info("Remote VTON succeeded for replace mode")
                 except Exception as remote_err:
-                    logger.warning("Remote VTON failed for replace mode: %s", remote_err)
+                    logger.warning(
+                        "Remote VTON failed for replace mode: %s", remote_err
+                    )
 
             # ── Warp (geometric paste — 100% garment fidelity, but flat look) ────
             elif engine_name == "warp" and not skip_warp:
                 try:
                     if _top_kw:
-                        warp_img, warp_meta = tryon_top_warp_preserve(person_image, garment_image)
+                        warp_img, warp_meta = tryon_top_warp_preserve(
+                            person_image, garment_image
+                        )
                     elif _skirt_kw:
-                        warp_img, warp_meta = tryon_skirt_warp(person_image, garment_image)
+                        warp_img, warp_meta = tryon_skirt_warp(
+                            person_image, garment_image
+                        )
                     elif _outfit_kw:
                         img1, _m1 = tryon_top_warp_preserve(person_image, garment_image)
                         warp_img, warp_meta = tryon_pants_warp(img1, garment_image_2)
                     else:
-                        warp_img, warp_meta = tryon_pants_warp(person_image, garment_image)
+                        warp_img, warp_meta = tryon_pants_warp(
+                            person_image, garment_image
+                        )
 
                     if warp_img is not None:
                         chosen = {
@@ -929,7 +997,9 @@ async def tryon_garment_v2(
                     )
                     logger.info("Local diffusion succeeded for replace mode")
                 except Exception as diff_err:
-                    logger.warning("Local diffusion failed for replace mode: %s", diff_err)
+                    logger.warning(
+                        "Local diffusion failed for replace mode: %s", diff_err
+                    )
 
         # ── All engines exhausted ───────────────────────────────────────────────
         if chosen is None:
@@ -945,7 +1015,9 @@ async def tryon_garment_v2(
                     "启用本地 CatVTON（推荐）：CATVTON_ENABLED=true 且 CATVTON_PATH 指向 CatVTON 目录"
                 )
             if not _bailian_configured():
-                hints.append("或启用百炼：DASHSCOPE_TRYON_ENABLED=true 且配置 DASHSCOPE_API_KEY")
+                hints.append(
+                    "或启用百炼：DASHSCOPE_TRYON_ENABLED=true 且配置 DASHSCOPE_API_KEY"
+                )
             elif upstream_for_diag is not None:
                 msg = str(upstream_for_diag.get("message") or "").strip()
                 upstream_meta = (
@@ -956,10 +1028,17 @@ async def tryon_garment_v2(
                 reason = str(upstream_meta.get("reason") or "").strip()
                 specific_hint = str(upstream_meta.get("specific_hint") or "").strip()
                 upstream_status = str(upstream_for_diag.get("status") or "").lower()
-                if upstream_status == "success" and upstream_for_diag.get("result_image") is None:
-                    hints.append(f"百炼返回成功但缺少结果图（specific_hint: {specific_hint}）")
+                if (
+                    upstream_status == "success"
+                    and upstream_for_diag.get("result_image") is None
+                ):
+                    hints.append(
+                        f"百炼返回成功但缺少结果图（specific_hint: {specific_hint}）"
+                    )
                 elif reason == "dashscope_missing":
-                    hints.append("百炼失败：dashscope 包未安装，请运行 pip install dashscope")
+                    hints.append(
+                        "百炼失败：dashscope 包未安装，请运行 pip install dashscope"
+                    )
                 elif specific_hint:
                     hints.append(f"百炼失败：{specific_hint}（{msg}）")
                 elif msg:
@@ -976,7 +1055,9 @@ async def tryon_garment_v2(
                     "specific_hint": specific_hint,
                     "code": str(upstream_meta.get("code") or "").strip(),
                     "status_code": upstream_meta.get("status_code"),
-                    "exception_message": str(upstream_meta.get("exception_message") or "").strip(),
+                    "exception_message": str(
+                        upstream_meta.get("exception_message") or ""
+                    ).strip(),
                     "model": str(upstream_meta.get("model") or "").strip(),
                     "function": str(upstream_meta.get("function") or "").strip(),
                 }
@@ -994,7 +1075,9 @@ async def tryon_garment_v2(
                     "error_code": "TRYON_V2_REPLACE_UPSTREAM_UNAVAILABLE",
                     "retryable": True,
                     "action_hint": (
-                        "；".join(hints) if hints else "所有试衣引擎均不可用，请检查配置"
+                        "；".join(hints)
+                        if hints
+                        else "所有试衣引擎均不可用，请检查配置"
                     ),
                     "qc_scores": {},
                     "replace_debug": {
@@ -1027,7 +1110,10 @@ async def tryon_garment_v2(
 
         replace_qc_scores: dict[str, float] = {}
         try:
-            from app.services.tryon_v2.qc import _boundary_artifact_score, _identity_preserve_score
+            from app.services.tryon_v2.qc import (
+                _boundary_artifact_score,
+                _identity_preserve_score,
+            )
 
             result_img = (chosen or {}).get("result_image")
             if result_img is not None:
@@ -1042,7 +1128,9 @@ async def tryon_garment_v2(
 
         upstream_meta = (chosen or {}).get("metadata") or {}
         if isinstance(upstream_meta, dict):
-            engine_name = upstream_meta.get("engine") or upstream_meta.get("model") or "unknown"
+            engine_name = (
+                upstream_meta.get("engine") or upstream_meta.get("model") or "unknown"
+            )
         else:
             engine_name = "unknown"
 
@@ -1159,7 +1247,9 @@ async def tryon_garment_v2(
                         )
 
                         arr_check = np.array(original_garment_image.convert("RGB"))
-                        hsv_check = cv2.cvtColor(arr_check, cv2.COLOR_RGB2HSV).astype(np.float32)
+                        hsv_check = cv2.cvtColor(arr_check, cv2.COLOR_RGB2HSV).astype(
+                            np.float32
+                        )
                         sat_check = hsv_check[:, :, 1]
                         v_check = hsv_check[:, :, 2]
 
@@ -1180,7 +1270,9 @@ async def tryon_garment_v2(
                             sat_max = float(fg_sat_check.max()) / 255.0
                             has_color = sat_max > 0.15
                             v_fg = v_check[fg_mask_check]
-                            bright_mean = float(v_fg.mean()) / 255.0 if len(v_fg) > 0 else 0.0
+                            bright_mean = (
+                                float(v_fg.mean()) / 255.0 if len(v_fg) > 0 else 0.0
+                            )
                             is_white_garment = bright_mean > 0.78 and sat_mean < 0.08
                         else:
                             sat_mean = 0.0
@@ -1193,7 +1285,7 @@ async def tryon_garment_v2(
                             logger.info(
                                 "Realistic mode: skipping color fidelity "
                                 "(is_white_garment=True, bright_mean=%.3f, sat_mean=%.3f, "
-                                "white garment looks correct from CatVTON — skip to preserve purity)",
+                                "white garment looks correct from CatVTON - preserve purity)",
                                 bright_mean,
                                 sat_mean,
                             )
@@ -1201,20 +1293,19 @@ async def tryon_garment_v2(
                             # 高对比度图案（格子/条纹/彩色印花）使用空间感知保真
                             # 均匀 LAB 混合会把蓝白格子变成褐色——必须用像素级替换
                             # 使用 max 饱和度判断是否需要 spatial 保真
-                            if sat_max > 0.25 and sat_mean >= 0.18:
+                            if sat_max > 0.25 and sat_mean >= 0.10:
+                                # 图案衣服：直接使用 CatVTON 原生输出
+                                # 任何 color fidelity 都会用平面像素覆盖 CatVTON 的 3D 形变
                                 logger.info(
-                                    "Realistic mode: applying SPATIAL color fidelity "
-                                    "(sat_mean=%.3f, sat_max=%.3f, pattern detected)",
+                                    "Realistic mode: CatVTON native output for patterned garment "
+                                    "(sat_mean=%.3f, sat_max=%.3f) — no color fidelity",
                                     sat_mean,
                                     sat_max,
                                 )
-                                result_img, cf_meta = catvton_color_fidelity_spatial(
-                                    catvton_result=result_img,
-                                    original_garment=original_garment_image,
-                                    person_image=person_image,
-                                    garment_category=gc or "top",
-                                    fidelity_strength=fidelity_strength,
-                                )
+                                cf_meta = {
+                                    "engine": "catvton_native",
+                                    "reason": "pattern_preserves_catvton_deformation",
+                                }
                             elif sat_mean >= 0.05:
                                 logger.info(
                                     "Realistic mode: applying uniform color fidelity "
@@ -1249,11 +1340,13 @@ async def tryon_garment_v2(
                             )
                     except Exception as cf_err:
                         logger.warning(
-                            "Realistic mode: color fidelity failed (continuing): %s", cf_err
+                            "Realistic mode: color fidelity failed (continuing): %s",
+                            cf_err,
                         )
                 else:
                     logger.info(
-                        "Realistic mode: color fidelity disabled " "(enable=%s, strength=%.2f)",
+                        "Realistic mode: color fidelity disabled "
+                        "(enable=%s, strength=%.2f)",
                         enable_color_fidelity,
                         fidelity_strength,
                     )
@@ -1287,7 +1380,8 @@ async def tryon_garment_v2(
                     logger.info("Realistic mode: CatVTON-safe post-processing applied")
                 except Exception as pp_err:
                     logger.warning(
-                        "Realistic mode: post-processing failed (continuing): %s", pp_err
+                        "Realistic mode: post-processing failed (continuing): %s",
+                        pp_err,
                     )
 
                 result = {
@@ -1309,7 +1403,9 @@ async def tryon_garment_v2(
                         "postprocess_applied": True,
                     },
                 }
-                logger.info(f"Realistic mode: CatVTON succeeded on attempt {attempt + 1}")
+                logger.info(
+                    f"Realistic mode: CatVTON succeeded on attempt {attempt + 1}"
+                )
                 break
 
             # 记录失败原因用于诊断
@@ -1348,8 +1444,12 @@ async def tryon_garment_v2(
                 upstream.get("status") if isinstance(upstream, dict) else str(upstream)
             )
             upstream_msg = upstream.get("message") if isinstance(upstream, dict) else ""
-            upstream_meta = upstream.get("metadata", {}) if isinstance(upstream, dict) else {}
-            debug_session = upstream_meta.get("debug_session_dir") or debug_session_dir or ""
+            upstream_meta = (
+                upstream.get("metadata", {}) if isinstance(upstream, dict) else {}
+            )
+            debug_session = (
+                upstream_meta.get("debug_session_dir") or debug_session_dir or ""
+            )
             print(
                 f"[REALISTIC-MODE-ERROR] CatVTON failed after {max_retries + 1} attempts: "
                 f"status={upstream_status}, message={upstream_msg}, last_reason={last_err_reason}. "  # noqa: E501
@@ -1455,7 +1555,9 @@ async def tryon_garment_v2(
                         )
 
                         arr_check = np.array(original_garment_image.convert("RGB"))
-                        hsv_check = cv2.cvtColor(arr_check, cv2.COLOR_RGB2HSV).astype(np.float32)
+                        hsv_check = cv2.cvtColor(arr_check, cv2.COLOR_RGB2HSV).astype(
+                            np.float32
+                        )
                         sat_check = hsv_check[:, :, 1]
                         v_check = hsv_check[:, :, 2]
 
@@ -1471,7 +1573,9 @@ async def tryon_garment_v2(
                             sat_max = float(fg_sat_check.max()) / 255.0
                             has_color = sat_max > 0.15
                             v_fg = v_check[fg_mask_check]
-                            bright_mean = float(v_fg.mean()) / 255.0 if len(v_fg) > 0 else 0.0
+                            bright_mean = (
+                                float(v_fg.mean()) / 255.0 if len(v_fg) > 0 else 0.0
+                            )
                             is_white_garment = bright_mean > 0.78 and sat_mean < 0.08
                         else:
                             sat_mean = 0.0
@@ -1484,32 +1588,28 @@ async def tryon_garment_v2(
                             logger.info(
                                 "Professional mode: skipping color fidelity "
                                 "(is_white_garment=True, bright_mean=%.3f, sat_mean=%.3f, "
-                                "white garment looks correct from CatVTON — skip to preserve purity)",
+                                "white garment looks correct from CatVTON - preserve purity)",
                                 bright_mean,
                                 sat_mean,
                             )
                         elif sat_mean > color_threshold or has_color:
-                            # 高对比度图案（格子/条纹/彩色印花）使用空间感知保真
-                            if sat_max > 0.25 and sat_mean >= 0.18:
+                            # 图案衣服：跳过 color fidelity，保留 CatVTON 输出
+                            if sat_max > 0.25 and sat_mean >= 0.10:
                                 logger.info(
-                                    "Professional mode: applying SPATIAL color fidelity "
-                                    "(sat_mean=%.3f, sat_max=%.3f, pattern detected)",
+                                    "Professional mode: SKIPPING color fidelity for patterned garment "
+                                    "(sat_mean=%.3f, sat_max=%.3f) - CatVTON output preserved",
                                     sat_mean,
                                     sat_max,
                                 )
-                                result_img, cf_meta = catvton_color_fidelity_spatial(
-                                    catvton_result=result_img,
-                                    original_garment=original_garment_image,
-                                    person_image=person_image,
-                                    garment_category=gc or "top",
-                                    fidelity_strength=fidelity_strength,
-                                )
+                                cf_meta = {
+                                    "engine": "catvton_native",
+                                    "reason": "pattern_skip_preserves_catvton_quality",
+                                }
                             elif sat_mean >= 0.05:
                                 logger.info(
                                     "Professional mode: applying uniform color fidelity "
-                                    "(sat_mean=%.3f, sat_max=%.3f)",
+                                    "(saturation=%.3f, solid garment)",
                                     sat_mean,
-                                    sat_max,
                                 )
                                 result_img, cf_meta = catvton_color_fidelity_enhance(
                                     catvton_result=result_img,
@@ -1544,7 +1644,8 @@ async def tryon_garment_v2(
                         )
                 else:
                     logger.info(
-                        "Professional mode: color fidelity disabled " "(enable=%s, strength=%.2f)",
+                        "Professional mode: color fidelity disabled "
+                        "(enable=%s, strength=%.2f)",
                         enable_color_fidelity,
                         fidelity_strength,
                     )
@@ -1566,7 +1667,9 @@ async def tryon_garment_v2(
                         "pattern_score": round(pattern_score, 3),
                     },
                 }
-                logger.info(f"Professional mode: CatVTON succeeded on attempt {attempt + 1}")
+                logger.info(
+                    f"Professional mode: CatVTON succeeded on attempt {attempt + 1}"
+                )
                 break
 
             # 记录失败原因用于诊断
@@ -1605,8 +1708,12 @@ async def tryon_garment_v2(
                 upstream.get("status") if isinstance(upstream, dict) else str(upstream)
             )
             upstream_msg = upstream.get("message") if isinstance(upstream, dict) else ""
-            upstream_meta = upstream.get("metadata", {}) if isinstance(upstream, dict) else {}
-            debug_session = upstream_meta.get("debug_session_dir") or debug_session_dir or ""
+            upstream_meta = (
+                upstream.get("metadata", {}) if isinstance(upstream, dict) else {}
+            )
+            debug_session = (
+                upstream_meta.get("debug_session_dir") or debug_session_dir or ""
+            )
             print(
                 f"[PROFESSIONAL-MODE-ERROR] CatVTON failed after {max_retries + 1} attempts: "
                 f"status={upstream_status}, message={upstream_msg}, last_reason={last_err_reason}. "  # noqa: E501
@@ -1726,7 +1833,9 @@ async def tryon_garment_v2(
                         )
 
                         arr_check = np.array(original_garment_image.convert("RGB"))
-                        hsv_check = cv2.cvtColor(arr_check, cv2.COLOR_RGB2HSV).astype(np.float32)
+                        hsv_check = cv2.cvtColor(arr_check, cv2.COLOR_RGB2HSV).astype(
+                            np.float32
+                        )
                         sat_check = hsv_check[:, :, 1]
                         v_check = hsv_check[:, :, 2]
 
@@ -1741,7 +1850,9 @@ async def tryon_garment_v2(
                             sat_max = float(fg_sat_check.max()) / 255.0
                             has_color = sat_max > 0.15
                             v_fg = v_check[fg_mask_check]
-                            bright_mean = float(v_fg.mean()) / 255.0 if len(v_fg) > 0 else 0.0
+                            bright_mean = (
+                                float(v_fg.mean()) / 255.0 if len(v_fg) > 0 else 0.0
+                            )
                             is_white_garment = bright_mean > 0.78 and sat_mean < 0.08
                         else:
                             sat_mean = 0.0
@@ -1754,26 +1865,23 @@ async def tryon_garment_v2(
                             logger.info(
                                 "Realistic_v2: skipping color fidelity "
                                 "(is_white_garment=True, bright_mean=%.3f, sat_mean=%.3f, "
-                                "white garment looks correct from CatVTON — skip to preserve purity)",
+                                "white garment looks correct from CatVTON - preserve purity)",
                                 bright_mean,
                                 sat_mean,
                             )
                         elif sat_mean > color_threshold or has_color:
-                            # 高对比度图案使用空间感知保真
-                            if sat_max > 0.25 and sat_mean >= 0.18:
+                            # 图案衣服：跳过 color fidelity，保留 CatVTON 输出
+                            if sat_max > 0.25 and sat_mean >= 0.10:
                                 logger.info(
-                                    "Realistic_v2: applying SPATIAL color fidelity "
-                                    "(sat_mean=%.3f, sat_max=%.3f)",
+                                    "Realistic_v2: SKIPPING color fidelity for patterned garment "
+                                    "(sat_mean=%.3f, sat_max=%.3f) — CatVTON output preserved",
                                     sat_mean,
                                     sat_max,
                                 )
-                                result_img, cf_meta = catvton_color_fidelity_spatial(
-                                    catvton_result=result_img,
-                                    original_garment=original_garment_image,
-                                    person_image=person_image,
-                                    garment_category=gc or "top",
-                                    fidelity_strength=fidelity_strength,
-                                )
+                                cf_meta = {
+                                    "engine": "catvton_native",
+                                    "reason": "pattern_skip_preserves_catvton_quality",
+                                }
                             elif sat_mean >= 0.05:
                                 logger.info(
                                     "Realistic_v2: applying uniform color fidelity "
@@ -1807,7 +1915,8 @@ async def tryon_garment_v2(
                             )
                     except Exception as cf_err:
                         logger.warning(
-                            "Realistic_v2: color fidelity failed (continuing): %s", cf_err
+                            "Realistic_v2: color fidelity failed (continuing): %s",
+                            cf_err,
                         )
 
                 if scores.passed:
@@ -1861,7 +1970,9 @@ async def tryon_garment_v2(
                 else ""  # noqa: E501
             )
             if reason in ("not_configured", "path_not_found", "catvton_not_available"):
-                logger.error(f"Realistic_v2: permanent CatVTON error ({reason}), not retrying")
+                logger.error(
+                    f"Realistic_v2: permanent CatVTON error ({reason}), not retrying"
+                )
                 break
             if isinstance(upstream, dict) and upstream.get("status") == "timeout":
                 logger.error("Realistic_v2: CatVTON timeout, not retrying")
@@ -1872,8 +1983,12 @@ async def tryon_garment_v2(
                 upstream.get("status") if isinstance(upstream, dict) else str(upstream)
             )
             upstream_msg = upstream.get("message") if isinstance(upstream, dict) else ""
-            upstream_meta = upstream.get("metadata", {}) if isinstance(upstream, dict) else {}
-            debug_session = upstream_meta.get("debug_session_dir") or debug_session_dir or ""
+            upstream_meta = (
+                upstream.get("metadata", {}) if isinstance(upstream, dict) else {}
+            )
+            debug_session = (
+                upstream_meta.get("debug_session_dir") or debug_session_dir or ""
+            )
 
         if result_img_best is None:
             print(
@@ -1900,7 +2015,9 @@ async def tryon_garment_v2(
                 "method": "deep_learning + quality_check + auto_retry",
                 "attempts": qc_scores_best.get("attempt", 1),
                 "mode": "realistic_v2",
-                "color_fidelity_applied": qc_scores_best.get("color_fidelity_applied", False),
+                "color_fidelity_applied": qc_scores_best.get(
+                    "color_fidelity_applied", False
+                ),
             },
         }
         logger.info(
@@ -2010,11 +2127,19 @@ async def tryon_garment_v2(
             else:
                 # All retries exhausted
                 upstream_status = (
-                    upstream.get("status") if isinstance(upstream, dict) else str(upstream)
+                    upstream.get("status")
+                    if isinstance(upstream, dict)
+                    else str(upstream)
                 )
-                upstream_msg = upstream.get("message") if isinstance(upstream, dict) else ""
-                upstream_meta = upstream.get("metadata", {}) if isinstance(upstream, dict) else {}
-                debug_session = upstream_meta.get("debug_session_dir") or debug_session_dir or ""
+                upstream_msg = (
+                    upstream.get("message") if isinstance(upstream, dict) else ""
+                )
+                upstream_meta = (
+                    upstream.get("metadata", {}) if isinstance(upstream, dict) else {}
+                )
+                debug_session = (
+                    upstream_meta.get("debug_session_dir") or debug_session_dir or ""
+                )
                 logger.error(
                     f"Hybrid mode: CatVTON failed after {max_retries + 1} attempts: "
                     f"status={upstream_status}, message={upstream_msg}, debug_dir={debug_session}"
@@ -2189,7 +2314,9 @@ async def tryon_garment_v2(
                     f"Post-processing applied (non-CatVTON): strength={postprocess_strength}"
                 )
         except Exception as postprocess_err:
-            logger.warning("Post-processing failed (continuing without): %s", postprocess_err)
+            logger.warning(
+                "Post-processing failed (continuing without): %s", postprocess_err
+            )
         # 后处理失败不影响主流程，继续使用原始结果
 
     import hashlib
@@ -2231,7 +2358,9 @@ async def tryon_pants_v2(
     garment_file: UploadFile = File(
         ..., alias="garment_file", description="Bottom garment product photo"
     ),
-    person_file: UploadFile = File(..., alias="person_file", description="Person full-body photo"),
+    person_file: UploadFile = File(
+        ..., alias="person_file", description="Person full-body photo"
+    ),
     garment_category: str = Form(
         "bottom", description="Expected bottom category, e.g. bottom/下装"
     ),
@@ -2264,27 +2393,35 @@ async def tryon_v2_validate_input(
     garment_file: UploadFile = File(
         ..., alias="garment_file", description="Garment product photo"
     ),  # noqa: E501
-    person_file: UploadFile = File(..., alias="person_file", description="Person full-body photo"),
+    person_file: UploadFile = File(
+        ..., alias="person_file", description="Person full-body photo"
+    ),
     garment_image_url: str | None = Form(None),
     garment_category: str = Form(
         "auto", description="Expected category: top|bottom|skirt|outfit|auto"
     ),
     garment_file_2: UploadFile | None = File(None, alias="garment_file_2"),
     garment_image_url_2: str | None = Form(None),
-    garment_category_2: str = Form("bottom", description="Second garment category for outfit"),
+    garment_category_2: str = Form(
+        "bottom", description="Second garment category for outfit"
+    ),
     mode: str = Form("strict", description="strict|balanced"),
     current_user: User = Depends(get_current_user),
 ):
     _ensure_tryon_v2_enabled()
     request_start = time.time()
 
-    if not garment_file.content_type or not garment_file.content_type.startswith("image/"):
+    if not garment_file.content_type or not garment_file.content_type.startswith(
+        "image/"
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="garment_file must be an image",
         )
 
-    if not person_file.content_type or not person_file.content_type.startswith("image/"):
+    if not person_file.content_type or not person_file.content_type.startswith(
+        "image/"
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="person_file must be an image",
@@ -2323,7 +2460,9 @@ async def tryon_v2_validate_input(
     garment_image = Image.open(BytesIO(garment_bytes)).convert("RGB")
     person_image = Image.open(BytesIO(person_bytes)).convert("RGB")
     garment_image_2 = (
-        Image.open(BytesIO(garment2_bytes)).convert("RGB") if len(garment2_bytes) else None
+        Image.open(BytesIO(garment2_bytes)).convert("RGB")
+        if len(garment2_bytes)
+        else None
     )
 
     def _load_uploads_url(url: str) -> Image.Image | None:
@@ -2447,7 +2586,9 @@ async def tryon_v2_validate_input(
         and "outfit" in garment_category.lower()
         and garment_image_2 is not None
     ):
-        gate2_confidence = pre_meta.get("auto_preprocess_2", {}).get("recognized_confidence")
+        gate2_confidence = pre_meta.get("auto_preprocess_2", {}).get(
+            "recognized_confidence"
+        )
         gate2 = evaluate_input_gate(
             person_image=person_image,
             garment_image=garment_image_2,
@@ -2513,7 +2654,9 @@ async def tryon_v2_capabilities(
         ],
         thresholds={
             **_v2_thresholds(strict_mode=True),
-            "qc_threshold": float(getattr(settings, "TRYON_V2_QC_THRESHOLD", 0.6) or 0.6),
+            "qc_threshold": float(
+                getattr(settings, "TRYON_V2_QC_THRESHOLD", 0.6) or 0.6
+            ),
         },
     )
 
@@ -2538,7 +2681,9 @@ async def tryon_v2_model_status(
     engines["bailian"] = {
         "configured": _bailian_configured(),
         "enabled": bool(getattr(settings, "DASHSCOPE_TRYON_ENABLED", False)),
-        "model_default": getattr(settings, "DASHSCOPE_TRYON_MODEL", "wanx2.1-imageedit"),
+        "model_default": getattr(
+            settings, "DASHSCOPE_TRYON_MODEL", "wanx2.1-imageedit"
+        ),
     }
 
     # Remote VTON
@@ -2546,7 +2691,9 @@ async def tryon_v2_model_status(
     engines["remote_vton"] = {
         "configured": _remote_url_configured(),
         "url": remote_url if remote_url else None,
-        "timeout_s": int(getattr(settings, "VTON_INFERENCE_TIMEOUT_SECONDS", 2400) or 2400),
+        "timeout_s": int(
+            getattr(settings, "VTON_INFERENCE_TIMEOUT_SECONDS", 2400) or 2400
+        ),
     }
 
     # Local CatVTON
@@ -2567,7 +2714,9 @@ async def tryon_v2_model_status(
     # Try-on v2 status
     engines["tryon_v2"] = {
         "enabled": bool(getattr(settings, "TRYON_V2_ENABLED", True)),
-        "strict_identity_default": bool(getattr(settings, "TRYON_V2_STRICT_IDENTITY", True)),
+        "strict_identity_default": bool(
+            getattr(settings, "TRYON_V2_STRICT_IDENTITY", True)
+        ),
         "auto_preprocess": bool(getattr(settings, "TRYON_V2_AUTO_PREPROCESS", True)),
         "replace_allow_local_diffusion": bool(
             getattr(settings, "TRYON_V2_REPLACE_ALLOW_LOCAL_DIFFUSION", False)

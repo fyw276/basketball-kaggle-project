@@ -10,9 +10,14 @@
  - `enable_1m_context.sh`：macOS/Linux 脚本，修改 `~/.claude/settings.json` 为带 `[1m]` 的模型 ID 并尝试打开新终端窗口
 
 使用方法：
-1. 复制 `settings.json.example` 到你的用户目录下的 `.claude/settings.json`，并替换 `BASE_URL` 与 `MIMO_API_KEY` 占位符。
+1. 将 `settings.json.example` 复制到 `%USERPROFILE%\.claude\settings.json`，并把 `YOUR_MIMO_API_KEY` 替换成你的真实密钥。
 2. 复制 `claude.json.example` 到用户目录下 `~/.claude.json`。
 3. 关闭并重开终端，进入项目目录运行 `claude`，使用 `/status` 与 `/context` 校验配置。
+
+Windows 最终版位置：
+- 主配置文件放到 `%USERPROFILE%\.claude\settings.json`
+- 这个仓库里的示例文件只用于复制，不会被 Claude Code 自动读取
+- 如果你的服务端要求 1M 上下文，模型名必须保留 `[1m]` 后缀，例如 `mimo-v2.5-pro[1m]`
 
 启用 1M 长上下文：
 - 在已创建的 `~/.claude/settings.json` 基础上，运行下面脚本将模型 ID 更新为带 `[1m]` 后缀并尝试打开新终端（Windows/Linux/macOS）：

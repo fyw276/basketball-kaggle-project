@@ -24,6 +24,85 @@ def _clamp_int(v: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, int(v)))
 
 
+def _detect_face_box_seam(
+    result: Image.Image,
+    person_image: Image.Image,
+) -> tuple[int, int, int, int] | None:
+    """Detect face bounding box for seam protection.
+
+    Strategy:
+      1. Haar cascade on ORIGINAL person image (clear, reliable).
+         Scale detected bbox to result coordinates proportionally.
+      2. Fallback: fixed ratio estimate (upper 15% of image, centered 30%-70%).
+
+    Returns (x, y, w, h) in result pixel coordinates, or None if undetected.
+    """
+    try:
+        from app.services.cascade_manager import load_cascade
+
+        cascade = load_cascade("haarcascade_frontalface_default.xml")
+        if cascade is None or cascade.empty():
+            logger.warning(
+                "remove_seam_lines: Haar cascade unavailable, "
+                "face protection disabled"
+            )
+            return None
+
+        # ── Priority 1: Detect on ORIGINAL person image ─────────────────────
+        orig_arr = np.asarray(person_image.convert("RGB"))
+        orig_h, orig_w = orig_arr.shape[:2]
+
+        if orig_h >= 64 and orig_w >= 64:
+            orig_gray = cv2.cvtColor(orig_arr, cv2.COLOR_RGB2GRAY)
+            orig_gray_eq = cv2.equalizeHist(orig_gray)
+
+            orig_faces = cascade.detectMultiScale(
+                orig_gray_eq,
+                scaleFactor=1.1,
+                minNeighbors=4,
+                minSize=(int(orig_w * 0.06), int(orig_h * 0.06)),
+                maxSize=(int(orig_w * 0.60), int(orig_h * 0.60)),
+            )
+
+            if orig_faces is not None and len(orig_faces) > 0:
+                orig_face_list = sorted(
+                    orig_faces, key=lambda f: f[2] * f[3], reverse=True
+                )
+                ofx, ofy, ofw, ofh = [int(v) for v in orig_face_list[0]]
+
+                # Scale from original person coords → result coords
+                res_w, res_h = result.size
+                scale_x = res_w / float(orig_w)
+                scale_y = res_h / float(orig_h)
+                fx = _clamp_int(int(ofx * scale_x), 0, res_w - 1)
+                fy = _clamp_int(int(ofy * scale_y), 0, res_h - 1)
+                fw = _clamp_int(int(ofw * scale_x), 4, res_w)
+                fh = _clamp_int(int(ofh * scale_y), 4, res_h)
+
+                logger.info(
+                    "remove_seam_lines: face detected on original person "
+                    "([%d,%d,%d,%d] at %dx%d) -> scaled to result([%d,%d,%d,%d] at %dx%d)",
+                    ofx,
+                    ofy,
+                    ofw,
+                    ofh,
+                    orig_w,
+                    orig_h,
+                    fx,
+                    fy,
+                    fw,
+                    fh,
+                    res_w,
+                    res_h,
+                )
+                return (fx, fy, fw, fh)
+
+    except Exception as e:
+        logger.debug("remove_seam_lines: face detection failed (%s)", e)
+
+    return None
+
+
 # ============================================================
 # 核心算法 1: 安全边缘融合（只在边界处融合，不碰衣服主体）
 # ============================================================
@@ -70,9 +149,9 @@ def safe_edge_blend(
 
         # 应用融合
         for c in range(3):
-            result_arr[:, :, c] = result_arr[:, :, c] * (1 - edge_mask * blend_weight) + person_arr[
-                :, :, c
-            ] * (edge_mask * blend_weight)
+            result_arr[:, :, c] = result_arr[:, :, c] * (
+                1 - edge_mask * blend_weight
+            ) + person_arr[:, :, c] * (edge_mask * blend_weight)
     else:
         # 没有mask：对整体进行非常轻微的边缘平滑
         # 使用 bilateral filter 保持边缘同时平滑噪点
@@ -114,13 +193,15 @@ def smart_edge_blend(
 
     # 膨胀以覆盖整个接缝区域
     kernel = np.ones((3, 3), np.uint8)
-    seam_mask = cv2.dilate(seam_mask.astype(np.uint8), kernel, iterations=2).astype(np.float32)
+    seam_mask = cv2.dilate(seam_mask.astype(np.uint8), kernel, iterations=2).astype(
+        np.float32
+    )
 
     # 在接缝区域进行轻微融合
     for c in range(3):
-        result_arr[:, :, c] = result_arr[:, :, c] * (1 - seam_mask * 0.3) + smoothed[:, :, c] * (
-            seam_mask * 0.3
-        )
+        result_arr[:, :, c] = result_arr[:, :, c] * (1 - seam_mask * 0.3) + smoothed[
+            :, :, c
+        ] * (seam_mask * 0.3)
 
     result = np.clip(result_arr, 0, 255).astype(np.uint8)
     return Image.fromarray(result, mode="RGB")
@@ -171,7 +252,9 @@ def match_colors_to_scene(
 
         # 只在衣物区域应用调整
         for c in range(3):
-            result_arr[y0:y1, x0:x1, c] = np.clip(result_arr[y0:y1, x0:x1, c] * adjustment, 0, 255)
+            result_arr[y0:y1, x0:x1, c] = np.clip(
+                result_arr[y0:y1, x0:x1, c] * adjustment, 0, 255
+            )
 
     return Image.fromarray(np.clip(result_arr, 0, 255).astype(np.uint8), mode="RGB")
 
@@ -243,10 +326,11 @@ def remove_seam_lines(
     result: Image.Image,
     person: Image.Image,
     garment_mask: np.ndarray | None = None,
+    person_image: Image.Image | None = None,
 ) -> Image.Image:
     """
-    消除拼接痕迹 - 只处理明显的接缝线，不触碰衣物主体。
-    已修复：不会误伤衣物区域。
+    消除拼接痕迹 - 只处理明显的接缝线，不触碰衣物主体和面部。
+    已修复：不会误伤衣物区域和面部区域。
     """
     result_arr = np.array(result.convert("RGB"), dtype=np.float32)
     person_arr = np.array(person.convert("RGB"), dtype=np.float32)
@@ -275,10 +359,35 @@ def remove_seam_lines(
         if area < w * h * 0.01:  # 只处理小于1%图像面积的接缝
             cv2.drawContours(valid_seams, [contour], -1, 255, -1)
 
+    # ── 面部保护：将脸部区域从 valid_seams 中剔除 ─────────────────────────
+    # CatVTON 扩散模型生成的脸部与原图有细微差异，会被误判为"接缝"，
+    # inpaint 填充后导致脸部模糊。将脸部区域从 mask 中剔除以保护。
+    _face_source = person_image or person
+    face_box = _detect_face_box_seam(result, _face_source)
+    if face_box is not None:
+        fx, fy, fw, fh = face_box
+        # 向下延伸 30% 覆盖下巴→颈部过渡
+        extend = max(2, int(fh * 0.30))
+        protect_y0 = max(0, fy)
+        protect_y1 = min(h, fy + fh + extend)
+        protect_x0 = max(0, fx - int(fw * 0.10))
+        protect_x1 = min(w, fx + fw + int(fw * 0.10))
+        valid_seams[protect_y0:protect_y1, protect_x0:protect_x1] = 0
+        logger.info(
+            "remove_seam_lines: face protected [%d,%d,%d,%d]",
+            protect_x0,
+            protect_y0,
+            protect_x1,
+            protect_y1,
+        )
+
     # 使用 inpaint 修复接缝
     if valid_seams.sum() > 100:  # 确保有足够的接缝需要修复
         result_fixed = cv2.inpaint(
-            result_arr.astype(np.uint8), valid_seams, inpaintRadius=2, flags=cv2.INPAINT_TELEA
+            result_arr.astype(np.uint8),
+            valid_seams,
+            inpaintRadius=2,
+            flags=cv2.INPAINT_TELEA,
         )
         return Image.fromarray(result_fixed, mode="RGB")
 
@@ -335,8 +444,8 @@ def enhance_tryon_result(
     # Step 1: 保边去噪（不改变衣物主体）
     result = denoise_while_preserving_edges(result, strength=params["denoise"])
 
-    # Step 2: 消除接缝线（只处理细线，不碰衣物主体）
-    result = remove_seam_lines(result, person, garment_mask)
+    # Step 2: 消除接缝线（只处理细线，不碰衣物主体和面部）
+    result = remove_seam_lines(result, person, garment_mask, person_image=person)
 
     # Step 3: 安全边缘融合（只在真正需要融合的边界处）
     result = safe_edge_blend(result, person, garment_mask, blend_radius=5)
@@ -368,8 +477,8 @@ def catvton_safe_enhance(
     # Step 1: 保边去噪
     result = denoise_while_preserving_edges(result, strength=1)
 
-    # Step 2: 消除接缝线
-    result = remove_seam_lines(result, person, garment_mask)
+    # Step 2: 消除接缝线（传入 person_image 用于面部保护）
+    result = remove_seam_lines(result, person, garment_mask, person_image=person)
 
     # Step 3: 轻度全局锐化
     result_arr = np.array(result.convert("RGB"), dtype=np.float32)

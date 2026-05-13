@@ -7,19 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **Modular Try-on Services**: Extracted pre-processing and parsing tools into independent modules (`densepose_service`, `human_parsing`, `sam_mask`, `person_crop`).
-- **`realistic_v2` mode**: Added tentative variation of realistic mode for testing alternate rendering without deep-breaking existing API format.
-- **Service Modules Guide**: Newly created `SERVICE_MODULES_GUIDE.md` added.
-
-### Changed
-
-- **Realistic mode Alpha Overlay Disabled**: Turned off the hard-coded `pattern_score` alpha overlay mechanism during `realistic` mode rendering, to stop the "double garment/sticker" phenomenon, fully relying on CatVTON's inpainting capabilities.
-
 ### Fixed
 
-- **Try-on V2 Preprocessing**: Fixed edge cases in garment structure logic and CatVTON client to adapt to strictly-typed inputs.
+- **Docs: try-on v2 mode count**: Fixed README, VTON_INTEGRATION.md, SERVICE_MODULES_GUIDE.md, TRYON_TECH_BLUEPRINT_AB.md to reflect **7 modes** (not 6), adding `realistic_v2` mode
+- **Docs: replace engine priority**: Corrected replace mode engine priority in README, VTON_INTEGRATION.md, SERVICE_MODULES_GUIDE.md, TRYON_TECH_BLUEPRINT_AB.md to **warp first** (not CatVTON first) — default `warp,bailian,remote,catvton,diffusion`; warp runs before AI engines to provide 100% garment pixel fidelity; `TRYON_V2_REPLACE_SKIP_WARP=true` skips warp
+- **Backend: similarity analysis**: Fixed `SimilarityDecision` attribute error (`target_decision.group` not `.category`), added logger import, added `image_url` validation with path-derivation fallback
+- **Backend: try-on v2 quality**: Fixed `cv2` import scope to prevent `UnboundLocalError`, improved garment preprocessing (CLOSE+dilate morphology, auto bbox expansion for small masks), fixed postprocess face protection cascade, fixed `haar` cascade path for Windows Chinese usernames
+- **Flutter: similarity screen**: Fixed image URL construction to strip `/api/v1` suffix before prepending to relative upload URLs
 
 ## [1.6.0] - 2026-05-02
 
@@ -35,8 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Try-on v2 modes**: Six modes now available: `strict` (default, pipeline A geometric warp + QC gate), `balanced` (looser QC), `replace` (AI generative with configurable engine priority), `realistic` (CatVTON deep learning), `professional` (CatVTON + postprocessing), `hybrid` (Warp + CatVTON blending)
-- **Replace mode default priority**: Changed from `[catvton,bailian,remote,warp,diffusion]` to `[warp,bailian,remote,catvton,diffusion]` — warp runs first to guarantee garment fidelity
+- **Try-on v2 modes**: Seven modes now available: `strict` (default, pipeline A geometric warp + QC gate), `balanced` (looser QC), `replace` (AI generative with configurable engine priority, warp runs first for garment fidelity), `realistic` (CatVTON deep learning + color fidelity), `realistic_v2` (CatVTON v2 + saturation-aware fidelity), `professional` (CatVTON + postprocessing), `hybrid` (Warp + CatVTON blending)
+- **Replace mode default priority**: `warp,bailian,remote,catvton,diffusion` — warp runs first to guarantee 100% garment pixel fidelity before AI enhancement; `TRYON_V2_REPLACE_SKIP_WARP=true` skips warp
 - **CatVTON subprocess runner**: Lives in `vton_inference_service/catvton_runner.py`; called by `backend/app/services/tryon_v2/catvton_engine_client.py` as subprocess to avoid dependency conflicts
 
 ### Fixed
