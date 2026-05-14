@@ -316,6 +316,27 @@ class Settings(BaseSettings):
         default=True,
         description="每次推理后强制调用 torch.cuda.empty_cache() 和 gc.collect() 释放显存",
     )
+    TRYON_V2_COLOR_FIDELITY_ENABLED: bool = Field(
+        default=True,
+        description="启用衣服颜色保真（彩色/图案衣服调用 catvton_color_fidelity_spatial）",
+    )
+    TRYON_V2_COLOR_FIDELITY_STRENGTH: float = Field(
+        default=0.75,
+        description="衣服颜色保真强度 0.0-1.0（0.75=75% 原衣服 + 25% CatVTON，适合图案衣服）",
+    )
+    CATVTON_GARMENT_RESIZE_MODE: str = Field(
+        default="letterbox",
+        description=(
+            "CatVTON 衣服预处理缩放模式："
+            "letterbox（默认，白边填充保留完整衣服，不变形）；"
+            "crop（等比裁剪，无白边但可能丢失衣服边缘；推荐高显存用户）；"
+            "fill（填满画布，不留白边但会裁切边缘）"
+        ),
+    )
+    TRYON_V2_PATTERN_DETAIL_BOOST: bool = Field(
+        default=True,
+        description="启用频率分离增强保护图案细节（unsharp mask + 高频叠加，图案衣服专用）",
+    )
 
     # Subscription & quota
     USAGE_QUOTA_ENABLED: bool = Field(default=False, description="启用后执行功能额度扣减")

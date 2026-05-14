@@ -393,7 +393,7 @@ def _make_garment_mask_rembg(
     gar_rgba = None
     segmentation_source = "none"
 
-    # ── Step 1: Try MobileSAM (Part 5 optimization) ───────────────────────────
+    # ── Step 1: Try MobileSAM with cloth-type hints (Part 5 optimization) ──
     sam_wrapper = _get_sam_wrapper()
     if sam_wrapper is not None:
         try:
@@ -408,7 +408,7 @@ def _make_garment_mask_rembg(
         except Exception as e:
             logger.debug(f"[GARMENT-MASK] MobileSAM failed ({e}), trying rembg")
 
-    # ── Step 2: Fallback to rembg ────────────────────────────────────────────
+    # ── Step 2: Fallback to rembg ──────────────────────────────────────────
     if gar_rgba is None:
         try:
             from io import BytesIO
@@ -425,7 +425,41 @@ def _make_garment_mask_rembg(
                 segmentation_source = "rembg"
         except Exception as e:
             logger.warning(f"[GARMENT-MASK] rembg segmentation failed: {e}")
-            return None
+            gar_rgba = None
+
+    # ── Step 3: Quality check — rembg/MobileSAM may fail on white-on-white ─
+    if gar_rgba is not None:
+        gar_a = np.asarray(gar_rgba.split()[3], dtype=np.uint8)
+        if gar_a.sum() < 100 or gar_a.mean() / 255.0 < 0.02:
+            # 白底白衣服：rembg/MobileSAM 分割失效，用衣服 bbox 作为 fallback
+            logger.warning(
+                f"[GARMENT-MASK] Low mask quality (mean=%.3f) — "
+                "using bbox-based mask for white-on-white garment",
+                gar_a.mean() / 255.0,
+            )
+            gar_rgba = None
+
+    # ── Step 4: Bbox fallback for white-on-white garments ─────────────────
+    if gar_rgba is None:
+        # 用衣服紧边界 bbox 作为 mask（安全 fallback，不依赖分割质量）
+        # Note: cv2 is already imported globally at module level
+
+        arr = np.array(garment_img.convert("RGB"), dtype=np.uint8)
+        gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+        # Otsu 自动阈值，在白底衣服上产生合理分割
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        # 形态学闭运算：填补小孔洞
+        kernel = np.ones((5, 5), np.uint8)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+        # 取最大连通域（衣服主体）
+        nLabels, labels, stats, centroids = cv2.connectedComponentsWithStats(thresh, connectivity=8)
+        if nLabels > 1:
+            largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+            bbox_mask = (labels == largest_label).astype(np.uint8) * 255
+            gar_rgba = Image.new("RGBA", garment_img.size, (255, 255, 255, 255))
+            gar_rgba.putalpha(Image.fromarray(bbox_mask, mode="L"))
+            segmentation_source = "bbox_otsu_fallback"
+            logger.info("[GARMENT-MASK] BBox-OTSU fallback mask generated for white-on-white garment")
 
     if gar_rgba is None:
         return None
@@ -531,26 +565,12 @@ def _make_garment_mask_rembg(
             person_mask[y0_i:y1_i, x0_i:x1_i] = gar_mask_resized[:actual_h, :actual_w]
 
         # =========================
-        # 修复 mask 太小：增加 dilation iterations 让 mask 覆盖更大区域
-        # iterations=2 (替代1) 使 mask 更饱满，帮助 CatVTON 完全覆盖躯干
+        # 方案1修复：不在原始尺寸上做膨胀，避免resize时形状变形
+        # 原因：在大尺寸(906x1382)上膨胀后，resize到(512x768)会导致
+        # 圆形衣服变成奇怪形状。改为在resize后的目标尺寸上做膨胀。
         # =========================
-        kernel = np.ones((7, 7), np.uint8)
-        person_mask = cv2.dilate(
-            person_mask,
-            kernel,
-            iterations=2,
-        )
-        person_mask = cv2.GaussianBlur(
-            person_mask,
-            (5, 5),
-            0,
-        )
-        _, person_mask = cv2.threshold(
-            person_mask,
-            120,
-            255,
-            cv2.THRESH_BINARY,
-        )
+        # 取消原始尺寸上的膨胀操作，直接返回二值mask
+        # 膨胀操作将在resize后的目标尺寸上进行（见第2615-2630行）
 
         logger.info(
             f"[GARMENT-MASK] {segmentation_source} segmentation succeeded, "
@@ -823,17 +843,21 @@ def _make_cloth_mask_mediapipe(
 
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
             tmp_path = f.name
-        person_img.save(tmp_path, format="JPEG", quality=95)
+        # Force RGB save — PIL may write 1-channel grayscale JPEG if the image
+        # is L-mode, which triggers MediaPipe create_from_file() crash
+        person_img.convert("RGB").save(tmp_path, format="JPEG", quality=95)
         options = PoseLandmarkerOptions(
             base_options=mediapipe.tasks.BaseOptions(model_asset_path=mp_pose_path),
             running_mode=RunningMode.IMAGE,
             output_segmentation_masks=True,
         )
         landmarker = PoseLandmarker.create_from_options(options)
-        mp_img = MPImage.create_from_file(tmp_path)
-        result = landmarker.detect(mp_img)
-        landmarker.close()
-        os.unlink(tmp_path)
+        try:
+            mp_img = MPImage.create_from_file(tmp_path)
+            result = landmarker.detect(mp_img)
+        finally:
+            landmarker.close()
+            os.unlink(tmp_path)
 
         if not result.pose_landmarks:
             logger.warning("No pose detected — using fallback mask")
@@ -1284,7 +1308,9 @@ def _detect_face_with_mp_face_api(
 
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
             tmp_path = f.name
-        person_img.save(tmp_path, format="JPEG", quality=95)
+        # Force RGB save — PIL may write 1-channel grayscale JPEG if the image
+        # is L-mode, which triggers MediaPipe create_from_file() crash
+        person_img.convert("RGB").save(tmp_path, format="JPEG", quality=95)
 
         options = FaceDetectorOptions(
             base_options=mediapipe.tasks.BaseOptions(
@@ -1293,10 +1319,12 @@ def _detect_face_with_mp_face_api(
             running_mode=RunningMode.IMAGE,
         )
         detector = FaceDetector.create_from_options(options)
-        mp_img = MPImage.create_from_file(tmp_path)
-        detection_result = detector.detect(mp_img)
-        detector.close()
-        os.unlink(tmp_path)
+        try:
+            mp_img = MPImage.create_from_file(tmp_path)
+            detection_result = detector.detect(mp_img)
+        finally:
+            detector.close()
+            os.unlink(tmp_path)
 
         if not detection_result.detections:
             logger.debug("FaceDetector found no face, using Haar Cascade fallback")
@@ -1521,17 +1549,22 @@ def _protect_face_legacy(person_img: "Image.Image", pw: int, ph: int) -> "Image.
 
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
             tmp_path = f.name
-        person_img.save(tmp_path, format="JPEG", quality=95)
+        # Force RGB save — PIL may write 1-channel grayscale JPEG if the image
+        # is L-mode, which triggers MediaPipe create_from_file() crash
+        # (expects 4-channel RGBA; F0000 Check failed: 1 == ChannelSize())
+        person_img.convert("RGB").save(tmp_path, format="JPEG", quality=95)
         options = PoseLandmarkerOptions(
             base_options=mediapipe.tasks.BaseOptions(model_asset_path=mp_pose_path),
             running_mode=RunningMode.IMAGE,
             output_segmentation_masks=False,
         )
         landmarker = PoseLandmarker.create_from_options(options)
-        mp_img = MPImage.create_from_file(tmp_path)
-        result = landmarker.detect(mp_img)
-        landmarker.close()
-        os.unlink(tmp_path)
+        try:
+            mp_img = MPImage.create_from_file(tmp_path)
+            result = landmarker.detect(mp_img)
+        finally:
+            landmarker.close()
+            os.unlink(tmp_path)
 
         if not result.pose_landmarks:
             return Image.fromarray(np.zeros((ph, pw), dtype=np.uint8), mode="L")
@@ -2172,6 +2205,13 @@ def main():
         action="store_false",
         help="禁用 torch.compile（默认禁用，需要 PyTorch 2.0+）",
     )
+    parser.add_argument(
+        "--garment-resize-mode",
+        dest="garment_resize_mode",
+        default="letterbox",
+        choices=["letterbox", "crop", "fill"],
+        help="衣服预处理缩放模式: letterbox(白边填充)/crop(等比裁剪)/fill(填满)",
+    )
     args = parser.parse_args()
 
     person_path = args.person
@@ -2346,31 +2386,25 @@ def main():
         )
 
         # ── Mask auto-expansion for upper garment ────────────────────────────────
-        # For upper garments, mask_area_ratio 0.05 is too small — CatVTON won't fully cover
-        # the torso area and old garment shadows bleed through. Expand up to 0.09 for upper.
-        # For lower/overall, the 0.14 threshold is reasonable.
+        # 方案1修复：不在原始尺寸上做膨胀扩展，避免resize时形状变形
+        # 原因：在大尺寸(906x1382)上用9x9 kernel膨胀12次，然后resize到(512x768)
+        # 会导致圆形衣服变成奇怪形状。
+        #
+        # 修复策略：
+        # 1. 如果mask_area_ratio太小(<0.09)，记录需要扩展的目标比例
+        # 2. 在resize后的目标尺寸上做膨胀（见第2615-2640行）
+        # 3. 这样可以保持形状完整性
+        # ────────────────────────────────────────────────────────────────────────
+        expansion_needed = False
+        target_expansion_ratio = 0.12
+
         if args.type == "upper" and mask_area_ratio < 0.09:
-            target_ratio = 0.12
-            current_pixels = mask_white
-            # Use 9x9 kernel for faster area gain, no blur (it erodes dilation)
-            mask_np = np.array(cloth_mask.convert("L"))
-            kernel = np.ones((9, 9), np.uint8)
-            for _dilate_iter in range(12):
-                if current_pixels / max(pw * ph, 1) >= target_ratio:
-                    break
-                mask_np = cv2.dilate(mask_np, kernel, iterations=1)
-                _, mask_np = cv2.threshold(mask_np, 100, 255, cv2.THRESH_BINARY)
-                current_pixels = int(np.sum(mask_np > 128))
-            # Light smoothing only at the end to remove jagged edges
-            mask_np = cv2.GaussianBlur(mask_np, (3, 3), 0)
-            _, mask_np = cv2.threshold(mask_np, 100, 255, cv2.THRESH_BINARY)
-            current_pixels = int(np.sum(mask_np > 128))
-            cloth_mask = Image.fromarray(mask_np, mode="L")
-            mask_area_ratio = current_pixels / max(pw * ph, 1)
+            # 记录需要扩展，但不在原始尺寸上操作
+            expansion_needed = True
             logger.info(
-                f"[MASK-FIX] upper garment mask expanded: "
-                f"ratio {mask_white / max(pw * ph, 1):.3f} -> {mask_area_ratio:.3f} "
-                f"(target={target_ratio:.3f})"
+                f"[MASK-FIX] upper garment mask needs expansion: "
+                f"current_ratio={mask_area_ratio:.3f}, target={target_expansion_ratio:.3f} "
+                f"(will expand after resize to preserve shape)"
             )
         elif mask_area_ratio < 0.14:
             logger.warning(
@@ -2509,14 +2543,29 @@ def main():
         try:
             garment_clean_np, _ = preprocess_garment(garment_img, canvas_size=512)
             garment_clean = Image.fromarray(garment_clean_np, mode="RGB")
-            # CatVTON expects garment, person, mask all same size
-            # First pad to white background (CatVTON convention), then resize to target
+        except Exception as e:
+            logger.warning(f"衣服预处理失败 ({e})，使用原始图像")
+            garment_clean = garment_img.convert("RGB")
+
+        resize_mode = getattr(args, "garment_resize_mode", "letterbox") or "letterbox"
+        if resize_mode == "crop":
+            # 等比裁剪：保留衣服比例但裁切到目标尺寸（无白边）
+            garment_resized = resize_and_crop_garment(
+                garment_clean, (args.width, args.height)
+            )
+            logger.info(f"[CATVTON] 使用 crop 模式缩放衣服: {garment_clean.size} -> {garment_resized.size}")
+        elif resize_mode == "fill":
+            # 填满画布：拉伸衣服填满目标尺寸（变形较大）
+            garment_resized = garment_clean.resize(
+                (args.width, args.height), Image.LANCZOS
+            )
+            logger.info(f"[CATVTON] 使用 fill 模式缩放衣服: {garment_clean.size} -> {garment_resized.size}")
+        else:
+            # 默认 letterbox：白边填充保留完整衣服不变形
             garment_resized = resize_and_padding(
                 garment_clean, (args.width, args.height)
             )
-        except Exception as e:
-            logger.warning(f"衣服预处理失败 ({e})，使用原始图像")
-            garment_resized = resize_and_padding(garment_img, (args.width, args.height))
+            logger.info(f"[CATVTON] 使用 letterbox 模式缩放衣服: {garment_clean.size} -> {garment_resized.size}")
         preprocess_elapsed = time.perf_counter() - preprocess_start
         gw, gh = garment_resized.size
         pw_out, ph_out = person_resized.size
@@ -2536,13 +2585,49 @@ def main():
         # if getattr(settings, "CATVTON_ENHANCE_COLORS", False):
         #     garment_resized = _enhance_garment_colors(garment_resized, strength=1.15)
 
-        # ── 关键修复：mask 必须用 NEAREST 缩放保持二值性 ──────────────────
+        # ── 关键修复：方案1 - 先resize再做形态学操作 ───────────────────
         # CatVTON 训练时使用的是纯二值 mask（0 或 1），prepare_mask_image 内部会
         # 规范化 mask：< 0.5 → 0，>= 0.5 → 1。
-        # 如果在 resize 前应用 GaussianBlur，mask 会变成灰度图（0.3, 0.7 等），
-        # 规范化后大部分信息丢失，导致 CatVTON 无法识别衣服区域。
-        # 正确的做法：NEAREST 缩放（保持二值）→ CatVTON 推理 → 重绘时再模糊
-        mask_resized = cloth_mask.resize((args.width, args.height), Image.NEAREST)
+        #
+        # 问题分析：
+        # 1. 之前在原始尺寸(906x1382)上做膨胀，然后resize到(512x768)
+        # 2. 大尺寸上的膨胀产生"阶梯状"边缘，resize时被扭曲
+        # 3. 导致圆形衣服变成奇怪形状（03_mask正确，08_mask_resized变形）
+        #
+        # 修复方案1：先resize到目标尺寸，再做形态学操作
+        # 优点：
+        # - 形态学操作在目标尺寸上进行，kernel大小相对一致
+        # - 避免大尺寸膨胀被resize扭曲
+        # - 保持mask的二值性和形状完整性
+        # =========================
+        mask_np = np.array(cloth_mask.convert("L"))
+
+        # 第一步：先resize到目标尺寸（使用INTER_AREA保持形状）
+        mask_resized = cv2.resize(
+            mask_np,
+            (args.width, args.height),
+            interpolation=cv2.INTER_AREA
+        )
+
+        # 第二步：根据expansion_needed决定膨胀强度
+        if expansion_needed:
+            # 需要扩展：使用更大的kernel和更多迭代
+            # 目标：将mask_area_ratio从0.06扩展到0.12
+            # 在512x768上，这需要更激进的膨胀
+            kernel = np.ones((5, 5), np.uint8)
+            mask_resized = cv2.dilate(mask_resized, kernel, iterations=3)
+            logger.info(
+                f"[MASK-FIX] Applied expansion after resize: kernel=5x5, iterations=3"
+            )
+        else:
+            # 不需要扩展：只做轻微膨胀覆盖边界
+            kernel = np.ones((3, 3), np.uint8)
+            mask_resized = cv2.dilate(mask_resized, kernel, iterations=1)
+
+        # 第三步：二值化确保纯黑白（CatVTON要求）
+        mask_resized = cv2.threshold(mask_resized, 127, 255, cv2.THRESH_BINARY)[1]
+
+        mask_resized = Image.fromarray(mask_resized, mode="L")
 
         # ── 白盒调试：保存缩放后的中间产物 ─────────────────────────────
         if _debug_output_dir is not None:

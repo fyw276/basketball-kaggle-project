@@ -318,6 +318,12 @@ def _run_catvton_sync(
         if torch_compile:
             cmd.append("--torch-compile")
 
+        # 衣服缩放模式（letterbox/crop/fill）
+        resize_mode = str(
+            getattr(settings, "CATVTON_GARMENT_RESIZE_MODE", "letterbox") or "letterbox"
+        )
+        cmd.extend(["--garment-resize-mode", resize_mode])
+
         cmd.extend(["--catvton-path", catvton_path])
 
         # Enable debug intermediate saves
@@ -329,7 +335,8 @@ def _run_catvton_sync(
             f"size={width}x{height}, steps={steps}, guidance={guidance}, "
             f"precision={final_precision}, vae_slicing={vae_slicing}, "
             f"xformers={xformers}, preprocess_only={preprocess_only}, "
-            f"low_vram_mode={low_vram_mode}, torch_compile={torch_compile}"
+            f"low_vram_mode={low_vram_mode}, torch_compile={torch_compile}, "
+            f"garment_resize_mode={resize_mode}"
         )
 
         # Pass HF cache dir to subprocess so it finds downloaded models
@@ -349,28 +356,40 @@ def _run_catvton_sync(
         stderr_lock = threading.Lock()
 
         def stream_output(stream, lines_list, lock, prefix):
-            """Read stream line by line and log each line in real-time."""
+            """Read stream line by line and log each line in real-time.
+
+            Reads binary data and decodes with GBK (Windows console default) as primary,
+            falling back to UTF-8, then Latin-1 to handle all possible output encodings.
+            """
             try:
-                for line in iter(stream.readline, ""):
+                for line in iter(stream.readline, b""):
                     if not line:
                         break
-                    line = line.rstrip()
-                    if line:
+                    line_bytes = line.rstrip()
+                    # Try GBK first (Windows console / Chinese environment)
+                    try:
+                        decoded = line_bytes.decode("gbk")
+                    except UnicodeDecodeError:
+                        try:
+                            decoded = line_bytes.decode("utf-8")
+                        except UnicodeDecodeError:
+                            decoded = line_bytes.decode("latin-1", errors="replace")
+                    if decoded:
                         with lock:
-                            lines_list.append(line)
-                        logger.info(f"[CATVTON] {prefix}: {line}")
+                            lines_list.append(decoded)
+                        logger.info(f"[CATVTON] {prefix}: {decoded}")
             except Exception as e:
                 logger.debug(f"[CATVTON] {prefix} stream ended: {e}")
 
-        # Start subprocess
-        # Set cwd to workspace_root so runner can find CatVTON modules
+        # Start subprocess in binary mode; decode manually with GBK-fallback to handle
+        # Windows console output that uses the system ANSI code page (GBK on Chinese Windows).
+        # This ensures Chinese error messages from catvton_runner.py are captured cleanly
+        # instead of being corrupted into replacement characters.
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            encoding="utf-8",
-            errors="replace",
-            cwd=str(workspace_root),  # Use workspace_root as cwd
+            cwd=str(workspace_root),
             env=subproc_env,
         )
 

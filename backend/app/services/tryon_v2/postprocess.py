@@ -43,8 +43,7 @@ def _detect_face_box_seam(
         cascade = load_cascade("haarcascade_frontalface_default.xml")
         if cascade is None or cascade.empty():
             logger.warning(
-                "remove_seam_lines: Haar cascade unavailable, "
-                "face protection disabled"
+                "remove_seam_lines: Haar cascade unavailable, " "face protection disabled"
             )
             return None
 
@@ -65,9 +64,7 @@ def _detect_face_box_seam(
             )
 
             if orig_faces is not None and len(orig_faces) > 0:
-                orig_face_list = sorted(
-                    orig_faces, key=lambda f: f[2] * f[3], reverse=True
-                )
+                orig_face_list = sorted(orig_faces, key=lambda f: f[2] * f[3], reverse=True)
                 ofx, ofy, ofw, ofh = [int(v) for v in orig_face_list[0]]
 
                 # Scale from original person coords → result coords
@@ -149,9 +146,9 @@ def safe_edge_blend(
 
         # 应用融合
         for c in range(3):
-            result_arr[:, :, c] = result_arr[:, :, c] * (
-                1 - edge_mask * blend_weight
-            ) + person_arr[:, :, c] * (edge_mask * blend_weight)
+            result_arr[:, :, c] = result_arr[:, :, c] * (1 - edge_mask * blend_weight) + person_arr[
+                :, :, c
+            ] * (edge_mask * blend_weight)
     else:
         # 没有mask：对整体进行非常轻微的边缘平滑
         # 使用 bilateral filter 保持边缘同时平滑噪点
@@ -193,15 +190,13 @@ def smart_edge_blend(
 
     # 膨胀以覆盖整个接缝区域
     kernel = np.ones((3, 3), np.uint8)
-    seam_mask = cv2.dilate(seam_mask.astype(np.uint8), kernel, iterations=2).astype(
-        np.float32
-    )
+    seam_mask = cv2.dilate(seam_mask.astype(np.uint8), kernel, iterations=2).astype(np.float32)
 
     # 在接缝区域进行轻微融合
     for c in range(3):
-        result_arr[:, :, c] = result_arr[:, :, c] * (1 - seam_mask * 0.3) + smoothed[
-            :, :, c
-        ] * (seam_mask * 0.3)
+        result_arr[:, :, c] = result_arr[:, :, c] * (1 - seam_mask * 0.3) + smoothed[:, :, c] * (
+            seam_mask * 0.3
+        )
 
     result = np.clip(result_arr, 0, 255).astype(np.uint8)
     return Image.fromarray(result, mode="RGB")
@@ -252,9 +247,7 @@ def match_colors_to_scene(
 
         # 只在衣物区域应用调整
         for c in range(3):
-            result_arr[y0:y1, x0:x1, c] = np.clip(
-                result_arr[y0:y1, x0:x1, c] * adjustment, 0, 255
-            )
+            result_arr[y0:y1, x0:x1, c] = np.clip(result_arr[y0:y1, x0:x1, c] * adjustment, 0, 255)
 
     return Image.fromarray(np.clip(result_arr, 0, 255).astype(np.uint8), mode="RGB")
 
@@ -480,14 +473,72 @@ def catvton_safe_enhance(
     # Step 2: 消除接缝线（传入 person_image 用于面部保护）
     result = remove_seam_lines(result, person, garment_mask, person_image=person)
 
-    # Step 3: 轻度全局锐化
-    result_arr = np.array(result.convert("RGB"), dtype=np.float32)
-    gaussian = cv2.GaussianBlur(result_arr.astype(np.uint8), (0, 0), 1.0)
-    sharpened = cv2.addWeighted(result_arr.astype(np.uint8), 1.08, gaussian, -0.08, 0)
-    result = Image.fromarray(np.clip(sharpened, 0, 255).astype(np.uint8), mode="RGB")
+    # Step 3: 保图案的细节增强（USM + 频率分离）
+    result = enhance_pattern_details(result)
 
     logger.info("CatVTON safe enhance completed")
     return result
+
+
+def enhance_pattern_details(result: Image.Image, strength: float = 1.2) -> Image.Image:
+    """
+    频率分离增强 - 在保护高频图案细节（印花/格子/条纹）的前提下
+    恢复因 VAE 编码误差而模糊的中频结构（衣物轮廓、褶皱）。
+
+    策略：
+    1. 频率分离：高频层 = 原图 - 高斯模糊(原图)
+    2. 中频层保留，增强褶皱和轮廓清晰度（unsharp mask）
+    3. 高频层叠加回去，保护印花/格子/条纹不被抹平
+    4. 对饱和度高的像素（图案区）降低增强强度，避免颜色失真
+
+    Args:
+        result: CatVTON 试穿结果
+        strength: 锐化强度 (1.0=轻度, 1.5=中度, 2.0=强)
+
+    Returns:
+        细节增强后的图像
+    """
+    result_arr = np.array(result.convert("RGB"), dtype=np.float32)
+
+    # ── Step 1: 频率分离 ───────────────────────────────────────────
+    # 高斯模糊层（低频）：包含大尺度光影、颜色分布
+    blur_k = 7
+    low_freq = cv2.GaussianBlur(result_arr.astype(np.uint8), (blur_k, blur_k), 0)
+    low_freq = low_freq.astype(np.float32)
+
+    # 高频层 = 原图 - 低频层（保留印花/格子/条纹）
+    high_freq = result_arr - low_freq
+
+    # ── Step 2: 中频增强（unsharp mask）────────────────────────────
+    # 对低频层应用 unsharp mask，增强褶皱和结构清晰度
+    median_k = 5
+    blurred = cv2.medianBlur(result_arr.astype(np.uint8), median_k)
+    blurred_f = blurred.astype(np.float32)
+
+    # 增强量：模糊越大的地方增强越多（补偿 VAE 模糊）
+    diff_from_median = np.abs(result_arr - blurred_f).mean(axis=2, keepdims=True)
+    enhance_mask = np.clip(diff_from_median / 40.0, 0, 1)
+
+    # unsharp mask: result + strength * (result - blurred)
+    amount = strength - 1.0
+    sharpened_low = result_arr + enhance_mask * (result_arr - blurred_f) * amount
+
+    # ── Step 3: 叠加高频层（保护图案细节）────────────────────────
+    # 饱和度检测：图案区域（高饱和度）降低锐化，避免颜色失真
+    hsv = cv2.cvtColor(result_arr.astype(np.uint8), cv2.COLOR_RGB2HSV)
+    saturation = hsv[:, :, 1].astype(np.float32) / 255.0
+    value = hsv[:, :, 2].astype(np.float32) / 255.0
+
+    # 高亮度且高饱和度 = 图案区域，降低混合强度
+    pattern_mask = saturation * (1.0 - np.abs(value - 0.6) * 2)
+    pattern_mask = np.clip(pattern_mask, 0, 1)
+
+    # 图案区域保留更多高频（叠加回 100% 高频），非图案区使用增强后的低频
+    # pattern_mask 是 (H,W)，high_freq 是 (H,W,3)，需要 [np.newaxis] 对齐
+    enhanced = sharpened_low + high_freq * (1.0 - pattern_mask[..., np.newaxis] * 0.4)
+
+    result_final = np.clip(enhanced, 0, 255).astype(np.uint8)
+    return Image.fromarray(result_final, mode="RGB")
 
 
 def quick_enhance(result: Image.Image) -> Image.Image:
