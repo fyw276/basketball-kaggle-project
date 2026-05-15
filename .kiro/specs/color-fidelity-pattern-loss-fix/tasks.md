@@ -1,0 +1,139 @@
+# Implementation Plan
+
+- [x] 1. Write bug condition exploration test
+  - **Property 1: Bug Condition** - Warped Layer Preserves Color Information
+  - **CRITICAL**: This test MUST FAIL on unfixed code - failure confirms the bug exists
+  - **DO NOT attempt to fix the test or the code when it fails**
+  - **NOTE**: This test encodes the expected behavior - it will validate the fix when it passes after implementation
+  - **GOAL**: Surface counterexamples that demonstrate the bug exists (warped_layer RGB values < 20 for patterned garments)
+  - **Scoped PBT Approach**: Scope the property to garments with patterns/multiple colors (pattern_score > 0.3 OR color_variance > 30)
+  - Test implementation details from Bug Condition in design:
+    - Generate test garment images with obvious patterns (cartoon characters, colorful stars, prints, embroidery)
+    - Call `catvton_color_fidelity_spatial` with these garment images
+    - Assert that `warped_layer` RGB mean (in non-transparent regions where alpha > 128) is within 20% of original garment RGB mean
+    - Assert that `warped_layer` RGB mean > 20.0 (not nearly black)
+  - The test assertions should match the Expected Behavior Properties from design (Property 1)
+  - Run test on UNFIXED code
+  - **EXPECTED OUTCOME**: Test FAILS (this is correct - it proves the bug exists)
+  - Document counterexamples found to understand root cause (e.g., "warped_layer RGB mean = 14.39 instead of expected ~180")
+  - Mark task complete when test is written, run, and failure is documented
+  - _Requirements: 2.1, 2.2, 2.3, 2.4_
+
+- [x] 2. Write preservation property tests (BEFORE implementing fix)
+  - **Property 2: Preservation** - Solid Color Garments and Other Modes Unchanged
+  - **IMPORTANT**: Follow observation-first methodology
+  - Observe behavior on UNFIXED code for non-buggy inputs:
+    - Solid color garments (pattern_score <= 0.3 AND color_variance <= 30)
+    - Virtual try-on requests with mode not in ["detail_fidelity", "blend"]
+    - Face protection functionality
+    - Hand protection functionality
+    - Realism pass (wrinkles and shadows)
+    - Second garment (`garment_image_2`) processing
+  - Write property-based tests capturing observed behavior patterns from Preservation Requirements:
+    - For solid color garments: verify result is identical to original code output
+    - For other modes: verify behavior unchanged
+    - For face/hand protection: verify protection continues to work
+    - For realism pass: verify wrinkles and shadows continue to work
+  - Property-based testing generates many test cases for stronger guarantees
+  - Run tests on UNFIXED code
+  - **EXPECTED OUTCOME**: Tests PASS (this confirms baseline behavior to preserve)
+  - Mark task complete when tests are written, run, and passing on unfixed code
+  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6_
+
+- [-] 3. Fix for color fidelity pattern loss
+
+  - [x] 3.1 Diagnose the root cause in warp/scale/paste pipeline
+    - Add detailed debug logging at each step in `catvton_color_fidelity_spatial`:
+      - After `cutout_garment_rgba`: log RGB and alpha mean values
+      - After scaling (`gar_src.resize()`): log RGB and alpha mean values
+      - After TPS warp: log RGB and alpha mean values
+      - After paste (`warped_layer.paste()`): log RGB and alpha mean values
+      - After feathering (`_feather_alpha()`): log RGB and alpha mean values
+    - Run the function with a patterned garment image and identify which step causes RGB values to drop below 20
+    - Document the specific step where color loss occurs
+    - _Bug_Condition: isBugCondition(input) where hasPatternOrMultipleColors(input.garment_image) AND warped_layer_rgb_mean < 20.0_
+    - _Expected_Behavior: warped_layer RGB mean (in non-transparent regions) within 20% of original garment RGB mean_
+    - _Preservation: Solid color garments, other modes, face/hand protection, realism pass unchanged_
+    - _Requirements: 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 2.4_
+
+  - [x] 3.2 Fix scaling operation to prevent alpha premultiplication
+    - In `catvton_color_fidelity_spatial` function (line 2042 in `backend/app/services/tryon_v2/warp_engine.py`)
+    - Before scaling RGBA image, separate RGB and alpha channels
+    - Scale RGB and alpha channels separately using LANCZOS resampling
+    - Merge channels back into RGBA image after scaling
+    - This prevents LANCZOS interpolation from causing premultiplied alpha effects
+    - Add assertion to verify RGB mean is preserved after scaling (within 5% tolerance)
+    - _Bug_Condition: isBugCondition(input) where scaling causes RGB values to drop_
+    - _Expected_Behavior: RGB mean preserved after scaling_
+    - _Preservation: Solid color garments continue to work_
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 3.1_
+
+  - [x] 3.3 Ensure TPS warp preserves color information
+    - Add debug logging before and after TPS warp to check RGB mean changes
+    - If TPS warp causes color loss (RGB mean drops > 10%), investigate TPSWarpEngine.warp() implementation
+    - Consider alternative approaches if TPS warp is the culprit:
+      - Skip TPS warp for high-pattern garments (pattern_score > 0.7)
+      - Use different warping method that preserves color
+      - Re-apply original colors after warping using the original garment image as reference
+    - Add assertion to verify RGB mean is preserved after TPS warp (within 10% tolerance)
+    - _Bug_Condition: isBugCondition(input) where TPS warp causes RGB values to drop_
+    - _Expected_Behavior: RGB mean preserved after TPS warp_
+    - _Preservation: Solid color garments continue to work_
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 3.1_
+
+  - [x] 3.4 Fix alpha channel handling in cutout and paste operations
+    - In `cutout_garment_rgba` (line 342 in `backend/app/services/tryon_v2/garment_struct.py`):
+      - Verify `_fill_alpha_holes` only modifies alpha channel, not RGB channels
+      - Add assertion to check RGB channels unchanged before/after alpha hole filling
+    - In `catvton_color_fidelity_spatial` before paste operation:
+      - Ensure `gar_fitted` alpha channel values are sufficiently high (> 200 in garment region)
+      - If alpha values too low, boost them to ensure paste operation works correctly
+    - Add debug logging to track alpha mean values at each step
+    - _Bug_Condition: isBugCondition(input) where low alpha values cause paste to fail_
+    - _Expected_Behavior: Alpha values sufficient for correct paste operation_
+    - _Preservation: Solid color garments continue to work_
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 3.1_
+
+  - [x] 3.5 Adjust feathering parameters to prevent excessive alpha reduction
+    - In `catvton_color_fidelity_spatial` after paste operation:
+      - Reduce feathering radius (`feather_px`) to prevent over-reduction of alpha values
+      - Or apply feathering only to edge regions, keeping center region alpha unchanged
+      - Add assertion to verify alpha mean remains > 128 after feathering in garment region
+    - Add debug logging to track alpha mean before/after feathering
+    - _Bug_Condition: isBugCondition(input) where feathering causes alpha to drop too low_
+    - _Expected_Behavior: Alpha values remain sufficient after feathering_
+    - _Preservation: Solid color garments continue to work_
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 3.1_
+
+  - [x] 3.6 Add color fidelity validation and fallback mechanism
+    - After generating `warped_layer` in `catvton_color_fidelity_spatial`:
+      - Calculate RGB mean in non-transparent regions (alpha > 128)
+      - If RGB mean < 20, log warning and attempt fallback:
+        - Regenerate using original garment image with adjusted parameters
+        - Or skip problematic steps (e.g., skip TPS warp for high-pattern garments)
+      - Add detailed debug logging recording RGB and alpha statistics at each step
+    - This provides safety net if root cause fix is incomplete
+    - _Bug_Condition: isBugCondition(input) where warped_layer RGB mean < 20_
+    - _Expected_Behavior: Fallback mechanism ensures RGB mean > 20_
+    - _Preservation: Solid color garments continue to work_
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 3.1_
+
+  - [x] 3.7 Verify bug condition exploration test now passes
+    - **Property 1: Expected Behavior** - Warped Layer Preserves Color Information
+    - **IMPORTANT**: Re-run the SAME test from task 1 - do NOT write a new test
+    - The test from task 1 encodes the expected behavior
+    - When this test passes, it confirms the expected behavior is satisfied
+    - Run bug condition exploration test from step 1
+    - **EXPECTED OUTCOME**: Test PASSES (confirms bug is fixed)
+    - _Requirements: 2.1, 2.2, 2.3, 2.4_
+
+  - [x] 3.8 Verify preservation tests still pass
+    - **Property 2: Preservation** - Solid Color Garments and Other Modes Unchanged
+    - **IMPORTANT**: Re-run the SAME tests from task 2 - do NOT write new tests
+    - Run preservation property tests from step 2
+    - **EXPECTED OUTCOME**: Tests PASS (confirms no regressions)
+    - Confirm all tests still pass after fix (no regressions)
+    - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6_
+
+- [x] 4. Checkpoint - Ensure all tests pass
+  - Ensure all tests pass, ask the user if questions arise.
