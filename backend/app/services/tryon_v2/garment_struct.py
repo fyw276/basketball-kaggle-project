@@ -395,11 +395,25 @@ def cutout_garment_rgba(
 
             out = remove(rgb)
             if isinstance(out, Image.Image):
-                rgba = out.convert("RGBA")
+                candidate = out.convert("RGBA")
             elif isinstance(out, (bytes, bytearray)):
-                rgba = Image.open(BytesIO(out)).convert("RGBA")
+                candidate = Image.open(BytesIO(out)).convert("RGBA")
+            else:
+                candidate = None
+            # Validate rembg mask quality: require at least 5% non-transparent pixels
+            if candidate is not None:
+                a_arr = np.asarray(candidate.split()[3], dtype=np.uint8)
+                cover = float((a_arr > 20).mean())
+                if cover >= 0.05:
+                    rgba = candidate
+                else:
+                    logger.debug(
+                        "[GARMENT-STRUCT] rembg mask too sparse (%.1f%% cover), "
+                        "falling back to color threshold",
+                        cover * 100,
+                    )
         except Exception:
-            rgba = None
+            pass
 
     # ── Strategy 3: Color threshold fallback ─────────────────────────────────
     if rgba is None:
@@ -428,7 +442,18 @@ def cutout_garment_rgba(
             refined = _grabcut_refine_rgba(rgb)
             if refined is not None:
                 refined = _keep_largest_alpha_component(refined)
-                rgba = refined
+                # Validate GrabCut: keep original if GrabCut destroys the mask
+                ref_a = np.asarray(refined.split()[3], dtype=np.uint8)
+                ref_cover = float((ref_a > 20).mean())
+                if ref_cover >= 0.10:
+                    rgba = refined
+                else:
+                    logger.debug(
+                        "[GARMENT-STRUCT] GrabCut produced sparse mask (%.1f%% cover), "
+                        "keeping original (%.1f%%)",
+                        ref_cover * 100,
+                        cover * 100,
+                    )
     else:
         # SAM masks can also have small internal holes (thin garment parts).
         # Apply gentle hole-filling to ensure full garment coverage.

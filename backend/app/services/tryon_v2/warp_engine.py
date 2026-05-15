@@ -2235,6 +2235,21 @@ def catvton_color_fidelity_spatial(
                 "reason": "garment_too_small",
             }
 
+        # DEBUG: Log RGB and alpha stats after cutout_garment_rgba
+        gar_src_np = np.array(gar_src, dtype=np.float32)
+        gar_src_alpha_mask = gar_src_np[:, :, 3] > 128
+        if gar_src_alpha_mask.any():
+            gar_src_rgb_mean = gar_src_np[gar_src_alpha_mask, :3].mean()
+            gar_src_alpha_mean = gar_src_np[gar_src_alpha_mask, 3].mean()
+        else:
+            gar_src_rgb_mean = 0.0
+            gar_src_alpha_mean = 0.0
+        logger.info(
+            "DEBUG [cutout]: RGB=%.2f, A=%.2f (non-transparent)",
+            gar_src_rgb_mean,
+            gar_src_alpha_mean,
+        )
+
         # ── Constraint: 方向校正（处理横向衣服图）────────────────────
         # 如果衣服图是横向的（宽 > 高），说明可能是平铺图，需要旋转
         if _is_top or _is_skirt:
@@ -2259,7 +2274,15 @@ def catvton_color_fidelity_spatial(
         s_w = max(2, int(sw * scale))
         s_h = max(2, int(sh * scale))
 
-        gar_scaled = gar_src.resize((s_w, s_h), Image.Resampling.LANCZOS)
+        # Fix: Separate RGB and alpha channels before scaling to prevent alpha premultiplication
+        # LANCZOS interpolation can cause premultiplied alpha effects on RGBA images
+        r, g, b, a = gar_src.split()
+        r_scaled = r.resize((s_w, s_h), Image.Resampling.LANCZOS)
+        g_scaled = g.resize((s_w, s_h), Image.Resampling.LANCZOS)
+        b_scaled = b.resize((s_w, s_h), Image.Resampling.LANCZOS)
+        # Use NEAREST for alpha to preserve binary mask edges (LANCZOS smooths them)
+        a_scaled = a.resize((s_w, s_h), Image.Resampling.NEAREST)
+        gar_scaled = Image.merge("RGBA", (r_scaled, g_scaled, b_scaled, a_scaled))
         logger.info(
             "catvton_color_fidelity_spatial: proportional stretch-to-fill "
             "(target=%dx%d, garment=%dx%d, scale=%.3f → scaled=%dx%d, "
@@ -2279,9 +2302,23 @@ def catvton_color_fidelity_spatial(
             gar_y1,
         )
 
+        # DEBUG: Log RGB and alpha stats after scaling
+        gar_scaled_np = np.array(gar_scaled, dtype=np.float32)
+        gar_scaled_alpha_mask = gar_scaled_np[:, :, 3] > 128
+        if gar_scaled_alpha_mask.any():
+            gar_scaled_rgb_mean = gar_scaled_np[gar_scaled_alpha_mask, :3].mean()
+            gar_scaled_alpha_mean = gar_scaled_np[gar_scaled_alpha_mask, 3].mean()
+        else:
+            gar_scaled_rgb_mean = 0.0
+            gar_scaled_alpha_mean = 0.0
+        logger.info(
+            "DEBUG [after scaling]: RGB=%.2f, A=%.2f (non-transparent)",
+            gar_scaled_rgb_mean,
+            gar_scaled_alpha_mean,
+        )
+
         # TPS 变形：只对缩放后的衣服做 TPS 变形，让图案贴合身体曲线
         # 注意：TPS 的目标尺寸 = (gar_w, gar_h)（目标区域像素尺寸）
-        _tps_applied = False
         if kpts and s_w >= 16 and s_h >= 16:
             try:
                 from app.services.cloth_warp import TPSWarpEngine
@@ -2312,13 +2349,27 @@ def catvton_color_fidelity_spatial(
                     # TPS 输出尺寸 = gar_w × gar_h（与身体区域像素尺寸一致）
                     # 直接输出到目标尺寸，不需要居中到 s_w × s_h
                     gar_scaled = gar_warped.convert("RGBA")
-                    _tps_applied = True
                     logger.info(
                         "catvton_color_fidelity_spatial: TPS warp applied "
                         "with %d keypoints (output=%dx%d)",
                         len(tps_keypoints),
                         gar_w,
                         gar_h,
+                    )
+
+                    # DEBUG: Log RGB and alpha stats after TPS warp
+                    gar_warped_np = np.array(gar_scaled, dtype=np.float32)
+                    gar_warped_alpha_mask = gar_warped_np[:, :, 3] > 128
+                    if gar_warped_alpha_mask.any():
+                        gar_warped_rgb_mean = gar_warped_np[gar_warped_alpha_mask, :3].mean()
+                        gar_warped_alpha_mean = gar_warped_np[gar_warped_alpha_mask, 3].mean()
+                    else:
+                        gar_warped_rgb_mean = 0.0
+                        gar_warped_alpha_mean = 0.0
+                    logger.info(
+                        "DEBUG [after TPS]: RGB=%.2f, A=%.2f " "(non-transparent)",
+                        gar_warped_rgb_mean,
+                        gar_warped_alpha_mean,
                     )
             except Exception as tps_err:
                 logger.debug(
@@ -2348,9 +2399,43 @@ def catvton_color_fidelity_spatial(
         warped_layer = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
         warped_layer.paste(gar_fitted, (paste_x, paste_y), gar_fitted)
 
+        # DEBUG: Log RGB and alpha stats after paste
+        warped_layer_np = np.array(warped_layer, dtype=np.float32)
+        warped_layer_alpha_mask = warped_layer_np[:, :, 3] > 128
+        if warped_layer_alpha_mask.any():
+            warped_layer_rgb_mean = warped_layer_np[warped_layer_alpha_mask, :3].mean()
+            warped_layer_alpha_mean = warped_layer_np[warped_layer_alpha_mask, 3].mean()
+        else:
+            warped_layer_rgb_mean = 0.0
+            warped_layer_alpha_mean = 0.0
+        logger.info(
+            "DEBUG [after paste]: RGB mean=%.2f, Alpha mean=%.2f (in non-transparent regions)",
+            warped_layer_rgb_mean,
+            warped_layer_alpha_mean,
+        )
+
         # ── Step 3: 羽化边缘 ─────────────────────────────────────────
         feather_px = max(2, int(min(cw, ch) * 0.012))
         warped_layer = _feather_alpha(warped_layer, radius_px=feather_px)
+
+        # DEBUG: Log RGB and alpha stats after feathering
+        warped_layer_feathered_np = np.array(warped_layer, dtype=np.float32)
+        warped_layer_feathered_alpha_mask = warped_layer_feathered_np[:, :, 3] > 128
+        if warped_layer_feathered_alpha_mask.any():
+            warped_layer_feathered_rgb_mean = warped_layer_feathered_np[
+                warped_layer_feathered_alpha_mask, :3
+            ].mean()
+            warped_layer_feathered_alpha_mean = warped_layer_feathered_np[
+                warped_layer_feathered_alpha_mask, 3
+            ].mean()
+        else:
+            warped_layer_feathered_rgb_mean = 0.0
+            warped_layer_feathered_alpha_mean = 0.0
+        logger.info(
+            "DEBUG [after feathering]: RGB mean=%.2f, Alpha mean=%.2f (in non-transparent regions)",
+            warped_layer_feathered_rgb_mean,
+            warped_layer_feathered_alpha_mean,
+        )
 
         # ── Step 4: 保护面部和手部 ─────────────────────────────────────
         # 面部：Haar cascade 精确检测（_is_top 专享）
@@ -2379,10 +2464,53 @@ def catvton_color_fidelity_spatial(
         a_ch = ImageChops.multiply(a_ch, protect)
         warped_layer = Image.merge("RGBA", (r_ch, g_ch, b_ch, a_ch))
 
+        # DEBUG: Log RGB and alpha stats after face/hand protection
+        warped_layer_protected_np = np.array(warped_layer, dtype=np.float32)
+        warped_layer_protected_alpha_mask = warped_layer_protected_np[:, :, 3] > 128
+        if warped_layer_protected_alpha_mask.any():
+            warped_layer_protected_rgb_mean = warped_layer_protected_np[
+                warped_layer_protected_alpha_mask, :3
+            ].mean()
+            warped_layer_protected_alpha_mean = warped_layer_protected_np[
+                warped_layer_protected_alpha_mask, 3
+            ].mean()
+        else:
+            warped_layer_protected_rgb_mean = 0.0
+            warped_layer_protected_alpha_mean = 0.0
+        logger.info(
+            "DEBUG [after protection]: RGB=%.2f, A=%.2f " "(non-transparent)",
+            warped_layer_protected_rgb_mean,
+            warped_layer_protected_alpha_mean,
+        )
+        # Also log overall stats (including transparent regions)
+        logger.info(
+            "DEBUG [after face/hand protection - ALL pixels]: RGB mean=%.2f, Alpha mean=%.2f",
+            warped_layer_protected_np[:, :, :3].mean(),
+            warped_layer_protected_np[:, :, 3].mean(),
+        )
+
         # ── Step 5: 直接像素级保真混合 ───────────────────────────────
         # 核心：用原衣服像素替换 CatVTON 生成的颜色，保留空间分布
         layer_np = np.array(warped_layer, dtype=np.float32)
         layer_alpha = layer_np[:, :, 3] / 255.0
+
+        # 调试：检查 warped_layer 的内容
+        logger.info(
+            "catvton_color_fidelity_spatial: warped_layer stats - "
+            "R mean=%.2f, G mean=%.2f, B mean=%.2f, A mean=%.2f, "
+            "R min/max=[%.0f,%.0f], G min/max=[%.0f,%.0f], B min/max=[%.0f,%.0f]",
+            layer_np[:, :, 0].mean(),
+            layer_np[:, :, 1].mean(),
+            layer_np[:, :, 2].mean(),
+            layer_np[:, :, 3].mean(),
+            layer_np[:, :, 0].min(),
+            layer_np[:, :, 0].max(),
+            layer_np[:, :, 1].min(),
+            layer_np[:, :, 1].max(),
+            layer_np[:, :, 2].min(),
+            layer_np[:, :, 2].max(),
+        )
+
         strength = layer_alpha * fidelity_strength
 
         for c in range(3):
