@@ -3,6 +3,7 @@ Logging configuration — Windows-safe, single-process-safe.
 """
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -139,6 +140,12 @@ def setup_logging():
     log_file = Path(settings.LOG_FILE)
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
+    enqueue_file_logs = os.getenv("APP_LOG_ENQUEUE", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+
     loguru_logger.add(
         settings.LOG_FILE,
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
@@ -146,7 +153,7 @@ def setup_logging():
         rotation="10 MB",
         retention="30 days",
         compression="zip",
-        enqueue=True,  # Windows-safe: 多进程/多线程写入不冲突
+        enqueue=enqueue_file_logs,  # Windows-safe outside tests; tests can disable IPC queues.
     )
 
     # Intercept standard logging

@@ -36,6 +36,10 @@ import cv2
 import numpy as np
 from PIL import Image, ImageChops, ImageFilter
 
+from app.services.tryon_pattern_utils import (
+    detect_pattern_strength,
+    estimate_catvton_garment_region_from_change,
+)
 from app.services.tryon_v2.garment_struct import cutout_garment_rgba, split_pants_parts
 from app.services.tryon_v2.pose_utils import detect_pose_keypoints, get_body_bounds_from_keypoints
 
@@ -69,6 +73,8 @@ def _detect_pattern_strength(img: Image.Image) -> float:
     Method: Compare gradient energy at multiple scales to distinguish sharp patterns from noise.
     High local variance in small neighborhoods with many edge pixels → pattern.
     """
+    return detect_pattern_strength(img)
+
     arr = np.asarray(img.convert("RGB"), dtype=np.float32)
     h, w = arr.shape[:2]
     if h < 16 or w < 16:
@@ -2225,6 +2231,25 @@ def catvton_color_fidelity_spatial(
         gar_x1 = gar_x0 + gar_w
         gar_y1 = gar_y0 + gar_h
 
+        change_region = estimate_catvton_garment_region_from_change(
+            catvton_result=catvton_result,
+            person_image=person_image,
+            pose_region={"x0": bx0, "x1": bx1, "neck_y": neck_y, "waist_y": waist_y},
+            garment_category=garment_category,
+        )
+        if change_region is not None:
+            gar_x0, gar_y0, gar_x1, gar_y1 = change_region
+            gar_w = gar_x1 - gar_x0
+            gar_h = gar_y1 - gar_y0
+            logger.info(
+                "catvton_color_fidelity_spatial: expanded garment region from CatVTON change "
+                "region=[%d,%d,%d,%d]",
+                gar_x0,
+                gar_y0,
+                gar_x1,
+                gar_y1,
+            )
+
         # ── Step 2: 将原衣服等比缩放到目标区域（填满，不留空白）─────────
         cutout = cutout_garment_rgba(original_garment)
         gar_src = cutout.cropped.convert("RGBA")
@@ -2325,7 +2350,7 @@ def catvton_color_fidelity_spatial(
 
                 tps_engine = TPSWarpEngine()
                 tps_keypoints = {}
-                for name in (
+                _all_needed_kpts = {
                     "left_shoulder",
                     "right_shoulder",
                     "left_hip",
@@ -2334,42 +2359,94 @@ def catvton_color_fidelity_spatial(
                     "right_elbow",
                     "left_wrist",
                     "right_wrist",
-                ):
+                }
+                for name in _all_needed_kpts:
                     if name in kpts:
                         tps_keypoints[name] = kpts[name]
+                # DEBUG: 记录哪些关键点可用
+                _available = {n: (round(v[0], 3), round(v[1], 3)) for n, v in tps_keypoints.items()}
+                logger.info(
+                    "DEBUG [TPS keypoints]: available=%d/%d, keys=%s, all_kpts=%s",
+                    len(tps_keypoints),
+                    len(_all_needed_kpts),
+                    _available,
+                    {n: (n in kpts) for n in _all_needed_kpts},
+                )
                 if len(tps_keypoints) >= 4:
+                    # 保存原始 alpha 通道（用于修复 TPS warp 丢失 alpha 的问题）
                     gar_rgb = gar_scaled.convert("RGB")
+                    original_alpha = gar_scaled.split()[3]
+
+                    # DEBUG: 记录 TPS warp 前的状态
+                    gar_before_np = np.array(gar_scaled, dtype=np.float32)
+                    gar_before_alpha_mask = gar_before_np[:, :, 3] > 128
+                    if gar_before_alpha_mask.any():
+                        gar_before_rgb_mean = gar_before_np[gar_before_alpha_mask, :3].mean()
+                        gar_before_alpha_mean = gar_before_np[gar_before_alpha_mask, 3].mean()
+                        gar_before_alpha_std = gar_before_np[gar_before_alpha_mask, 3].std()
+                    else:
+                        gar_before_rgb_mean = 0.0
+                        gar_before_alpha_mean = 0.0
+                        gar_before_alpha_std = 0.0
+                    logger.info(
+                        "DEBUG [BEFORE TPS warp]: RGB=%.2f, Alpha mean=%.2f, Alpha std=%.2f, "
+                        "Alpha min/max=[%.0f,%.0f], original_alpha mean=%.2f",
+                        gar_before_rgb_mean,
+                        gar_before_alpha_mean,
+                        gar_before_alpha_std,
+                        gar_before_np[:, :, 3].min(),
+                        gar_before_np[:, :, 3].max(),
+                        np.array(original_alpha, dtype=np.float32).mean(),
+                    )
+
                     # TPS 输出尺寸 = gar_w × gar_h（目标区域大小）
                     gar_warped = tps_engine.warp(
                         gar_rgb,
                         tps_keypoints,
-                        (gar_w, gar_h),  # 输出到目标区域尺寸
+                        (gar_w, gar_h),
                         cloth_type="upper" if _is_top else "bottom",
                     )
-                    # TPS 输出尺寸 = gar_w × gar_h（与身体区域像素尺寸一致）
-                    # 直接输出到目标尺寸，不需要居中到 s_w × s_h
-                    gar_scaled = gar_warped.convert("RGBA")
+
+                    # 修复：将原始 alpha 缩放到目标尺寸，与 warped RGB 合并
+                    alpha_resized = original_alpha.resize((gar_w, gar_h), Image.Resampling.NEAREST)
+                    gar_scaled = Image.merge("RGBA", (gar_warped, alpha_resized))
+
+                    # DEBUG: 记录 alpha 缩放后的状态
+                    alpha_resized_np = np.array(alpha_resized, dtype=np.float32)
+                    logger.info(
+                        "DEBUG [alpha_resized]: size=%dx%d, mean=%.2f, min/max=[%.0f,%.0f]",
+                        gar_w,
+                        gar_h,
+                        alpha_resized_np.mean(),
+                        alpha_resized_np.min(),
+                        alpha_resized_np.max(),
+                    )
+
                     logger.info(
                         "catvton_color_fidelity_spatial: TPS warp applied "
-                        "with %d keypoints (output=%dx%d)",
+                        "with %d keypoints (output=%dx%d), alpha preserved from original",
                         len(tps_keypoints),
                         gar_w,
                         gar_h,
                     )
 
-                    # DEBUG: Log RGB and alpha stats after TPS warp
+                    # DEBUG: Log RGB and alpha stats after TPS warp with alpha fix
                     gar_warped_np = np.array(gar_scaled, dtype=np.float32)
                     gar_warped_alpha_mask = gar_warped_np[:, :, 3] > 128
                     if gar_warped_alpha_mask.any():
                         gar_warped_rgb_mean = gar_warped_np[gar_warped_alpha_mask, :3].mean()
                         gar_warped_alpha_mean = gar_warped_np[gar_warped_alpha_mask, 3].mean()
+                        gar_warped_alpha_std = gar_warped_np[gar_warped_alpha_mask, 3].std()
                     else:
                         gar_warped_rgb_mean = 0.0
                         gar_warped_alpha_mean = 0.0
+                        gar_warped_alpha_std = 0.0
                     logger.info(
-                        "DEBUG [after TPS]: RGB=%.2f, A=%.2f " "(non-transparent)",
+                        "DEBUG [after TPS with alpha fix]: RGB=%.2f, Alpha mean=%.2f, "
+                        "Alpha std=%.2f (non-transparent regions)",
                         gar_warped_rgb_mean,
                         gar_warped_alpha_mean,
+                        gar_warped_alpha_std,
                     )
             except Exception as tps_err:
                 logger.debug(
@@ -2414,8 +2491,14 @@ def catvton_color_fidelity_spatial(
             warped_layer_alpha_mean,
         )
 
+        # 保存 paste 后的衣服像素用于 fallback（如果脸部保护导致 alpha 过低）
+        _pre_protection_layer = warped_layer.copy()
+        _pre_protection_rgb = warped_layer_rgb_mean
+
         # ── Step 3: 羽化边缘 ─────────────────────────────────────────
         feather_px = max(2, int(min(cw, ch) * 0.012))
+        # _feather_alpha returns a feathered RGBA layer (alpha = GaussianBlur of original alpha)
+        # warped_layer = the full RGBA image with softened edges
         warped_layer = _feather_alpha(warped_layer, radius_px=feather_px)
 
         # DEBUG: Log RGB and alpha stats after feathering
@@ -2461,6 +2544,8 @@ def catvton_color_fidelity_spatial(
                     )
 
         r_ch, g_ch, b_ch, a_ch = warped_layer.split()
+        # 正确：对 alpha 通道应用脸手保护
+        # 注意：warped_layer 已经在 Step 3 中应用了边缘羽化，其 alpha 通道已包含羽化效果
         a_ch = ImageChops.multiply(a_ch, protect)
         warped_layer = Image.merge("RGBA", (r_ch, g_ch, b_ch, a_ch))
 
@@ -2492,6 +2577,24 @@ def catvton_color_fidelity_spatial(
         # ── Step 5: 颜色保真验证 ─────────────────────────────────────
         # 在混合前验证 warped_layer 的颜色质量
         layer_np = np.array(warped_layer, dtype=np.float32)
+
+        # 修复：如果脸部保护导致 alpha 过低（衣服像素被过度清除），使用保护前的原始像素
+        # 这确保颜色保真在脸部保护区域也能生效
+        if _pre_protection_rgb > 100 and layer_np[:, :, 3].mean() < 50:
+            logger.warning(
+                "catvton_color_fidelity_spatial: face protection degraded alpha "
+                "(before=%.2f, after=%.2f). Restoring pre-protection layer for color fidelity.",
+                _pre_protection_rgb,
+                layer_np[:, :, 3].mean(),
+            )
+            warped_layer = _pre_protection_layer
+            layer_np = np.array(warped_layer, dtype=np.float32)
+            logger.info(
+                "catvton_color_fidelity_spatial: restored layer RGB mean=%.2f, A mean=%.2f",
+                layer_np[:, :, :3].mean(),
+                layer_np[:, :, 3].mean(),
+            )
+
         layer_alpha = layer_np[:, :, 3] / 255.0
         _nt_mask = layer_np[:, :, 3] > 128
         if _nt_mask.any():

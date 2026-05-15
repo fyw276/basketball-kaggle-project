@@ -20,6 +20,7 @@ from app.models.user import User
 from app.observability.tryon_v2_metrics import record_tryon_v2_failure, record_tryon_v2_success
 from app.services.storage import get_storage_service
 from app.services.subscription_billing import consume_usage
+from app.services.tryon_debug_utils import save_debug_stage_image
 from app.services.tryon_v2 import run_pipeline_a
 from app.services.tryon_v2.input_gate import evaluate_input_gate
 from app.services.tryon_v2.postprocess import enhance_tryon_result
@@ -596,14 +597,14 @@ async def tryon_garment_v2(
         garment_image, garment_category
     )
     pre_meta = {**pre_meta, **auto_meta}
-    
+
     # ── 保留去背景后的白底图用于颜色保真 ─────────────────────────────────────────
     # _maybe_auto_preprocess 已将 garment_image 替换为去背景后的白底标准化图片。
     # 颜色保真函数需要这个去背景后的白底图才能正确注入颜色/图案。
     # 这里保存处理后的图，传递给 color_fidelity_spatial / color_fidelity_enhance。
     original_garment_image = garment_image
     # ─────────────────────────────────────────────────────────────────────────
-    
+
     if garment_image_2 is not None:
         garment_image_2, garment_category_2, pre_meta2 = _maybe_auto_preprocess(
             garment_image_2, garment_category_2
@@ -1363,6 +1364,17 @@ async def tryon_garment_v2(
                                 pattern_score,
                                 cf_meta.get("engine", "unknown"),
                             )
+                            save_debug_stage_image(
+                                debug_session_dir=debug_session_dir,
+                                filename="12_after_color_fidelity.jpg",
+                                image=result_img,
+                                metadata={
+                                    "stage": "after_color_fidelity",
+                                    "pattern_score": round(pattern_score, 3),
+                                    "engine": cf_meta.get("engine", "unknown"),
+                                    "garment_region": cf_meta.get("garment_region"),
+                                },
+                            )
                         else:
                             logger.info(
                                 "Realistic mode: skipping color fidelity "
@@ -1401,6 +1413,15 @@ async def tryon_garment_v2(
                         )
                     else:
                         result_img_resized = result_img
+                    save_debug_stage_image(
+                        debug_session_dir=debug_session_dir,
+                        filename="13_after_resize_for_postprocess.jpg",
+                        image=result_img_resized,
+                        metadata={
+                            "stage": "after_resize_for_postprocess",
+                            "size": list(result_img_resized.size),
+                        },
+                    )
 
                     # CatVTON-safe: denoise + seam removal + sharpen (no blending)
                     result_img = catvton_safe_enhance(
@@ -1408,6 +1429,12 @@ async def tryon_garment_v2(
                         person=person_image,
                     )
                     logger.info("Realistic mode: CatVTON-safe post-processing applied")
+                    save_debug_stage_image(
+                        debug_session_dir=debug_session_dir,
+                        filename="14_after_catvton_safe_enhance.jpg",
+                        image=result_img,
+                        metadata={"stage": "after_catvton_safe_enhance"},
+                    )
                 except Exception as pp_err:
                     logger.warning(
                         "Realistic mode: post-processing failed (continuing): %s",
@@ -2285,6 +2312,12 @@ async def tryon_garment_v2(
             logger.info(
                 "CatVTON-pattern enhance: frequency-separation sharpen applied "
                 "(safe for all CatVTON outputs, no blend, no sticker effect)"
+            )
+            save_debug_stage_image(
+                debug_session_dir=debug_session_dir,
+                filename="15_after_pattern_enhance.jpg",
+                image=result_img,
+                metadata={"stage": "after_pattern_enhance", "strength": 1.3},
             )
         except Exception as pp_err:
             logger.warning(

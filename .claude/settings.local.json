@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest backend/tests/test_color_fidelity_pattern_loss_bugfix.py::test_bug_condition_warped_layer_preserves_color_information -x --tb=long -q)",
+      "Bash(python -m pytest tests/test_color_fidelity_pattern_loss_bugfix.py::test_bug_condition_warped_layer_preserves_color_information -x --tb=long -q)",
+      "Bash(python -c ' *)",
+      "Bash(python -m pytest tests/test_color_fidelity_pattern_loss_bugfix.py -x --tb=short -q)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(python -m pytest tests/test_color_fidelity_pattern_loss_bugfix.py::test_bug_condition_warped_layer_preserves_color_information -x --tb=short -q)",
+      "Bash(python -m pytest tests/test_color_fidelity_pattern_loss_bugfix.py -k \"preservation\" -x --tb=short -q)",
+      "Bash(python -m pytest tests/test_color_fidelity_pattern_loss_bugfix.py --tb=short -q)"
+    ]
+  }
+}

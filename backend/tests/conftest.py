@@ -15,6 +15,7 @@ from sqlalchemy.orm import sessionmaker
 # NOTE: transformers computes availability at import time; USE_TORCH is respected there.
 os.environ.setdefault("USE_TORCH", "1")
 os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("APP_LOG_ENQUEUE", "0")
 
 from app.db.base import Base  # noqa: E402
 from app.db.session import get_db  # noqa: E402
