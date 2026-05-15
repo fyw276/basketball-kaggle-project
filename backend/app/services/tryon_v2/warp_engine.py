@@ -2489,16 +2489,21 @@ def catvton_color_fidelity_spatial(
             warped_layer_protected_np[:, :, 3].mean(),
         )
 
-        # ── Step 5: 直接像素级保真混合 ───────────────────────────────
-        # 核心：用原衣服像素替换 CatVTON 生成的颜色，保留空间分布
+        # ── Step 5: 颜色保真验证 ─────────────────────────────────────
+        # 在混合前验证 warped_layer 的颜色质量
         layer_np = np.array(warped_layer, dtype=np.float32)
         layer_alpha = layer_np[:, :, 3] / 255.0
+        _nt_mask = layer_np[:, :, 3] > 128
+        if _nt_mask.any():
+            _nt_rgb_mean = layer_np[_nt_mask, :3].mean()
+        else:
+            _nt_rgb_mean = 0.0
 
-        # 调试：检查 warped_layer 的内容
         logger.info(
             "catvton_color_fidelity_spatial: warped_layer stats - "
             "R mean=%.2f, G mean=%.2f, B mean=%.2f, A mean=%.2f, "
-            "R min/max=[%.0f,%.0f], G min/max=[%.0f,%.0f], B min/max=[%.0f,%.0f]",
+            "R min/max=[%.0f,%.0f], G min/max=[%.0f,%.0f], "
+            "B min/max=[%.0f,%.0f]",
             layer_np[:, :, 0].mean(),
             layer_np[:, :, 1].mean(),
             layer_np[:, :, 2].mean(),
@@ -2510,6 +2515,26 @@ def catvton_color_fidelity_spatial(
             layer_np[:, :, 2].min(),
             layer_np[:, :, 2].max(),
         )
+
+        if _nt_rgb_mean < 20.0 and _nt_mask.any():
+            logger.warning(
+                "catvton_color_fidelity_spatial: warped_layer RGB "
+                "mean=%.2f < 20 in non-transparent regions. "
+                "Color fidelity may be compromised.",
+                _nt_rgb_mean,
+            )
+        elif not _nt_mask.any():
+            logger.warning(
+                "catvton_color_fidelity_spatial: warped_layer has "
+                "no non-transparent pixels. Skipping blend."
+            )
+            return catvton_result, {
+                "engine": "catvton_color_fidelity_spatial",
+                "reason": "empty_warped_layer",
+            }
+
+        # ── Step 5b: 直接像素级保真混合 ─────────────────────────────
+        # 核心：用原衣服像素替换 CatVTON 生成的颜色，保留空间分布
 
         strength = layer_alpha * fidelity_strength
 
