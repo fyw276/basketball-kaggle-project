@@ -23,6 +23,7 @@ enum _GarmentCategoryChoice {
 enum _TryOnQualityMode {
   professional, // CatVTON 深度学习 + 颜色保真（真实贴合，细节完整）
   hybrid, // Warp保真 + CatVTON光影增强（100%图案保留 + 自然贴合）
+  paste, // 白底标准图专用：自动旋转 + 身体比例缩放 + 几何贴合
 }
 
 extension _TryOnQualityModeApi on _TryOnQualityMode {
@@ -32,7 +33,9 @@ extension _TryOnQualityModeApi on _TryOnQualityMode {
       case _TryOnQualityMode.professional:
         return 'detail_fidelity';
       case _TryOnQualityMode.hybrid:
-        return 'stable_fast';
+        return 'hybrid';
+      case _TryOnQualityMode.paste:
+        return 'paste';
     }
   }
 
@@ -43,6 +46,8 @@ extension _TryOnQualityModeApi on _TryOnQualityMode {
         return 'professional';
       case _TryOnQualityMode.hybrid:
         return 'hybrid';
+      case _TryOnQualityMode.paste:
+        return 'paste';
     }
   }
 
@@ -52,6 +57,8 @@ extension _TryOnQualityModeApi on _TryOnQualityMode {
         return '细节保真';
       case _TryOnQualityMode.hybrid:
         return '混合模式';
+      case _TryOnQualityMode.paste:
+        return '标准图粘贴';
     }
   }
 
@@ -63,6 +70,9 @@ extension _TryOnQualityModeApi on _TryOnQualityMode {
       case _TryOnQualityMode.hybrid:
         return 'Warp保真（100%衣服图案/颜色）+ CatVTON光影增强；'
             '衣服区域完全保留原始颜色和图案，同时叠加AI生成的自然光影和褶皱效果';
+      case _TryOnQualityMode.paste:
+        return '白底标准图专用：自动旋转衣服方向 + 按身体比例缩放 + 几何贴合；'
+            '适合商品平铺白底图，无需AI深度学习，处理最快';
     }
   }
 }
@@ -1211,6 +1221,60 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                       style: TextStyle(
                         fontSize: 10,
                         color: Colors.teal.shade600,
+                        height: 1.2,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            // 标准图粘贴模式特别提示
+            if (_qualityMode == _TryOnQualityMode.paste) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      Colors.orange.withValues(alpha: 0.15),
+                      Colors.amber.withValues(alpha: 0.10),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: Colors.orange.withValues(alpha: 0.3),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.content_paste,
+                            size: 16, color: Colors.orange.shade700),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '标准图粘贴模式原理：自动旋转 + 身体比例缩放 + 几何贴合',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.orange.shade700,
+                              height: 1.3,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '自动检测平铺图的拍摄方向并旋转，按人物肩宽等比缩放后贴合，'
+                      '跳过AI深度学习，处理最快',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.orange.shade600,
                         height: 1.2,
                       ),
                     ),
