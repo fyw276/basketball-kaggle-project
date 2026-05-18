@@ -10,6 +10,7 @@ from typing import Any
 import cv2
 import numpy as np
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from PIL import Image
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -20,8 +21,23 @@ from app.models.user import User
 from app.observability.tryon_v2_metrics import record_tryon_v2_failure, record_tryon_v2_success
 from app.services.storage import get_storage_service
 from app.services.subscription_billing import consume_usage
-from app.services.tryon_debug_utils import save_debug_stage_image
+from app.services.tryon_debug_utils import (
+    resolve_debug_session_dir,
+    save_debug_stage_bytes,
+    save_debug_stage_image,
+)
 from app.services.tryon_v2 import run_pipeline_a
+from app.services.tryon_v2.fidelity_guard import (
+    decide_color_fidelity_engine,
+    detect_post_cf_artifacts,
+    estimate_pattern_enhance_strength,
+    evaluate_cutout_alpha_qc,
+    evaluate_raw_catvton_quality,
+    extract_engine_decision_features,
+    repair_raw_catvton_artifacts,
+    score_input_anomaly,
+)
+from app.services.tryon_v2.garment_struct import cutout_garment_rgba
 from app.services.tryon_v2.input_gate import evaluate_input_gate
 from app.services.tryon_v2.postprocess import enhance_tryon_result
 from app.services.tryon_v2.preprocess import preprocess_garment_image
@@ -215,6 +231,98 @@ def _estimate_garment_region_for_postprocess(
     return (x0, y0, x1, y1)
 
 
+def _build_fidelity_guard_context(original_garment_image):
+    anomaly = score_input_anomaly(original_garment_image)
+    cutout = cutout_garment_rgba(original_garment_image)
+    cutout_qc = evaluate_cutout_alpha_qc(cutout.rgba)
+    features = extract_engine_decision_features(original_garment_image)
+    return anomaly, cutout_qc, features
+
+
+def _restore_catvton_motif_after_postprocess(
+    *,
+    pre_postprocess_image: Image.Image,
+    postprocess_image: Image.Image,
+    debug_session_dir: str | None,
+) -> tuple[Image.Image, dict[str, Any]]:
+    """Restore only high-confidence motif pixels softened by CatVTON-safe denoise."""
+    meta: dict[str, Any] = {
+        "stage": "after_catvton_safe_motif_restore",
+        "applied": False,
+        "reason": "debug_mask_missing",
+    }
+    debug_dir = resolve_debug_session_dir(debug_session_dir)
+    if debug_dir is None:
+        return postprocess_image, meta
+
+    motif_mask_path = debug_dir / "12c_motif_strength.png"
+    if not motif_mask_path.exists():
+        return postprocess_image, meta
+
+    try:
+        pre_img = pre_postprocess_image.convert("RGB")
+        post_img = postprocess_image.convert("RGB")
+        if pre_img.size != post_img.size:
+            pre_img = pre_img.resize(post_img.size, Image.Resampling.BICUBIC)
+
+        mask_img = Image.open(motif_mask_path).convert("L")
+        if mask_img.size != post_img.size:
+            mask_img = mask_img.resize(post_img.size, Image.Resampling.BILINEAR)
+
+        mask_np = np.asarray(mask_img, dtype=np.float32) / 255.0
+        mask_max = float(mask_np.max()) if mask_np.size else 0.0
+        if mask_max < 0.04:
+            meta.update({"reason": "motif_mask_too_weak", "mask_max": round(mask_max, 4)})
+            return postprocess_image, meta
+
+        motif_alpha = mask_np / max(mask_max, 1e-6)
+        motif_alpha = np.where(mask_np > 0.035, np.power(motif_alpha, 0.55), 0.0)
+        motif_alpha = cv2.GaussianBlur(motif_alpha.astype(np.float32), (5, 5), 0)
+        motif_alpha = np.clip(motif_alpha * 0.82, 0.0, 0.82)
+        if float((motif_alpha > 0.04).mean()) < 0.001:
+            meta.update(
+                {
+                    "reason": "motif_restore_coverage_too_low",
+                    "mask_max": round(mask_max, 4),
+                }
+            )
+            return postprocess_image, meta
+
+        pre_np = np.asarray(pre_img, dtype=np.float32)
+        post_np = np.asarray(post_img, dtype=np.float32)
+        pre_detail = pre_np - cv2.GaussianBlur(pre_np, (0, 0), 1.05)
+        motif_target = np.clip(pre_np + pre_detail * 0.22, 0, 255)
+
+        alpha3 = motif_alpha[:, :, None]
+        restored_np = post_np * (1.0 - alpha3) + motif_target * alpha3
+        restored = Image.fromarray(np.clip(restored_np, 0, 255).astype(np.uint8), mode="RGB")
+
+        meta.update(
+            {
+                "applied": True,
+                "reason": "ok",
+                "mask_max": round(mask_max, 4),
+                "restore_alpha_max": round(float(motif_alpha.max()), 4),
+                "restore_coverage": round(float((motif_alpha > 0.04).mean()), 4),
+                "source": "12c_motif_strength.png",
+                "color_source": "pre_safe_enhance",
+            }
+        )
+        save_debug_stage_image(
+            debug_session_dir=debug_session_dir,
+            filename="14b_motif_restore_mask.png",
+            image=Image.fromarray(
+                np.clip(motif_alpha * 255.0, 0, 255).astype(np.uint8),
+                mode="L",
+            ),
+            metadata=meta,
+        )
+        return restored, meta
+    except Exception as exc:
+        meta.update({"reason": f"failed: {exc}"})
+        return postprocess_image, meta
+
+
 @router.post("/preprocess", response_model=TryOnV2PreprocessItem)
 async def tryon_v2_preprocess(
     garment_file: UploadFile = File(..., alias="garment_file", description="Any garment image"),
@@ -368,6 +476,7 @@ async def tryon_garment_v2(
     db: Session = Depends(get_db),
 ):
     started = time.perf_counter()
+    logger.info(f"[MODE-DEBUG] raw mode from frontend: '{mode}'")
     _ensure_tryon_v2_enabled()
 
     if not garment_file.content_type or not garment_file.content_type.startswith("image/"):
@@ -391,8 +500,7 @@ async def tryon_garment_v2(
     # mode fallback: accept legacy/alias values from older clients
     _MODE_FALLBACK = {
         "detail": "detail_fidelity",
-        "mixed": "blend",
-        "hybrid": "blend",
+        "mixed": "hybrid",
         "fast": "stable_fast",
         "professional": "detail_fidelity",
         "realistic": "detail_fidelity",
@@ -400,15 +508,18 @@ async def tryon_garment_v2(
         "replace": "stable_fast",
     }
     mode = _MODE_FALLBACK.get(mode, mode)
+    logger.info(f"[MODE-DEBUG] mode after fallback: '{mode}'")
 
     if mode not in {
         "detail_fidelity",
         "blend",
         "stable_fast",
+        "hybrid",
+        "paste",
     }:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=("mode must be one of: detail_fidelity, blend, stable_fast"),
+            detail=("mode must be one of: detail_fidelity, blend, stable_fast, hybrid, paste"),
         )
 
     if debug_mode not in {"off", "preprocess_only", "full"}:
@@ -798,14 +909,45 @@ async def tryon_garment_v2(
                                         has_color = False
                                         is_white_garment = True
 
+                                    anomaly, cutout_qc, features = _build_fidelity_guard_context(
+                                        original_garment_image
+                                    )
+                                    sat_mean = features.sat_mean
+                                    sat_max = features.sat_max
+                                    bright_mean = features.bright_mean
+                                    has_color = features.has_color
+                                    is_white_garment = features.is_white_garment
+                                    if features.pattern_score >= 0.25:
+                                        has_color = True
+                                    preflight_qc_enabled = bool(
+                                        getattr(settings, "TRYON_V2_PREFLIGHT_QC_ENABLED", True)
+                                    )
+                                    engine_decision, _engine_reason = decide_color_fidelity_engine(
+                                        features=features,
+                                        cutout_passed=(
+                                            cutout_qc.passed or not preflight_qc_enabled
+                                        ),
+                                        input_anomaly_passed=(
+                                            anomaly.passed or not preflight_qc_enabled
+                                        ),
+                                    )
+                                    if preflight_qc_enabled and engine_decision == "skip":
+                                        is_white_garment = True
+                                        has_color = False
+                                        sat_mean = 0.0
+                                        sat_max = 0.0
+
                                     color_threshold = 0.05
                                     if not is_white_garment and (
                                         sat_mean > color_threshold or has_color
                                     ):
-                                        if sat_max > 0.25 and sat_mean >= 0.10:
+                                        if engine_decision == "spatial" and not (
+                                            0.38 <= features.pattern_score <= 0.45
+                                        ):
                                             logger.info(
                                                 "stable_fast: applying spatial color fidelity "
-                                                "for patterned garment (sat_mean=%.3f, sat_max=%.3f)",
+                                                "for patterned garment "
+                                                "(sat_mean=%.3f, sat_max=%.3f)",
                                                 sat_mean,
                                                 sat_max,
                                             )
@@ -815,6 +957,7 @@ async def tryon_garment_v2(
                                                 person_image=person_image,
                                                 garment_category=gc or "top",
                                                 fidelity_strength=fidelity_strength,
+                                                debug_session_dir=debug_session_dir,
                                             )
                                             upstream["result_image"] = result_img
                                             upstream["metadata"] = {
@@ -824,7 +967,7 @@ async def tryon_garment_v2(
                                                 "color_fidelity_mode": "spatial",
                                             }
                                             logger.info(
-                                                "stable_fast: spatial color fidelity applied (engine=%s)",
+                                                "stable_fast: spatial CF applied (engine=%s)",
                                                 cf_meta.get("engine", "unknown"),
                                             )
                                         elif sat_mean >= 0.05:
@@ -848,7 +991,7 @@ async def tryon_garment_v2(
                                                 "color_fidelity_mode": "uniform",
                                             }
                                             logger.info(
-                                                "stable_fast: uniform color fidelity applied (engine=%s)",
+                                                "stable_fast: uniform CF applied (engine=%s)",
                                                 cf_meta.get("engine", "unknown"),
                                             )
                                         else:
@@ -859,7 +1002,7 @@ async def tryon_garment_v2(
                                             )
                                     else:
                                         logger.info(
-                                            "stable_fast: skipping color fidelity (is_white_garment=%s, "
+                                            "stable_fast: skip CF (is_white_garment=%s, "
                                             "bright_mean=%.3f, sat_mean=%.3f)",
                                             is_white_garment,
                                             bright_mean,
@@ -1255,6 +1398,16 @@ async def tryon_garment_v2(
                 and upstream.get("result_image") is not None
             ):
                 result_img = upstream.get("result_image")
+                upstream_meta = upstream.get("metadata") or {}
+                upstream_debug_session_dir = upstream_meta.get("debug_session_dir")
+                if upstream_debug_session_dir:
+                    if upstream_debug_session_dir != debug_session_dir:
+                        logger.info(
+                            "[DEBUG] Using CatVTON subprocess debug directory for "
+                            "post-CatVTON stages: %s",
+                            upstream_debug_session_dir,
+                        )
+                    debug_session_dir = upstream_debug_session_dir
 
                 # ── 衣服颜色保真增强（启用）───────────────────────────────────────
                 # CatVTON 会重新生成衣服的颜色/图案，可能与原衣服差异较大。
@@ -1263,18 +1416,24 @@ async def tryon_garment_v2(
                 # 仅对彩色/有图案的衣服生效（高饱和度检测），纯白/纯黑衣服跳过。
                 pattern_score = 0.0
                 pattern_injected = False
+                color_fidelity_stage_saved = False
                 fidelity_strength = float(
                     getattr(settings, "TRYON_V2_COLOR_FIDELITY_STRENGTH", 0.75) or 0.75
                 )
                 enable_color_fidelity = bool(
                     getattr(settings, "TRYON_V2_COLOR_FIDELITY_ENABLED", True)
                 )
+                raw_quality = None
+                raw_quality_decision = "unassessed"
+                skip_catvton_safe_postprocess = False
+                skip_pattern_enhance = False
 
                 if enable_color_fidelity and fidelity_strength > 0.0:
                     try:
                         from app.services.tryon_v2.warp_engine import (
                             catvton_color_fidelity_enhance,
                             catvton_color_fidelity_spatial,
+                            catvton_lab_chroma_color_correct,
                         )
 
                         arr_check = np.array(original_garment_image.convert("RGB"))
@@ -1307,8 +1466,228 @@ async def tryon_garment_v2(
                             has_color = False
                             is_white_garment = True
 
+                        anomaly, cutout_qc, features = _build_fidelity_guard_context(
+                            original_garment_image
+                        )
+                        raw_mask_image = None
+                        if debug_session_dir:
+                            try:
+                                from pathlib import Path
+
+                                mask_candidates = []
+                                debug_path = Path(debug_session_dir)
+                                mask_candidates.append(debug_path / "08_mask_resized.png")
+                                if not debug_path.is_absolute():
+                                    mask_candidates.append(
+                                        Path.cwd() / debug_path / "08_mask_resized.png"
+                                    )
+                                    mask_candidates.append(
+                                        Path.cwd().parent / debug_path / "08_mask_resized.png"
+                                    )
+                                for mask_path in mask_candidates:
+                                    if mask_path.exists():
+                                        raw_mask_image = Image.open(mask_path).convert("L")
+                                        logger.info(
+                                            "Realistic: using CatVTON resized mask "
+                                            "for raw quality gate: %s",
+                                            mask_path,
+                                        )
+                                        break
+                            except Exception as mask_err:
+                                logger.info(
+                                    "Realistic mode: CatVTON resized mask "
+                                    "unavailable for raw quality gate: %s",
+                                    mask_err,
+                                )
+
+                        raw_quality = evaluate_raw_catvton_quality(
+                            raw_result=result_img,
+                            original_garment=original_garment_image,
+                            person_image=person_image,
+                            garment_category=gc or "top",
+                            features=features,
+                            raw_mask_image=raw_mask_image,
+                        )
+                        raw_quality_decision = raw_quality.decision
+                        raw_quality_meta = {
+                            "decision": raw_quality.decision,
+                            "reason": raw_quality.reason,
+                            "color_passed": raw_quality.color_passed,
+                            "pattern_passed": raw_quality.pattern_passed,
+                            "artifact_passed": raw_quality.artifact_passed,
+                            "color_delta": round(raw_quality.color_delta, 3),
+                            "source_value_mean": round(raw_quality.source_value_mean, 4),
+                            "raw_value_mean": round(raw_quality.raw_value_mean, 4),
+                            "source_pattern_score": round(raw_quality.source_pattern_score, 4),
+                            "raw_pattern_signal": round(raw_quality.raw_pattern_signal, 4),
+                            "artifact_score": round(raw_quality.artifact_score, 4),
+                            "garment_coverage": round(raw_quality.garment_coverage, 4),
+                            "source_hue_entropy": round(
+                                getattr(raw_quality, "source_hue_entropy", 0.0),
+                                4,
+                            ),
+                            "raw_hue_entropy": round(
+                                getattr(raw_quality, "raw_hue_entropy", 0.0),
+                                4,
+                            ),
+                        }
+                        sat_mean = features.sat_mean
+                        sat_max = features.sat_max
+                        bright_mean = features.bright_mean
+                        has_color = features.has_color
+                        is_white_garment = features.is_white_garment
+                        if features.pattern_score >= 0.25:
+                            has_color = True
+                        preflight_qc_enabled = bool(
+                            getattr(settings, "TRYON_V2_PREFLIGHT_QC_ENABLED", True)
+                        )
+                        engine_decision, _engine_reason = decide_color_fidelity_engine(
+                            features=features,
+                            cutout_passed=(cutout_qc.passed or not preflight_qc_enabled),
+                            input_anomaly_passed=(anomaly.passed or not preflight_qc_enabled),
+                        )
+                        if preflight_qc_enabled and engine_decision == "skip":
+                            is_white_garment = True
+                            has_color = False
+                            sat_mean = 0.0
+                            sat_max = 0.0
+
                         color_threshold = 0.05  # 降低阈值：原 0.08 太严格
-                        if is_white_garment:
+                        if raw_quality.decision == "raw":
+                            logger.info(
+                                "Realistic mode: raw CatVTON quality passed; "
+                                "returning step-9 output directly (%s)",
+                                raw_quality.reason,
+                            )
+                            upstream["metadata"] = {
+                                **(upstream.get("metadata") or {}),
+                                "color_fidelity_applied": False,
+                                "raw_quality_gate": raw_quality_meta,
+                                "postprocess_skip_reason": "raw_quality_passed",
+                            }
+                            skip_catvton_safe_postprocess = True
+                            skip_pattern_enhance = True
+                            save_debug_stage_image(
+                                debug_session_dir=debug_session_dir,
+                                filename="12_after_color_fidelity.jpg",
+                                image=result_img,
+                                metadata={
+                                    "stage": "after_color_fidelity",
+                                    "color_fidelity_applied": False,
+                                    "reason": "raw_quality_passed",
+                                    "raw_quality_gate": raw_quality_meta,
+                                },
+                            )
+                            color_fidelity_stage_saved = True
+                        elif raw_quality.decision == "artifact_only":
+                            logger.info(
+                                "Realistic: raw color/pattern passed but artifacts detected; "
+                                "applying conservative raw artifact repair only (%s)",
+                                raw_quality.reason,
+                            )
+                            result_img, repair_meta = repair_raw_catvton_artifacts(
+                                raw_result=result_img,
+                                person_image=person_image,
+                                garment_category=gc or "top",
+                                raw_mask_image=raw_mask_image,
+                            )
+                            upstream["metadata"] = {
+                                **(upstream.get("metadata") or {}),
+                                **repair_meta,
+                                "color_fidelity_applied": False,
+                                "raw_quality_gate": raw_quality_meta,
+                                "postprocess_skip_reason": "artifact_only_raw_gate",
+                            }
+                            skip_catvton_safe_postprocess = True
+                            skip_pattern_enhance = True
+                            save_debug_stage_image(
+                                debug_session_dir=debug_session_dir,
+                                filename="12_after_color_fidelity.jpg",
+                                image=result_img,
+                                metadata={
+                                    "stage": "after_color_fidelity",
+                                    "color_fidelity_applied": False,
+                                    "reason": "artifact_only_raw_gate",
+                                    "raw_quality_gate": raw_quality_meta,
+                                    **repair_meta,
+                                },
+                            )
+                            color_fidelity_stage_saved = True
+                        elif raw_quality.decision == "color_only":
+                            logger.info(
+                                "Realistic mode: raw pattern is OK but color is missing; "
+                                "applying LAB/chroma color correction only"
+                            )
+                            skip_catvton_safe_postprocess = True
+                            skip_pattern_enhance = True
+                            result_img, cf_meta = catvton_lab_chroma_color_correct(
+                                catvton_result=result_img,
+                                original_garment=original_garment_image,
+                                person_image=person_image,
+                                garment_category=gc or "top",
+                                raw_mask_image=raw_mask_image,
+                                fidelity_strength=fidelity_strength,
+                            )
+                            pattern_injected = False
+                            pattern_score = 0.0
+                            upstream["metadata"] = {
+                                **(upstream.get("metadata") or {}),
+                                **cf_meta,
+                                "color_fidelity_applied": True,
+                                "raw_quality_gate": raw_quality_meta,
+                                "postprocess_skip_reason": "minimal_raw_gate_branch",
+                            }
+                            save_debug_stage_image(
+                                debug_session_dir=debug_session_dir,
+                                filename="12_after_color_fidelity.jpg",
+                                image=result_img,
+                                metadata={
+                                    "stage": "after_color_fidelity",
+                                    "pattern_score": round(pattern_score, 3),
+                                    "engine": cf_meta.get("engine", "unknown"),
+                                    "garment_region": cf_meta.get("garment_region"),
+                                    "raw_quality_gate": raw_quality_meta,
+                                },
+                            )
+                            color_fidelity_stage_saved = True
+                        elif raw_quality.decision == "pattern_only":
+                            logger.info(
+                                "Realistic mode: raw color is OK but motif is missing; "
+                                "applying localized motif recovery only"
+                            )
+                            skip_catvton_safe_postprocess = True
+                            skip_pattern_enhance = True
+                            result_img, cf_meta = catvton_color_fidelity_spatial(
+                                catvton_result=result_img,
+                                original_garment=original_garment_image,
+                                person_image=person_image,
+                                garment_category=gc or "top",
+                                fidelity_strength=min(fidelity_strength, 0.62),
+                                debug_session_dir=debug_session_dir,
+                            )
+                            pattern_injected = True
+                            pattern_score = min(0.95, sat_mean + 0.3)
+                            upstream["metadata"] = {
+                                **(upstream.get("metadata") or {}),
+                                **cf_meta,
+                                "color_fidelity_applied": True,
+                                "raw_quality_gate": raw_quality_meta,
+                                "postprocess_skip_reason": "minimal_raw_gate_branch",
+                            }
+                            save_debug_stage_image(
+                                debug_session_dir=debug_session_dir,
+                                filename="12_after_color_fidelity.jpg",
+                                image=result_img,
+                                metadata={
+                                    "stage": "after_color_fidelity",
+                                    "pattern_score": round(pattern_score, 3),
+                                    "engine": cf_meta.get("engine", "unknown"),
+                                    "garment_region": cf_meta.get("garment_region"),
+                                    "raw_quality_gate": raw_quality_meta,
+                                },
+                            )
+                            color_fidelity_stage_saved = True
+                        elif is_white_garment:
                             logger.info(
                                 "Realistic mode: skipping color fidelity "
                                 "(is_white_garment=True, bright_mean=%.3f, sat_mean=%.3f, "
@@ -1320,14 +1699,16 @@ async def tryon_garment_v2(
                             # 高对比度图案（格子/条纹/彩色印花）使用空间感知保真
                             # 均匀 LAB 混合会把蓝白格子变成褐色——必须用像素级替换
                             # 使用 max 饱和度判断是否需要 spatial 保真
-                            if sat_max > 0.25 and sat_mean >= 0.10:
+                            if engine_decision == "spatial" and not (
+                                0.38 <= features.pattern_score <= 0.45
+                            ):
                                 # 图案衣服（格子/条纹/密集印花）：使用 catvton_color_fidelity_spatial
                                 # catvton_color_fidelity_enhance（LAB均匀混合）会把格子变褐色，
                                 # spatial 版本做像素级 warp 叠加，原图案空间分布100%保留。
                                 # TPS warp 有 bug 时会 fallback 到 Quad 透视变形（更鲁棒）。
                                 logger.info(
-                                    "Realistic mode: applying spatial color fidelity for patterned garment "
-                                    "(sat_mean=%.3f, sat_max=%.3f) — warp original garment onto result",
+                                    "Realistic: spatial CF for patterned garment "
+                                    "(sat_mean=%.3f, sat_max=%.3f) — warp original onto result",
                                     sat_mean,
                                     sat_max,
                                 )
@@ -1337,6 +1718,7 @@ async def tryon_garment_v2(
                                     person_image=person_image,
                                     garment_category=gc or "top",
                                     fidelity_strength=fidelity_strength,
+                                    debug_session_dir=debug_session_dir,
                                 )
                             elif sat_mean >= 0.05:
                                 logger.info(
@@ -1357,6 +1739,12 @@ async def tryon_garment_v2(
                                 **(upstream.get("metadata") or {}),
                                 **cf_meta,
                                 "color_fidelity_applied": True,
+                                "raw_quality_gate": raw_quality_meta,
+                                "postprocess_skip_reason": (
+                                    "minimal_raw_gate_branch"
+                                    if skip_catvton_safe_postprocess
+                                    else None
+                                ),
                             }
                             logger.info(
                                 "Realistic mode: color fidelity applied "
@@ -1373,8 +1761,27 @@ async def tryon_garment_v2(
                                     "pattern_score": round(pattern_score, 3),
                                     "engine": cf_meta.get("engine", "unknown"),
                                     "garment_region": cf_meta.get("garment_region"),
+                                    "cutout_qc": {
+                                        "passed": cutout_qc.passed,
+                                        "alpha_coverage": round(cutout_qc.alpha_coverage, 4),
+                                        "component_count": cutout_qc.alpha_component_count,
+                                        "bbox_fill_ratio": round(cutout_qc.bbox_fill_ratio, 4),
+                                        "edge_touch_ratio": round(cutout_qc.edge_touch_ratio, 4),
+                                        "background_leak_ratio": round(
+                                            cutout_qc.background_leak_ratio, 4
+                                        ),
+                                    },
+                                    "engine_decision_features": {
+                                        "sat_mean": round(features.sat_mean, 4),
+                                        "sat_max": round(features.sat_max, 4),
+                                        "pattern_score": round(features.pattern_score, 4),
+                                        "pattern_confidence": round(features.pattern_confidence, 4),
+                                        "mirror_ghost_score": round(anomaly.mirror_ghost_score, 4),
+                                    },
+                                    "raw_quality_gate": raw_quality_meta,
                                 },
                             )
+                            color_fidelity_stage_saved = True
                         else:
                             logger.info(
                                 "Realistic mode: skipping color fidelity "
@@ -1396,6 +1803,24 @@ async def tryon_garment_v2(
                 # ── 后处理增强（消除拼接痕迹）──────────────────────────────
                 # 注意：CatVTON 输出尺寸 (512x768 或 768x1024) 与原始人物图尺寸不同。
                 # enhance_tryon_result 需要 result 和 person 尺寸一致，需要先对齐。
+                if not color_fidelity_stage_saved:
+                    save_debug_stage_image(
+                        debug_session_dir=debug_session_dir,
+                        filename="12_after_color_fidelity.jpg",
+                        image=result_img,
+                        metadata={
+                            "stage": "after_color_fidelity",
+                            "color_fidelity_applied": False,
+                            "reason": (
+                                "disabled_or_skipped_or_failed"
+                                if enable_color_fidelity
+                                else "disabled"
+                            ),
+                            "fidelity_strength": fidelity_strength,
+                            "fallback_reason": "disabled_or_skipped_or_failed",
+                        },
+                    )
+
                 try:
                     from app.services.tryon_v2.postprocess import catvton_safe_enhance
 
@@ -1424,17 +1849,55 @@ async def tryon_garment_v2(
                     )
 
                     # CatVTON-safe: denoise + seam removal + sharpen (no blending)
-                    result_img = catvton_safe_enhance(
-                        result=result_img_resized,
-                        person=person_image,
-                    )
-                    logger.info("Realistic mode: CatVTON-safe post-processing applied")
-                    save_debug_stage_image(
-                        debug_session_dir=debug_session_dir,
-                        filename="14_after_catvton_safe_enhance.jpg",
-                        image=result_img,
-                        metadata={"stage": "after_catvton_safe_enhance"},
-                    )
+                    if skip_catvton_safe_postprocess:
+                        result_img = result_img_resized
+                        logger.info(
+                            "Realistic mode: skipping CatVTON-safe post-processing "
+                            "(raw_quality_decision=%s)",
+                            raw_quality_decision,
+                        )
+                        save_debug_stage_image(
+                            debug_session_dir=debug_session_dir,
+                            filename="14_after_catvton_safe_enhance.jpg",
+                            image=result_img,
+                            metadata={
+                                "stage": "after_catvton_safe_motif_restore",
+                                "applied": False,
+                                "reason": "raw_quality_gate_skip",
+                                "raw_quality_decision": raw_quality_decision,
+                            },
+                        )
+                    else:
+                        pre_safe_enhance_img = result_img_resized.copy()
+                        result_img = catvton_safe_enhance(
+                            result=result_img_resized,
+                            person=person_image,
+                        )
+                        logger.info("Realistic mode: CatVTON-safe post-processing applied")
+                        save_debug_stage_image(
+                            debug_session_dir=debug_session_dir,
+                            filename="14a_after_catvton_safe_enhance_raw.jpg",
+                            image=result_img,
+                            metadata={"stage": "after_catvton_safe_enhance_raw"},
+                        )
+                        result_img, motif_restore_meta = _restore_catvton_motif_after_postprocess(
+                            pre_postprocess_image=pre_safe_enhance_img,
+                            postprocess_image=result_img,
+                            debug_session_dir=debug_session_dir,
+                        )
+                        if motif_restore_meta.get("applied"):
+                            logger.info(
+                                "Realistic mode: restored motif details after safe enhance "
+                                "(coverage=%.4f, alpha=%.2f)",
+                                float(motif_restore_meta.get("restore_coverage", 0.0)),
+                                float(motif_restore_meta.get("restore_alpha_max", 0.0)),
+                            )
+                        save_debug_stage_image(
+                            debug_session_dir=debug_session_dir,
+                            filename="14_after_catvton_safe_enhance.jpg",
+                            image=result_img,
+                            metadata=motif_restore_meta,
+                        )
                 except Exception as pp_err:
                     logger.warning(
                         "Realistic mode: post-processing failed (continuing): %s",
@@ -1457,7 +1920,9 @@ async def tryon_garment_v2(
                         "attempts": attempt + 1,
                         "pattern_protected": pattern_injected,
                         "pattern_score": round(pattern_score, 3),
-                        "postprocess_applied": True,
+                        "postprocess_applied": not skip_catvton_safe_postprocess,
+                        "raw_quality_decision": raw_quality_decision,
+                        "skip_pattern_enhance": skip_pattern_enhance,
                     },
                 }
                 logger.info(f"Realistic mode: CatVTON succeeded on attempt {attempt + 1}")
@@ -1630,6 +2095,30 @@ async def tryon_garment_v2(
                             has_color = False
                             is_white_garment = True
 
+                        anomaly, cutout_qc, features = _build_fidelity_guard_context(
+                            original_garment_image
+                        )
+                        sat_mean = features.sat_mean
+                        sat_max = features.sat_max
+                        bright_mean = features.bright_mean
+                        has_color = features.has_color
+                        is_white_garment = features.is_white_garment
+                        if features.pattern_score >= 0.25:
+                            has_color = True
+                        preflight_qc_enabled = bool(
+                            getattr(settings, "TRYON_V2_PREFLIGHT_QC_ENABLED", True)
+                        )
+                        engine_decision, _engine_reason = decide_color_fidelity_engine(
+                            features=features,
+                            cutout_passed=(cutout_qc.passed or not preflight_qc_enabled),
+                            input_anomaly_passed=(anomaly.passed or not preflight_qc_enabled),
+                        )
+                        if preflight_qc_enabled and engine_decision == "skip":
+                            is_white_garment = True
+                            has_color = False
+                            sat_mean = 0.0
+                            sat_max = 0.0
+
                         color_threshold = 0.05
                         if is_white_garment:
                             logger.info(
@@ -1641,10 +2130,12 @@ async def tryon_garment_v2(
                             )
                         elif sat_mean > color_threshold or has_color:
                             # 图案衣服：跳过 color fidelity，保留 CatVTON 输出
-                            if sat_max > 0.25 and sat_mean >= 0.10:
+                            if engine_decision == "spatial" and not (
+                                0.38 <= features.pattern_score <= 0.45
+                            ):
                                 logger.info(
-                                    "Professional mode: SKIPPING color fidelity for patterned garment "
-                                    "(sat_mean=%.3f, sat_max=%.3f) - CatVTON output preserved",
+                                    "Professional: SKIP CF for patterned garment "
+                                    "(sat_mean=%.3f, sat_max=%.3f) - CatVTON preserved",
                                     sat_mean,
                                     sat_max,
                                 )
@@ -1896,6 +2387,30 @@ async def tryon_garment_v2(
                             has_color = False
                             is_white_garment = True
 
+                        anomaly, cutout_qc, features = _build_fidelity_guard_context(
+                            original_garment_image
+                        )
+                        sat_mean = features.sat_mean
+                        sat_max = features.sat_max
+                        bright_mean = features.bright_mean
+                        has_color = features.has_color
+                        is_white_garment = features.is_white_garment
+                        if features.pattern_score >= 0.25:
+                            has_color = True
+                        preflight_qc_enabled = bool(
+                            getattr(settings, "TRYON_V2_PREFLIGHT_QC_ENABLED", True)
+                        )
+                        engine_decision, _engine_reason = decide_color_fidelity_engine(
+                            features=features,
+                            cutout_passed=(cutout_qc.passed or not preflight_qc_enabled),
+                            input_anomaly_passed=(anomaly.passed or not preflight_qc_enabled),
+                        )
+                        if preflight_qc_enabled and engine_decision == "skip":
+                            is_white_garment = True
+                            has_color = False
+                            sat_mean = 0.0
+                            sat_max = 0.0
+
                         color_threshold = 0.05
                         if is_white_garment:
                             logger.info(
@@ -1906,11 +2421,13 @@ async def tryon_garment_v2(
                                 sat_mean,
                             )
                         elif sat_mean > color_threshold or has_color:
-                            if sat_max > 0.25 and sat_mean >= 0.10:
+                            if engine_decision == "spatial" and not (
+                                0.38 <= features.pattern_score <= 0.45
+                            ):
                                 # 图案衣服：使用 spatial 保真（像素级 warp 叠加），保留原图案
                                 logger.info(
-                                    "Realistic_v2: applying spatial color fidelity for patterned garment "
-                                    "(sat_mean=%.3f, sat_max=%.3f) — warp original garment onto result",
+                                    "Realistic_v2: spatial CF for patterned garment "
+                                    "(sat_mean=%.3f, sat_max=%.3f) — warp original onto result",
                                     sat_mean,
                                     sat_max,
                                 )
@@ -2252,6 +2769,46 @@ async def tryon_garment_v2(
                     "action_hint": "请确保 CatVTON 配置正确且有足够显存",
                 },
             )
+
+    # ── paste 模式：白底标准图专用，简洁几何贴合，无 CatVTON ─────────────────
+    elif mode == "paste":
+        from app.services.tryon_v2.warp_engine import tryon_top_garment_paste
+
+        gc = (garment_category or "").strip()
+        try:
+            logger.info(f"[PASTE] Starting paste mode for garment category: {gc or 'top'}")
+            result_img, paste_meta = tryon_top_garment_paste(
+                person_image=person_image,
+                garment_image=garment_image,
+            )
+            result = {
+                "status": "success",
+                "message": "Paste 模式完成：白底标准图几何贴合",
+                "pipeline": "PASTE",
+                "result_image": result_img,
+                "metadata": {
+                    "engine": "top_garment_paste",
+                    "warp_engine": getattr(paste_meta, "engine", "unknown"),
+                    "method": "auto_rotate + body_proportion_scale + trapezoid_warp",
+                    "no_catvton": True,
+                    "garment_category": gc or "top",
+                },
+            }
+            logger.info("Paste mode: white-bg garment paste succeeded")
+        except HTTPException:
+            raise
+        except Exception as paste_err:
+            logger.warning("Paste mode failed: %s", paste_err)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "message": f"Paste 模式失败：{str(paste_err)}",
+                    "error_code": "PASTE_MODE_FAILED",
+                    "retryable": True,
+                    "action_hint": "请检查衣服图片是否清晰可辨",
+                },
+            )
+
     else:
         result = run_pipeline_a(
             person_image=person_image,
@@ -2301,13 +2858,42 @@ async def tryon_garment_v2(
     )
     result_img = result.get("result_image")
 
-    if is_catvton_output and result_img is not None:
+    skip_pattern_enhance_by_gate = bool(
+        result.get("metadata", {}).get("skip_pattern_enhance")
+        or result.get("metadata", {}).get("postprocess_skip_reason") == "raw_quality_passed"
+    )
+    if is_catvton_output and result_img is not None and not skip_pattern_enhance_by_gate:
         # 对所有 CatVTON 输出应用频率分离锐化（增强图案/褶皱清晰度）。
         # 纯图像操作，无混合，无贴纸效果。安全，对所有 CatVTON 结果都有益。
         try:
             from app.services.tryon_v2.postprocess import enhance_pattern_details
 
-            result_img = enhance_pattern_details(result_img, strength=1.3)
+            before_enhance = result_img
+            adaptive_enabled = bool(
+                getattr(settings, "TRYON_V2_ADAPTIVE_PATTERN_ENHANCE_ENABLED", True)
+            )
+            post_cf_artifacts = detect_post_cf_artifacts(before_enhance, before_enhance)
+            auto_strength = (
+                estimate_pattern_enhance_strength(
+                    pattern_score=float(
+                        result.get("metadata", {}).get("pattern_score", 0.0)
+                        or result.get("metadata", {}).get("sat_mean", 0.0)
+                    ),
+                    artifact_report=post_cf_artifacts,
+                    result_image=before_enhance,
+                )
+                if adaptive_enabled
+                else 1.3
+            )
+            if auto_strength > 0.0:
+                result_img = enhance_pattern_details(result_img, strength=auto_strength)
+            else:
+                logger.info(
+                    "CatVTON-pattern enhance disabled by adaptive guard "
+                    "(blockiness=%.3f, outlier=%.3f)",
+                    post_cf_artifacts.blockiness_score,
+                    post_cf_artifacts.outlier_ratio,
+                )
             result["result_image"] = result_img
             logger.info(
                 "CatVTON-pattern enhance: frequency-separation sharpen applied "
@@ -2317,13 +2903,40 @@ async def tryon_garment_v2(
                 debug_session_dir=debug_session_dir,
                 filename="15_after_pattern_enhance.jpg",
                 image=result_img,
-                metadata={"stage": "after_pattern_enhance", "strength": 1.3},
+                metadata={
+                    "stage": "after_pattern_enhance",
+                    "strength": round(auto_strength, 3),
+                    "enhance_strength_auto": round(auto_strength, 3),
+                    "fallback_reason": "artifact_guard_disabled" if auto_strength <= 0.0 else "ok",
+                    "post_cf_artifacts": {
+                        "blockiness_score": round(post_cf_artifacts.blockiness_score, 4),
+                        "outlier_ratio": round(post_cf_artifacts.outlier_ratio, 4),
+                        "failed": post_cf_artifacts.failed,
+                    },
+                },
             )
         except Exception as pp_err:
             logger.warning(
                 "CatVTON-pattern enhance failed (continuing with raw output): %s",
                 pp_err,
             )
+    elif is_catvton_output and result_img is not None and skip_pattern_enhance_by_gate:
+        logger.info(
+            "CatVTON-pattern enhance skipped by raw quality gate " "(decision=%s)",
+            result.get("metadata", {}).get("raw_quality_decision"),
+        )
+        save_debug_stage_image(
+            debug_session_dir=debug_session_dir,
+            filename="15_after_pattern_enhance.jpg",
+            image=result_img,
+            metadata={
+                "stage": "after_pattern_enhance",
+                "strength": 0.0,
+                "enhance_strength_auto": 0.0,
+                "fallback_reason": "raw_quality_gate_skip",
+                "raw_quality_decision": result.get("metadata", {}).get("raw_quality_decision"),
+            },
+        )
     else:
         try:
             if result_img is not None:
@@ -2380,6 +2993,17 @@ async def tryon_garment_v2(
     key = hashlib.sha1(image_bytes).hexdigest()[:20]
     result_path = f"{current_user.user_id}/tryon_v2/result_{key}.jpg"
     _, result_url = get_storage_service()._save_bytes(image_bytes, result_path)
+    save_debug_stage_bytes(
+        debug_session_dir=debug_session_dir,
+        filename="99_backend_final_returned.jpg",
+        data=image_bytes,
+        metadata={
+            "stage": "backend_final_returned",
+            "result_path": result_path,
+            "result_url": result_url,
+            "size": list(image_obj.size),
+        },
+    )
     record_tryon_v2_success(int((time.perf_counter() - started) * 1000))
 
     return TryOnV2Response(
@@ -2523,17 +3147,21 @@ async def tryon_v2_validate_input(
         if img2 is not None:
             garment_image_2 = img2
 
-    # Replace/realistic/realistic_v2/hybrid mode uses upstream/warp engines; skip pipeline A input gate precheck.  # noqa: E501
-    if mode in ("replace", "realistic", "realistic_v2", "hybrid"):
+    # Replace/realistic/realistic_v2/hybrid/paste mode uses upstream/warp engines; skip pipeline A input gate precheck.  # noqa: E501
+    if mode in ("replace", "realistic", "realistic_v2", "hybrid", "paste"):
         return TryOnV2ValidateResponse(
             status="pass",
             pipeline=(
-                "HYBRID"
-                if mode == "hybrid"
+                "PASTE"
+                if mode == "paste"
                 else (
-                    "REALISTIC_V2"
-                    if mode == "realistic_v2"
-                    else ("REALISTIC" if mode == "realistic" else "REPLACE")
+                    "HYBRID"
+                    if mode == "hybrid"
+                    else (
+                        "REALISTIC_V2"
+                        if mode == "realistic_v2"
+                        else ("REALISTIC" if mode == "realistic" else "REPLACE")
+                    )
                 )
             ),
             passed=True,

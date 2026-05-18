@@ -118,6 +118,176 @@ def _detect_pattern_strength(img: Image.Image) -> float:
     return float(np.clip(combined, 0.0, 1.0))
 
 
+def _suppress_light_fidelity_artifact_candidates(
+    motif_candidate: np.ndarray,
+    layer_rgb: np.ndarray,
+    motif_source: np.ndarray,
+    *,
+    gar_x0: int,
+    gar_y0: int,
+    gar_x1: int,
+    gar_y1: int,
+    body_cx: int,
+    light_pattern_base: bool,
+) -> tuple[np.ndarray, float]:
+    """Drop blocky off-center white artifacts while keeping central print detail."""
+    if not light_pattern_base or not motif_candidate.any():
+        return motif_candidate, 0.0
+
+    h, w = motif_candidate.shape
+    garment_w = max(1, gar_x1 - gar_x0)
+    garment_h = max(1, gar_y1 - gar_y0)
+    hsv = cv2.cvtColor(layer_rgb.astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
+    sat = hsv[:, :, 1]
+    val = hsv[:, :, 2]
+
+    pale_candidate = motif_candidate & motif_source & (val > 212.0) & (sat < 58.0)
+    if not pale_candidate.any():
+        return motif_candidate, 0.0
+
+    grid_y, grid_x = np.indices((h, w))
+    central_print_band = (
+        (np.abs(grid_x - float(body_cx)) <= garment_w * 0.28)
+        & (grid_y >= gar_y0 + garment_h * 0.18)
+        & (grid_y <= gar_y0 + garment_h * 0.86)
+    )
+    shoulder_or_edge_band = (grid_y < gar_y0 + garment_h * 0.30) | (
+        np.abs(grid_x - float(body_cx)) > garment_w * 0.34
+    )
+
+    labels_count, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        pale_candidate.astype(np.uint8),
+        8,
+    )
+    remove_mask = np.zeros_like(motif_candidate, dtype=bool)
+    min_block_area = max(18, int(garment_w * garment_h * 0.00035))
+    for label_idx in range(1, labels_count):
+        area = int(stats[label_idx, cv2.CC_STAT_AREA])
+        if area < min_block_area:
+            continue
+        bbox_w = int(stats[label_idx, cv2.CC_STAT_WIDTH])
+        bbox_h = int(stats[label_idx, cv2.CC_STAT_HEIGHT])
+        bbox_area = max(1, bbox_w * bbox_h)
+        fill_ratio = area / float(bbox_area)
+        component = labels == label_idx
+        central_overlap = float((component & central_print_band).sum()) / float(area)
+        edge_overlap = float((component & shoulder_or_edge_band).sum()) / float(area)
+        cx, cy = centroids[label_idx]
+        side_upper_artifact = (
+            cy < gar_y0 + garment_h * 0.32 and abs(cx - float(body_cx)) > garment_w * 0.18
+        )
+        near_garment_edge = (
+            cx < gar_x0 + garment_w * 0.18
+            or cx > gar_x1 - garment_w * 0.18
+            or cy < gar_y0 + garment_h * 0.20
+            or cy > gar_y1 - garment_h * 0.08
+        )
+        blocky = fill_ratio >= 0.34 and max(bbox_w, bbox_h) >= 5
+        if (
+            central_overlap < 0.22
+            and blocky
+            and (edge_overlap > 0.45 or near_garment_edge or side_upper_artifact)
+        ) or (side_upper_artifact and blocky and central_overlap < 0.45):
+            remove_mask |= component
+
+    if not remove_mask.any():
+        return motif_candidate, 0.0
+
+    filtered = motif_candidate & ~remove_mask
+    removed_ratio = float(remove_mask.sum()) / float(max(1, motif_source.sum()))
+    return filtered, removed_ratio
+
+
+def _repair_light_garment_block_artifacts(
+    result_np: np.ndarray,
+    garment_mask: np.ndarray,
+    motif_gate: np.ndarray,
+    *,
+    gar_x0: int,
+    gar_y0: int,
+    gar_x1: int,
+    gar_y1: int,
+    body_cx: int,
+    light_pattern_base: bool,
+) -> tuple[np.ndarray, float]:
+    """Blend shoulder/edge pale blocks back into the local fabric tone."""
+    if not light_pattern_base or not garment_mask.any():
+        return result_np, 0.0
+
+    h, w = garment_mask.shape
+    garment_w = max(1, gar_x1 - gar_x0)
+    garment_h = max(1, gar_y1 - gar_y0)
+    grid_y, grid_x = np.indices((h, w))
+    central_print_band = (
+        (np.abs(grid_x - float(body_cx)) <= garment_w * 0.26)
+        & (grid_y >= gar_y0 + garment_h * 0.18)
+        & (grid_y <= gar_y0 + garment_h * 0.86)
+    )
+    artifact_zone = (
+        (grid_y < gar_y0 + garment_h * 0.34)
+        | (np.abs(grid_x - float(body_cx)) > garment_w * 0.31)
+        | (grid_y > gar_y1 - garment_h * 0.12)
+    )
+
+    hsv = cv2.cvtColor(result_np.astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
+    sat = hsv[:, :, 1]
+    val = hsv[:, :, 2]
+    fabric_reference = garment_mask & ~central_print_band & (motif_gate < 0.12)
+    ref_vals = val[fabric_reference]
+    if ref_vals.size < 32:
+        return result_np, 0.0
+
+    median_val = float(np.median(ref_vals))
+    fabric_refined = fabric_reference & (val <= float(np.percentile(ref_vals, 58)))
+    ref_rgb = result_np[fabric_refined if fabric_refined.sum() >= 32 else fabric_reference]
+    if ref_rgb.size == 0:
+        return result_np, 0.0
+    fabric_rgb = np.median(ref_rgb.reshape(-1, 3), axis=0).astype(np.float32)
+    candidate = (
+        garment_mask
+        & artifact_zone
+        & ~central_print_band
+        & (sat < 48.0)
+        & (val > max(206.0, median_val + 18.0))
+    )
+    candidate = cv2.morphologyEx(
+        candidate.astype(np.uint8),
+        cv2.MORPH_OPEN,
+        np.ones((3, 3), dtype=np.uint8),
+    ).astype(bool)
+    if not candidate.any():
+        return result_np, 0.0
+
+    labels_count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        candidate.astype(np.uint8),
+        8,
+    )
+    repair_mask = np.zeros_like(candidate, dtype=bool)
+    min_area = max(18, int(garment_w * garment_h * 0.00035))
+    for label_idx in range(1, labels_count):
+        area = int(stats[label_idx, cv2.CC_STAT_AREA])
+        if area < min_area:
+            continue
+        bbox_w = int(stats[label_idx, cv2.CC_STAT_WIDTH])
+        bbox_h = int(stats[label_idx, cv2.CC_STAT_HEIGHT])
+        fill_ratio = area / float(max(1, bbox_w * bbox_h))
+        if fill_ratio >= 0.22 and max(bbox_w, bbox_h) >= 5:
+            repair_mask |= labels == label_idx
+
+    if not repair_mask.any():
+        return result_np, 0.0
+
+    soft = cv2.GaussianBlur(repair_mask.astype(np.float32), (9, 9), 0)
+    soft = np.clip(soft * 0.96, 0.0, 0.96)[:, :, np.newaxis]
+    local_blur = cv2.GaussianBlur(result_np.astype(np.float32), (0, 0), 4.0)
+    repair_rgb = np.clip(fabric_rgb * 0.88 + local_blur * 0.12, 0, 255)
+    repaired = result_np.astype(np.float32).copy()
+    repaired[:, :, :3] = repair_rgb * soft + repaired[:, :, :3] * (1.0 - soft)
+    repaired = np.clip(repaired, 0, 255).astype(np.float32)
+    repaired_ratio = float(repair_mask.sum()) / float(max(1, garment_mask.sum()))
+    return repaired, repaired_ratio
+
+
 def _pil_quad_warp(
     src_rgba: Image.Image, dst_size: tuple[int, int], quad: tuple[int, ...]
 ) -> Image.Image:
@@ -1587,6 +1757,267 @@ def overlay_top_onto_ai_result(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# White-Background Garment Paste (simplified, no CatVTON)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def tryon_top_garment_paste(
+    person_image: Image.Image,
+    garment_image: Image.Image,
+    *,
+    alpha_feather_ratio: float = 0.008,
+) -> tuple[Image.Image, WarpMetadata]:
+    """Paste upper garment onto person using clean white-background product photos.
+
+    This is a simplified, dedicated mode for standardized white-background product
+    images (白底标准图). Unlike hybrid/tryon_top_warp_preserve, this function:
+
+      1. Auto-detects garment orientation (flat-lay horizontal → rotates upright)
+      2. Scales garment to match body proportions via MediaPipe/SCHP keypoints
+      3. Applies a trapezoid body-shape warp (narrower at shoulders, wider at waist)
+      4. Skips CatVTON entirely (avoids AI mangling product photos)
+
+    Args:
+        person_image: PIL RGB image of the person.
+        garment_image: PIL RGB image of the garment (white-background product photo).
+        alpha_feather_ratio: Edge feathering radius as ratio of image size.
+
+    Returns:
+        (result_rgb, metadata)
+    """
+    base = person_image.convert("RGBA")
+    pw, ph = base.size
+
+    # ── Step 1: Cut out garment from white background ────────────────────────
+    cutout = cutout_garment_rgba(garment_image)
+    g = cutout.cropped.convert("RGBA")
+    gw, gh = g.size
+    if gw < 16 or gh < 16:
+        raise ValueError("garment too small for top paste")
+
+    # ── Step 2: Auto-detect and correct garment orientation ───────────────────
+    # Flat-lay product photos are often captured horizontally (garment laid flat).
+    # For wearing, the garment must be upright (taller than wide for upper garments).
+    g = _auto_rotate_garment(g)
+    gw, gh = g.size  # Update dimensions after rotation
+
+    # ── Step 3: Get body bounds from pose/SCHP ───────────────────────────────
+    _used_pose = False
+    _shoulder_w_px: int | None = None
+    _hip_w_px: int | None = None
+
+    # Priority 1: SCHP human parsing
+    try:
+        from app.services.human_parsing import schp_parse
+
+        schp_result = schp_parse(person_image)
+        if schp_result and schp_result.source != "heuristic_grabcut":
+            top_mask = schp_result.top_region()
+            rows = np.where(top_mask.max(axis=1) > 0.3)[0]
+            cols = np.where(top_mask.max(axis=0) > 0.3)[0]
+            if len(rows) > 10 and len(cols) > 10:
+                x0 = int(cols[0])
+                x1 = int(cols[-1])
+                y_top = int(rows[0])
+                y_bottom = int(rows[-1])
+                neck_y = _clamp_int(
+                    int(y_top + (y_bottom - y_top) * 0.15),
+                    int(ph * 0.12),
+                    int(ph * 0.32),
+                )
+                waist_y = _clamp_int(
+                    int(y_top + (y_bottom - y_top) * 0.70),
+                    int(ph * 0.45),
+                    int(ph * 0.82),
+                )
+                _shoulder_w_px = max(2, x1 - x0)
+                _hip_w_px = max(2, int(_shoulder_w_px * 0.85))
+                _used_pose = True
+                logger.info(
+                    "[PASTE] SCHP body bounds: x0=%d, x1=%d, neck_y=%d, waist_y=%d",
+                    x0,
+                    x1,
+                    neck_y,
+                    waist_y,
+                )
+    except Exception as schp_err:
+        logger.debug("[PASTE] SCHP unavailable: %s", schp_err)
+
+    # Priority 2: MediaPipe keypoints
+    if not _used_pose:
+        kpts = detect_pose_keypoints(person_image)
+        if kpts:
+            bounds = get_body_bounds_from_keypoints(kpts, pw, ph, "top")
+            if bounds.get("valid"):
+                x0 = bounds["x0"]
+                x1 = bounds["x1"]
+                neck_y = bounds["neck_y"]
+                waist_y = bounds["waist_y"]
+                _shoulder_w_px = max(2, int(bounds.get("shoulder_width", x1 - x0)))
+                _hip_w_px = max(2, int(bounds.get("hip_width", (x1 - x0) * 0.85)))
+                _used_pose = True
+                logger.info(
+                    "[PASTE] MediaPipe body bounds: x0=%d, x1=%d, neck_y=%d, waist_y=%d",
+                    x0,
+                    x1,
+                    neck_y,
+                    waist_y,
+                )
+
+    # Priority 3: Gradient energy fallback
+    if not _used_pose:
+        gray = np.asarray(person_image.convert("L"), dtype=np.float32)
+        fg = _person_foreground_mask(person_image)
+        b = None
+        if fg is not None:
+            b = _bounds_from_mask(fg, y0=int(ph * 0.06), y1=int(ph * 0.74), col_q=0.72, row_q=0.55)
+        if b is not None:
+            x0, x1, y_top, y_bottom = b
+            span = max(2, int(y_bottom - y_top))
+            neck_y = _clamp_int(int(y_top + span * 0.18), int(ph * 0.12), int(ph * 0.32))
+            waist_y = _clamp_int(int(y_top + span * 0.70), int(ph * 0.45), int(ph * 0.82))
+        else:
+            x0, x1, neck_y, waist_y = _estimate_upper_body_bounds(gray)
+        mid = (x0 + x1) // 2
+        center = pw // 2
+        drift = int(mid - center)
+        if abs(drift) > int(pw * 0.12):
+            shift = int(-0.65 * drift)
+            bw = x1 - x0
+            x0 = _clamp_int(x0 + shift, 0, pw - 2)
+            x1 = _clamp_int(x0 + bw, x0 + 2, pw)
+        pad_x = int((x1 - x0) * 0.03)
+        x0 = _clamp_int(x0 - pad_x, 0, pw - 2)
+        x1 = _clamp_int(x1 + pad_x, x0 + 2, pw)
+
+    # Force garment top below chin
+    y0 = _clamp_int(int(neck_y + ph * 0.02), int(ph * 0.12), int(ph * 0.42))
+    y1 = _clamp_int(int(waist_y + ph * 0.03), y0 + 2, int(ph * 0.86))
+    tw = max(2, x1 - x0)
+    th = max(2, y1 - y0)
+
+    # ── Step 4: Scale garment to FIT body proportions ─────────────────────────
+    # Use shoulder width as primary constraint. Preserve aspect ratio (no stretching).
+    if _used_pose and _shoulder_w_px:
+        target_w = int(_shoulder_w_px * 1.05)  # 5% margin for natural fit
+        scale = target_w / float(gw)
+        if int(gh * scale) > th * 1.2:
+            scale = th * 1.2 / float(gh)
+    else:
+        scale = min(tw / float(gw), th / float(gh))
+
+    itw = max(2, int(gw * scale))
+    ith = max(2, int(gh * scale))
+    g_scaled = g.resize((itw, ith), Image.Resampling.LANCZOS)
+
+    # ── Step 5: Trapezoid warp (body shape simulation) ────────────────────────
+    # Top edge (shoulders) is narrower, bottom edge (waist) is slightly wider.
+    # This simulates the garment conforming to the body silhouette.
+    if _used_pose and _shoulder_w_px and itw >= 16:
+        top_half_w = _clamp_int(int(min(itw, _shoulder_w_px * scale)), 4, itw)
+        bot_half_w = _clamp_int(int(min(itw, (_hip_w_px or _shoulder_w_px) * scale * 0.92)), 4, itw)
+        if abs(top_half_w - bot_half_w) > 4:
+            top_inset = (itw - top_half_w) // 2
+            bot_inset = (itw - bot_half_w) // 2
+            quad = (
+                top_inset,
+                0,
+                itw - top_inset,
+                0,
+                itw - bot_inset,
+                ith,
+                bot_inset,
+                ith,
+            )
+            g_scaled = _pil_quad_warp(g_scaled, (itw, ith), quad)
+
+    # ── Step 6: Center garment on body and composite ──────────────────────────
+    layer = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
+    ox = x0 + (tw - min(itw, tw)) // 2
+    oy = y0 + (th - min(ith, th)) // 2
+    g_crop = g_scaled.crop((0, 0, min(itw, tw), min(ith, th)))
+    layer.paste(g_crop, (ox, oy), g_crop)
+
+    # Feather edges for smooth boundary
+    feather_px = _clamp_int(int(max(pw, ph) * float(alpha_feather_ratio)), 1, 8)
+    layer = _feather_alpha(layer, radius_px=feather_px)
+
+    # Protect face/neck (no overwrite above ~18% height)
+    protect = _upper_protect_mask((pw, ph), protect_until_y=int(ph * 0.18))
+    r_ch, g_ch, b_ch, a_ch = layer.split()
+    a_ch = ImageChops.multiply(a_ch, protect)
+    layer = Image.merge("RGBA", (r_ch, g_ch, b_ch, a_ch))
+
+    out = Image.alpha_composite(base, layer).convert("RGB")
+    engine_tag = "top_garment_paste_pose" if _used_pose else "top_garment_paste_gradient"
+    meta = WarpMetadata(
+        engine=engine_tag,
+        waistband_box=(x0, y0, x1, y0 + max(2, int((y1 - y0) * 0.18))),
+        left_leg_box=(x0, y0 + max(2, int((y1 - y0) * 0.18)), (x0 + x1) // 2, y1),
+        right_leg_box=((x0 + x1) // 2, y0 + max(2, int((y1 - y0) * 0.18)), x1, y1),
+        alpha_feather_px=feather_px,
+    )
+    return out, meta
+
+
+def _auto_rotate_garment(g: Image.Image) -> Image.Image:
+    """Auto-detect and correct garment orientation for upper-body garments.
+
+    Flat-lay product photos often have the garment laid horizontally (wider than tall).
+    For wearing, the garment should be upright (taller than wide).
+
+    Detection heuristic:
+      - Compare alpha coverage after rotation to decide which orientation is "correct"
+      - Garment laid flat: alpha spread is wide and short
+      - Garment worn upright: alpha spread is narrow and tall (like a torso)
+      - Also detect by checking if garment aspect ratio is extreme (very wide or very tall)
+
+    Returns:
+        PIL RGBA image, rotated if needed (0° or 90° counter-clockwise).
+    """
+    if g.mode != "RGBA":
+        g = g.convert("RGBA")
+
+    alpha = np.asarray(g.split()[3], dtype=np.uint8)
+    fg_mask = alpha > 20
+
+    ys, xs = np.where(fg_mask)
+    if xs.size < 50:
+        return g  # Can't determine orientation from tiny mask
+
+    g_w, g_h = g.size
+    g_aspect = g_w / float(g_h)
+
+    # Calculate alpha bounding box dimensions
+    alpha_h = ys.max() - ys.min() + 1
+    alpha_w = xs.max() - xs.min() + 1
+    alpha_aspect = alpha_w / float(alpha_h) if alpha_h > 0 else g_aspect
+
+    # Heuristic: if the garment is very wide (flat-lay on white background),
+    # it should be rotated 90° counter-clockwise to be upright
+    #
+    # Signatures of a flat-lay horizontal garment:
+    #   - Aspect ratio is landscape (wide > tall)
+    #   - Alpha bounding box is also landscape
+    #   - The garment typically appears as a rectangular panel in product photos
+    needs_rotate = (alpha_aspect > 1.4 and g_aspect > 1.2) or (  # Clearly landscape orientation
+        g_aspect > 1.8  # Extremely wide (definitely flat-lay)
+    )
+
+    if needs_rotate:
+        logger.info(
+            "[PASTE] Rotating garment %dx%d -> upright (aspect=%.2f -> %.2f)",
+            g_w,
+            g_h,
+            g_aspect,
+            g_h / float(g_w),
+        )
+        return g.rotate(90, expand=True, fillcolor=(0, 0, 0, 0))
+
+    return g
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Warp + CatVTON Hybrid Try-On
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1975,7 +2406,7 @@ def catvton_color_fidelity_enhance(
                     extend2 = int(fh2 * 0.30)
                     protect_mask.paste(0, (0, 0, cw, min(ch, fy2 + fh2 + extend2)))
                 else:
-                    protect_until_y = max(0, int(neck_y - ch * 0.06))
+                    protect_until_y = max(0, int(max(neck_y + ch * 0.02, ch * 0.22)))
                     protect_mask.paste(0, (0, 0, cw, protect_until_y))
             return protect_mask
 
@@ -2045,6 +2476,117 @@ def catvton_color_fidelity_enhance(
         return catvton_result, {"engine": "catvton_color_fidelity", "reason": str(e)}
 
 
+def catvton_lab_chroma_color_correct(
+    catvton_result: Image.Image,
+    original_garment: Image.Image,
+    person_image: Image.Image,
+    garment_category: str,
+    *,
+    raw_mask_image: Image.Image | None = None,
+    fidelity_strength: float = 0.75,
+) -> tuple[Image.Image, dict]:
+    """Correct CatVTON garment color without pasting original garment pixels."""
+    try:
+        cr = catvton_result.convert("RGB")
+        cw, ch = cr.size
+        result_np = np.asarray(cr, dtype=np.uint8)
+
+        cutout = cutout_garment_rgba(original_garment.convert("RGB"))
+        source_rgba = np.asarray(cutout.cropped.convert("RGBA"), dtype=np.uint8)
+        source_alpha = source_rgba[:, :, 3] > 30
+        if int(source_alpha.sum()) < 100:
+            return catvton_result, {
+                "engine": "catvton_lab_chroma_color_correct",
+                "reason": "source_alpha_too_small",
+            }
+
+        source_rgb = source_rgba[:, :, :3][source_alpha]
+        source_lab = cv2.cvtColor(
+            source_rgb.reshape(-1, 1, 3).astype(np.uint8),
+            cv2.COLOR_RGB2LAB,
+        ).reshape(-1, 3)
+        source_mean = source_lab.mean(axis=0).astype(np.float32)
+
+        mask_img = None
+        if raw_mask_image is not None:
+            mask_img = raw_mask_image.convert("L").resize((cw, ch), Image.Resampling.NEAREST)
+        else:
+            person_resized = person_image.convert("RGB").resize((cw, ch), Image.Resampling.LANCZOS)
+            diff = np.abs(result_np.astype(np.int16) - np.asarray(person_resized, dtype=np.int16))
+            diff_gray = diff.mean(axis=2).astype(np.uint8)
+            _, diff_mask = cv2.threshold(diff_gray, 16, 255, cv2.THRESH_BINARY)
+            mask_img = Image.fromarray(diff_mask, mode="L")
+
+        mask_np = np.asarray(mask_img, dtype=np.uint8)
+        mask_np = cv2.morphologyEx(mask_np, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        mask = mask_np > 127
+        person_resized = person_image.convert("RGB").resize((cw, ch), Image.Resampling.LANCZOS)
+        diff_from_person = np.abs(
+            result_np.astype(np.int16) - np.asarray(person_resized, dtype=np.int16)
+        ).mean(axis=2)
+        hsv_result = cv2.cvtColor(result_np, cv2.COLOR_RGB2HSV)
+        value = hsv_result[:, :, 2]
+        sat = hsv_result[:, :, 1]
+        raw_garment_like = (value < 228) | ((diff_from_person > 12) & (value < 245)) | (sat > 18)
+        mask &= raw_garment_like
+        if int(mask.sum()) < 100:
+            return catvton_result, {
+                "engine": "catvton_lab_chroma_color_correct",
+                "reason": "mask_too_small",
+            }
+
+        cat_lab = cv2.cvtColor(result_np, cv2.COLOR_RGB2LAB).astype(np.float32)
+        raw_mean = cat_lab[mask].mean(axis=0).astype(np.float32)
+        strength = float(np.clip(fidelity_strength, 0.0, 1.0))
+
+        delta_l = float(np.clip(source_mean[0] - raw_mean[0], -36.0, 36.0)) * min(0.55, strength)
+        delta_a = float(np.clip(source_mean[1] - raw_mean[1], -38.0, 38.0)) * strength
+        delta_b = float(np.clip(source_mean[2] - raw_mean[2], -38.0, 38.0)) * strength
+
+        corrected_lab = cat_lab.copy()
+        corrected_lab[:, :, 0] = np.clip(corrected_lab[:, :, 0] + delta_l, 0, 255)
+        corrected_lab[:, :, 1] = np.clip(corrected_lab[:, :, 1] + delta_a, 0, 255)
+        corrected_lab[:, :, 2] = np.clip(corrected_lab[:, :, 2] + delta_b, 0, 255)
+        corrected_rgb = cv2.cvtColor(corrected_lab.astype(np.uint8), cv2.COLOR_LAB2RGB).astype(
+            np.float32
+        )
+
+        feather = Image.fromarray((mask.astype(np.uint8) * 255), mode="L").filter(
+            ImageFilter.GaussianBlur(radius=max(2, int(min(cw, ch) * 0.01)))
+        )
+        alpha_np = np.asarray(feather, dtype=np.float32) / 255.0
+        alpha_np *= mask.astype(np.float32)
+        alpha = alpha_np[:, :, None]
+        blended = result_np.astype(np.float32) * (1.0 - alpha) + corrected_rgb * alpha
+        result_img = Image.fromarray(np.clip(blended, 0, 255).astype(np.uint8), mode="RGB")
+
+        logger.info(
+            "catvton_lab_chroma: delta_lab=[%.2f,%.2f,%.2f] " "strength=%.2f mask_coverage=%.3f",
+            delta_l,
+            delta_a,
+            delta_b,
+            strength,
+            float(mask.mean()),
+        )
+        return result_img, {
+            "engine": "catvton_lab_chroma_color_correct",
+            "delta_lab": [round(delta_l, 3), round(delta_a, 3), round(delta_b, 3)],
+            "source_lab_mean": [round(float(v), 3) for v in source_mean],
+            "raw_lab_mean": [round(float(v), 3) for v in raw_mean],
+            "mask_coverage": round(float(mask.mean()), 4),
+            "fidelity_strength": strength,
+        }
+
+    except Exception as e:
+        import traceback
+
+        logger.warning("catvton_lab_chroma_color_correct failed: %s\n%s", e, traceback.format_exc())
+        return catvton_result, {
+            "engine": "catvton_lab_chroma_color_correct",
+            "reason": str(e),
+        }
+
+
 def catvton_color_fidelity_spatial(
     catvton_result: Image.Image,
     original_garment: Image.Image,
@@ -2052,6 +2594,7 @@ def catvton_color_fidelity_spatial(
     garment_category: str,
     *,
     fidelity_strength: float = 0.75,
+    debug_session_dir: str | None = None,
 ) -> tuple[Image.Image, dict]:
     """
     空间感知的衣服颜色保真增强——专为彩色格子/条纹/图案衣服设计。
@@ -2082,6 +2625,71 @@ def catvton_color_fidelity_spatial(
         cr = catvton_result.convert("RGB")
         cw, ch = cr.size
         result_np = np.array(cr, dtype=np.float32)
+
+        def _save_fidelity_debug(
+            name: str, image: Image.Image, metadata: dict | None = None
+        ) -> None:
+            if not debug_session_dir:
+                return
+            try:
+                from app.services.tryon_debug_utils import save_debug_stage_image
+
+                save_debug_stage_image(
+                    debug_session_dir=debug_session_dir,
+                    filename=name,
+                    image=image,
+                    metadata=metadata,
+                )
+            except Exception as dbg_err:
+                logger.warning(
+                    "catvton_color_fidelity_spatial: failed to save %s: %s", name, dbg_err
+                )
+
+        def _mask_debug_image(mask: np.ndarray, scale: float = 255.0) -> Image.Image:
+            arr = np.clip(mask.astype(np.float32) * scale, 0, 255).astype(np.uint8)
+            return Image.fromarray(arr, mode="L")
+
+        def _load_debug_garment_mask() -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
+            if not debug_session_dir:
+                return None
+            try:
+                from app.services.tryon_debug_utils import resolve_debug_session_dir
+
+                debug_dir = resolve_debug_session_dir(debug_session_dir)
+                if debug_dir is None:
+                    return None
+                mask_path = debug_dir / "08_mask_resized.png"
+                if not mask_path.exists():
+                    return None
+                mask_img = Image.open(mask_path).convert("L")
+                if mask_img.size != (cw, ch):
+                    mask_img = mask_img.resize((cw, ch), Image.Resampling.NEAREST)
+                mask_u8 = np.array(mask_img, dtype=np.uint8)
+                mask_bool = mask_u8 > 127
+                if int(mask_bool.sum()) < 64:
+                    return None
+                mask_bool = cv2.morphologyEx(
+                    mask_bool.astype(np.uint8),
+                    cv2.MORPH_CLOSE,
+                    np.ones((5, 5), dtype=np.uint8),
+                ).astype(bool)
+                ys, xs = np.where(mask_bool)
+                if xs.size == 0 or ys.size == 0:
+                    return None
+                bbox = (int(xs.min()), int(ys.min()), int(xs.max() + 1), int(ys.max() + 1))
+                mask_float = cv2.GaussianBlur(
+                    mask_bool.astype(np.float32),
+                    (7, 7),
+                    0,
+                )
+                mask_float = np.clip(mask_float, 0.0, 1.0)
+                return mask_float, bbox
+            except Exception as mask_err:
+                logger.warning(
+                    "catvton_color_fidelity_spatial: failed to load CatVTON debug mask: %s",
+                    mask_err,
+                )
+                return None
 
         cat = (garment_category or "").strip().lower()
         _is_top = any(k in cat for k in ("top", "上装", "上衣"))
@@ -2231,24 +2839,41 @@ def catvton_color_fidelity_spatial(
         gar_x1 = gar_x0 + gar_w
         gar_y1 = gar_y0 + gar_h
 
-        change_region = estimate_catvton_garment_region_from_change(
-            catvton_result=catvton_result,
-            person_image=person_image,
-            pose_region={"x0": bx0, "x1": bx1, "neck_y": neck_y, "waist_y": waist_y},
-            garment_category=garment_category,
-        )
-        if change_region is not None:
-            gar_x0, gar_y0, gar_x1, gar_y1 = change_region
+        catvton_mask_np: np.ndarray | None = None
+        mask_region = _load_debug_garment_mask()
+        if mask_region is not None:
+            catvton_mask_np, mask_bbox = mask_region
+            gar_x0, gar_y0, gar_x1, gar_y1 = mask_bbox
             gar_w = gar_x1 - gar_x0
             gar_h = gar_y1 - gar_y0
             logger.info(
-                "catvton_color_fidelity_spatial: expanded garment region from CatVTON change "
-                "region=[%d,%d,%d,%d]",
+                "catvton_color_fidelity_spatial: using CatVTON resized mask region=[%d,%d,%d,%d] "
+                "(coverage=%.3f)",
                 gar_x0,
                 gar_y0,
                 gar_x1,
                 gar_y1,
+                float((catvton_mask_np > 0.05).mean()),
             )
+        else:
+            change_region = estimate_catvton_garment_region_from_change(
+                catvton_result=catvton_result,
+                person_image=person_image,
+                pose_region={"x0": bx0, "x1": bx1, "neck_y": neck_y, "waist_y": waist_y},
+                garment_category=garment_category,
+            )
+            if change_region is not None:
+                gar_x0, gar_y0, gar_x1, gar_y1 = change_region
+                gar_w = gar_x1 - gar_x0
+                gar_h = gar_y1 - gar_y0
+                logger.info(
+                    "catvton_color_fidelity_spatial: expanded garment region from CatVTON change "
+                    "region=[%d,%d,%d,%d]",
+                    gar_x0,
+                    gar_y0,
+                    gar_x1,
+                    gar_y1,
+                )
 
         # ── Step 2: 将原衣服等比缩放到目标区域（填满，不留空白）─────────
         cutout = cutout_garment_rgba(original_garment)
@@ -2295,7 +2920,7 @@ def catvton_color_fidelity_spatial(
         scale_x = gar_w / float(sw)
         scale_y = gar_h / float(sh)
         # 用更小的 scale 确保填满（可能稍微裁剪边缘）
-        scale = max(scale_x, scale_y)
+        scale = min(scale_x, scale_y) if catvton_mask_np is not None else max(scale_x, scale_y)
         s_w = max(2, int(sw * scale))
         s_h = max(2, int(sh * scale))
 
@@ -2309,9 +2934,10 @@ def catvton_color_fidelity_spatial(
         a_scaled = a.resize((s_w, s_h), Image.Resampling.NEAREST)
         gar_scaled = Image.merge("RGBA", (r_scaled, g_scaled, b_scaled, a_scaled))
         logger.info(
-            "catvton_color_fidelity_spatial: proportional stretch-to-fill "
+            "catvton_color_fidelity_spatial: proportional %s "
             "(target=%dx%d, garment=%dx%d, scale=%.3f → scaled=%dx%d, "
             "body_center=(%d,%d), gar_region=[%d,%d,%d,%d])",
+            "fit-to-mask" if catvton_mask_np is not None else "stretch-to-fill",
             gar_w,
             gar_h,
             sw,
@@ -2492,7 +3118,6 @@ def catvton_color_fidelity_spatial(
         )
 
         # 保存 paste 后的衣服像素用于 fallback（如果脸部保护导致 alpha 过低）
-        _pre_protection_layer = warped_layer.copy()
         _pre_protection_rgb = warped_layer_rgb_mean
 
         # ── Step 3: 羽化边缘 ─────────────────────────────────────────
@@ -2583,19 +3208,263 @@ def catvton_color_fidelity_spatial(
         if _pre_protection_rgb > 100 and layer_np[:, :, 3].mean() < 50:
             logger.warning(
                 "catvton_color_fidelity_spatial: face protection degraded alpha "
-                "(before=%.2f, after=%.2f). Restoring pre-protection layer for color fidelity.",
+                "(before=%.2f, after=%.2f). Keeping protected layer.",
                 _pre_protection_rgb,
                 layer_np[:, :, 3].mean(),
             )
-            warped_layer = _pre_protection_layer
-            layer_np = np.array(warped_layer, dtype=np.float32)
-            logger.info(
-                "catvton_color_fidelity_spatial: restored layer RGB mean=%.2f, A mean=%.2f",
-                layer_np[:, :, :3].mean(),
-                layer_np[:, :, 3].mean(),
+
+        spatial_pattern_score = _detect_pattern_strength(original_garment)
+        catvton_roi = result_np[
+            max(0, gar_y0) : min(result_np.shape[0], gar_y1),
+            max(0, gar_x0) : min(result_np.shape[1], gar_x1),
+        ]
+        catvton_has_existing_motif = False
+        if catvton_roi.size > 0:
+            hsv_roi = cv2.cvtColor(catvton_roi.astype(np.uint8), cv2.COLOR_RGB2HSV).astype(
+                np.float32
             )
+            sat_roi = hsv_roi[:, :, 1]
+            val_roi = hsv_roi[:, :, 2]
+            colorful_roi = (sat_roi > 38) & (val_roi > 35)
+            catvton_has_existing_motif = float(colorful_roi.mean()) > 0.015
 
         layer_alpha = layer_np[:, :, 3] / 255.0
+        motif_gate = np.ones_like(layer_alpha, dtype=np.float32)
+        motif_source = layer_np[:, :, 3] > 64
+        motif_pixels = layer_np[motif_source, :3]
+        motif_coverage = 0.0
+        light_pattern_base = False
+        needs_light_base_rescue = False
+        catvton_changed_value_mean = 0.0
+        source_value_mean = 0.0
+        source_sat_mean = 0.0
+        dark_pattern_base = False
+        motif_dilate_iterations = 1
+        motif_detail_enhance_strength = 0.0
+        base_rgb_for_enhance: np.ndarray | None = None
+        pale_artifact_removed_ratio = 0.0
+        if motif_pixels.size > 0:
+            hsv_source = cv2.cvtColor(
+                motif_pixels.reshape(-1, 1, 3).astype(np.uint8),
+                cv2.COLOR_RGB2HSV,
+            ).reshape(-1, 3)
+            source_sat_mean = float(hsv_source[:, 1].mean())
+            source_value_mean = float(hsv_source[:, 2].mean())
+            light_pattern_base = (
+                spatial_pattern_score > 0.40
+                and source_value_mean > 165.0
+                and source_sat_mean < 85.0
+            )
+            dark_pattern_base = (
+                spatial_pattern_score > 0.40
+                and source_value_mean < 115.0
+                and source_sat_mean < 95.0
+            )
+            if light_pattern_base and catvton_roi.size > 0:
+                try:
+                    person_rescue = np.array(
+                        person_image.convert("RGB").resize((cw, ch), Image.Resampling.BILINEAR),
+                        dtype=np.float32,
+                    )
+                    diff_rescue = np.abs(result_np - person_rescue).mean(axis=2)
+                    changed_rescue = diff_rescue > max(10.0, float(np.percentile(diff_rescue, 68)))
+                    roi_changed = changed_rescue[
+                        max(0, gar_y0) : min(result_np.shape[0], gar_y1),
+                        max(0, gar_x0) : min(result_np.shape[1], gar_x1),
+                    ]
+                    changed_values = (
+                        val_roi[roi_changed] if roi_changed.shape == val_roi.shape else []
+                    )
+                    if len(changed_values) > 0:
+                        catvton_changed_value_mean = float(np.mean(changed_values))
+                        needs_light_base_rescue = catvton_changed_value_mean < 200.0
+                except Exception:
+                    needs_light_base_rescue = False
+
+            base_rgb = np.median(motif_pixels, axis=0)
+            base_rgb_for_enhance = base_rgb.astype(np.float32)
+            color_dist = np.linalg.norm(layer_np[:, :, :3] - base_rgb, axis=2)
+            source_dist = color_dist[motif_source]
+            adaptive_threshold = 28.0
+            if source_dist.size and not catvton_has_existing_motif:
+                adaptive_threshold = float(
+                    np.clip(np.percentile(source_dist, 82) * 0.55, 10.0, 28.0)
+                )
+            motif_candidate = (color_dist > adaptive_threshold) & motif_source
+
+            if not catvton_has_existing_motif and spatial_pattern_score <= 0.40:
+                gray_layer = cv2.cvtColor(layer_np[:, :, :3].astype(np.uint8), cv2.COLOR_RGB2GRAY)
+                gy, gx = np.gradient(gray_layer.astype(np.float32))
+                grad = np.sqrt(gx * gx + gy * gy)
+                source_grad = grad[motif_source]
+                if source_grad.size:
+                    edge_threshold = float(
+                        max(6.0, min(18.0, np.percentile(source_grad, 88) * 0.45))
+                    )
+                    motif_candidate |= (grad > edge_threshold) & motif_source
+
+            motif_candidate = cv2.morphologyEx(
+                motif_candidate.astype(np.uint8),
+                cv2.MORPH_OPEN,
+                np.ones((3, 3), dtype=np.uint8),
+            ).astype(bool)
+            motif_candidate, pale_artifact_removed_ratio = (
+                _suppress_light_fidelity_artifact_candidates(
+                    motif_candidate,
+                    layer_np[:, :, :3],
+                    motif_source,
+                    gar_x0=gar_x0,
+                    gar_y0=gar_y0,
+                    gar_x1=gar_x1,
+                    gar_y1=gar_y1,
+                    body_cx=body_cx,
+                    light_pattern_base=light_pattern_base,
+                )
+            )
+            if pale_artifact_removed_ratio > 0.0:
+                logger.info(
+                    "catvton_color_fidelity_spatial: suppressed off-center pale blocks "
+                    "(coverage=%.4f)",
+                    pale_artifact_removed_ratio,
+                )
+            motif_coverage = (
+                float(motif_candidate[motif_source].mean()) if motif_source.any() else 0.0
+            )
+            if (
+                spatial_pattern_score > 0.40
+                and catvton_mask_np is None
+                and not needs_light_base_rescue
+                and (
+                    motif_coverage > 0.18
+                    or (spatial_pattern_score > 0.70 and motif_coverage > 0.10)
+                )
+            ):
+                grid_y, grid_x = np.indices(motif_candidate.shape)
+                torso_center_x = (gar_x0 + gar_x1) / 2.0
+                central_half_w = max(36.0, (gar_x1 - gar_x0) * 0.30)
+                torso_y0 = gar_y0 + (gar_y1 - gar_y0) * 0.10
+                torso_y1 = gar_y0 + (gar_y1 - gar_y0) * 0.95
+                central_torso_band = (
+                    (np.abs(grid_x - torso_center_x) <= central_half_w)
+                    & (grid_y >= torso_y0)
+                    & (grid_y <= torso_y1)
+                )
+
+                labels_count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
+                    motif_candidate.astype(np.uint8), 8
+                )
+                filtered_candidate = motif_candidate & central_torso_band
+                if labels_count > 1:
+                    component_filtered = np.zeros_like(motif_candidate, dtype=bool)
+                    for label_idx in range(1, labels_count):
+                        area = int(stats[label_idx, cv2.CC_STAT_AREA])
+                        if area <= 0:
+                            continue
+                        component = labels == label_idx
+                        central_overlap = float((component & central_torso_band).sum()) / float(
+                            area
+                        )
+                        if central_overlap >= 0.25:
+                            component_filtered |= component & central_torso_band
+
+                    if component_filtered.any():
+                        filtered_candidate = component_filtered
+
+                if filtered_candidate.any():
+                    logger.info(
+                        "catvton_color_fidelity_spatial: constrained high-coverage motif "
+                        "to central torso band (coverage %.3f -> %.3f, existing_motif=%s)",
+                        motif_coverage,
+                        (
+                            float(filtered_candidate[motif_source].mean())
+                            if motif_source.any()
+                            else 0.0
+                        ),
+                        catvton_has_existing_motif,
+                    )
+                    motif_candidate = filtered_candidate
+                    motif_coverage = (
+                        float(motif_candidate[motif_source].mean()) if motif_source.any() else 0.0
+                    )
+            if catvton_mask_np is not None and spatial_pattern_score > 0.45:
+                motif_dilate_iterations = 2
+            if 0.002 <= motif_coverage <= 0.45:
+                motif_candidate = cv2.dilate(
+                    motif_candidate.astype(np.uint8),
+                    np.ones((3, 3), dtype=np.uint8),
+                    iterations=motif_dilate_iterations,
+                ).astype(bool)
+                motif_candidate, pale_artifact_removed_after_dilate = (
+                    _suppress_light_fidelity_artifact_candidates(
+                        motif_candidate,
+                        layer_np[:, :, :3],
+                        motif_source,
+                        gar_x0=gar_x0,
+                        gar_y0=gar_y0,
+                        gar_x1=gar_x1,
+                        gar_y1=gar_y1,
+                        body_cx=body_cx,
+                        light_pattern_base=light_pattern_base,
+                    )
+                )
+                pale_artifact_removed_ratio += pale_artifact_removed_after_dilate
+                motif_gate = motif_candidate.astype(np.float32)
+                logger.info(
+                    "catvton_color_fidelity_spatial: using motif-only fidelity "
+                    "(coverage=%.3f, dilate=%d)",
+                    motif_coverage,
+                    motif_dilate_iterations,
+                )
+
+        if (
+            motif_pixels.size > 0
+            and motif_gate.max() > 0.0
+            and (light_pattern_base or dark_pattern_base)
+            and spatial_pattern_score > 0.45
+        ):
+            motif_detail_enhance_strength = 0.30 if light_pattern_base else 0.24
+            rgb_layer = layer_np[:, :, :3].astype(np.float32)
+            blur_layer = cv2.GaussianBlur(rgb_layer, (0, 0), 0.85)
+            sharpened_layer = np.clip(
+                rgb_layer + (rgb_layer - blur_layer) * 0.65,
+                0,
+                255,
+            )
+            if base_rgb_for_enhance is not None:
+                contrast_layer = np.clip(
+                    base_rgb_for_enhance + (sharpened_layer - base_rgb_for_enhance) * 1.22,
+                    0,
+                    255,
+                )
+            else:
+                contrast_layer = sharpened_layer
+
+            hsv_layer = cv2.cvtColor(
+                contrast_layer.astype(np.uint8),
+                cv2.COLOR_RGB2HSV,
+            ).astype(np.float32)
+            sat_gain = 1.12 if light_pattern_base else 1.08
+            hsv_layer[:, :, 1] = np.clip(hsv_layer[:, :, 1] * sat_gain, 0, 255)
+            enhanced_layer = cv2.cvtColor(
+                hsv_layer.astype(np.uint8),
+                cv2.COLOR_HSV2RGB,
+            ).astype(np.float32)
+            detail_gate = np.clip(motif_gate, 0.0, 1.0) * (layer_alpha > 0.12).astype(np.float32)
+            if catvton_mask_np is not None:
+                detail_gate *= catvton_mask_np
+            detail_gate = (detail_gate * motif_detail_enhance_strength)[:, :, np.newaxis]
+            layer_np[:, :, :3] = enhanced_layer * detail_gate + layer_np[:, :, :3] * (
+                1.0 - detail_gate
+            )
+            warped_layer = Image.fromarray(np.clip(layer_np, 0, 255).astype(np.uint8), mode="RGBA")
+            logger.info(
+                "catvton_color_fidelity_spatial: motif detail enhancement applied "
+                "(strength=%.2f, light=%s, dark=%s)",
+                motif_detail_enhance_strength,
+                light_pattern_base,
+                dark_pattern_base,
+            )
+
         _nt_mask = layer_np[:, :, 3] > 128
         if _nt_mask.any():
             _nt_rgb_mean = layer_np[_nt_mask, :3].mean()
@@ -2639,17 +3508,428 @@ def catvton_color_fidelity_spatial(
         # ── Step 5b: 直接像素级保真混合 ─────────────────────────────
         # 核心：用原衣服像素替换 CatVTON 生成的颜色，保留空间分布
 
-        strength = layer_alpha * fidelity_strength
+        person_for_mask = np.array(
+            person_image.convert("RGB").resize((cw, ch), Image.Resampling.BILINEAR),
+            dtype=np.float32,
+        )
+        catvton_for_mask = np.array(cr, dtype=np.float32)
+        diff_for_mask = np.abs(catvton_for_mask - person_for_mask).mean(axis=2)
+        wear_shape_np: np.ndarray | None = None
+
+        hsv_person = cv2.cvtColor(person_for_mask.astype(np.uint8), cv2.COLOR_RGB2HSV).astype(
+            np.float32
+        )
+        sat_person = hsv_person[:, :, 1]
+        val_person = hsv_person[:, :, 2]
+        near_white_bg = (val_person > 235) & (sat_person < 35)
+
+        r_person = person_for_mask[:, :, 0]
+        g_person = person_for_mask[:, :, 1]
+        b_person = person_for_mask[:, :, 2]
+        skin_like = (
+            (r_person > 150)
+            & (g_person > 95)
+            & (b_person > 70)
+            & (r_person > g_person + 10)
+            & (g_person > b_person + 5)
+        )
+        protected_by_mask = np.array(protect, dtype=np.uint8) < 200
+        protected_until_y = 0
+        if _is_top:
+            protected_until_y = max(0, int(max(neck_y + ch * 0.02, ch * 0.22)))
+            if catvton_mask_np is not None and face_box is not None:
+                _fx, fy, _fw, fh = face_box
+                face_guard_bottom = int(fy + fh + fh * 0.25)
+                protected_until_y = min(protected_until_y, max(0, face_guard_bottom))
+            protected_by_mask[:protected_until_y, :] = True
+
+        changed_garment = diff_for_mask > max(10.0, float(np.percentile(diff_for_mask, 68)))
+        if catvton_mask_np is not None and _is_top:
+            try:
+                hsv_catvton = cv2.cvtColor(
+                    catvton_for_mask.astype(np.uint8),
+                    cv2.COLOR_RGB2HSV,
+                ).astype(np.float32)
+                sat_catvton = hsv_catvton[:, :, 1]
+                val_catvton = hsv_catvton[:, :, 2]
+                mask_core = catvton_mask_np > 0.08
+                mask_diffs = diff_for_mask[mask_core]
+                if mask_diffs.size:
+                    diff_gate = float(max(7.0, min(18.0, np.percentile(mask_diffs, 45) * 0.65)))
+                else:
+                    diff_gate = 10.0
+                raw_background_like = (
+                    (val_catvton > 238) & (sat_catvton < 36) & (diff_for_mask < diff_gate * 1.6)
+                )
+                raw_garment_like = (
+                    mask_core & ~raw_background_like & ~skin_like & ~protected_by_mask
+                )
+                raw_garment_like |= (
+                    mask_core & (diff_for_mask > diff_gate) & ~skin_like & ~protected_by_mask
+                )
+                wear_u8 = raw_garment_like.astype(np.uint8)
+                wear_u8 = cv2.morphologyEx(
+                    wear_u8,
+                    cv2.MORPH_OPEN,
+                    np.ones((3, 3), dtype=np.uint8),
+                )
+                wear_u8 = cv2.morphologyEx(
+                    wear_u8,
+                    cv2.MORPH_CLOSE,
+                    np.ones((9, 9), dtype=np.uint8),
+                )
+                labels_count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
+                    wear_u8,
+                    8,
+                )
+                if labels_count > 1:
+                    areas = stats[1:, cv2.CC_STAT_AREA]
+                    keep = int(np.argmax(areas) + 1)
+                    min_keep_area = max(32, int(areas.max() * 0.18))
+                    kept = labels == keep
+                    for label_idx in range(1, labels_count):
+                        if int(stats[label_idx, cv2.CC_STAT_AREA]) >= min_keep_area:
+                            kept |= labels == label_idx
+                    wear_u8 = kept.astype(np.uint8)
+                if int(wear_u8.sum()) >= 256:
+                    wear_shape_np = cv2.GaussianBlur(wear_u8.astype(np.float32), (9, 9), 0)
+                    wear_shape_np = np.clip(wear_shape_np, 0.0, 1.0)
+                    logger.info(
+                        "catvton_color_fidelity_spatial: extracted raw-result wear shape "
+                        "(coverage=%.3f, diff_gate=%.2f)",
+                        float((wear_shape_np > 0.08).mean()),
+                        diff_gate,
+                    )
+            except Exception as wear_err:
+                logger.debug(
+                    "catvton_color_fidelity_spatial: raw-result wear shape failed (%s)",
+                    wear_err,
+                )
+
+        # The raw-result wear shape is useful for diagnostics, but it is not reliable
+        # enough as a clipping mask: on wide product tees it still includes the
+        # product sleeves/shoulders. Keep the saved debug image, but do not let it
+        # participate in blending.
+        wear_shape_for_debug = wear_shape_np
+        wear_shape_np = None
+
+        grid_y, grid_x = np.indices(layer_alpha.shape)
+        torso_y0 = max(protected_until_y, int(gar_y0 + gar_h * 0.10))
+        torso_y1 = min(ch, int(gar_y1 - gar_h * 0.02))
+        torso_h = max(1, torso_y1 - torso_y0)
+        torso_rel_y = np.clip((grid_y - torso_y0) / float(torso_h), 0.0, 1.0)
+        torso_center_x = float(body_cx)
+        top_half_w = max(28.0, gar_w * 0.31)
+        bottom_half_w = max(top_half_w, gar_w * 0.38)
+        torso_half_w = top_half_w * (1.0 - torso_rel_y) + bottom_half_w * torso_rel_y
+        torso_fit_bool = (
+            (grid_y >= torso_y0)
+            & (grid_y <= torso_y1)
+            & (np.abs(grid_x - torso_center_x) <= torso_half_w)
+        )
+        torso_fit_mask = cv2.GaussianBlur(
+            torso_fit_bool.astype(np.float32),
+            (9, 9),
+            0,
+        )
+        torso_fit_mask = np.clip(torso_fit_mask, 0.0, 1.0)
+        if catvton_mask_np is not None:
+            torso_fit_mask *= catvton_mask_np
+        if _is_top and spatial_pattern_score > 0.40:
+            motif_gate *= torso_fit_mask
+
+        garment_layer_present = layer_alpha > 0.12
+        mask_guided_light_pattern = (
+            catvton_mask_np is not None
+            and light_pattern_base
+            and spatial_pattern_score > 0.55
+            and motif_coverage >= 0.06
+        )
+        light_base_repaint = light_pattern_base and (
+            needs_light_base_rescue or not catvton_has_existing_motif or mask_guided_light_pattern
+        )
+        dark_base_repaint = dark_pattern_base and spatial_pattern_score > 0.45
+        # Original-person white areas include studio walls and white pants, but an upper
+        # garment can legitimately cover part of that area in the generated result
+        # (sleeves/upper chest). Keep protecting true background, while allowing pixels
+        # that both CatVTON changed and the warped garment layer covers.
+        allow_generated_on_white = (
+            changed_garment
+            & garment_layer_present
+            & ((not catvton_has_existing_motif) or needs_light_base_rescue)
+        )
+        protected_subject = (
+            skin_like | protected_by_mask | (near_white_bg & ~allow_generated_on_white)
+        )
+        motif_allowed = (changed_garment | garment_layer_present) & ~protected_subject
+        base_allowed = np.zeros_like(motif_allowed, dtype=bool)
+        if light_base_repaint:
+            # Light patterned shirts need a base-color pass as well as the motif pass.
+            # CatVTON often turns pale printed tees into flat gray, so allow the
+            # warped shirt layer itself to softly recolor the generated garment,
+            # but only on the front torso. Product-image sleeves/shoulders must not
+            # become a second translucent shirt layer.
+            light_base_allowed = garment_layer_present & ~skin_like & ~protected_by_mask
+            light_base_allowed &= torso_fit_mask > 0.08
+            if not needs_light_base_rescue:
+                light_base_allowed &= changed_garment | ~near_white_bg
+            base_allowed |= light_base_allowed
+        if dark_base_repaint:
+            # Dark patterned shirts need a subtle fabric pass so tiny chest prints
+            # are not the only surviving pixels. The CatVTON mask still clips this.
+            dark_base_allowed = garment_layer_present & ~skin_like & ~protected_by_mask
+            dark_base_allowed &= torso_fit_mask > 0.08
+            base_allowed |= dark_base_allowed
+        fallback_base_repaint = (
+            motif_pixels.size > 0
+            and not catvton_has_existing_motif
+            and spatial_pattern_score <= 0.40
+        )
+        if fallback_base_repaint:
+            fallback_base_allowed = garment_layer_present & ~skin_like & ~protected_by_mask
+            fallback_base_allowed &= changed_garment | ~near_white_bg
+            base_allowed |= fallback_base_allowed
+        motif_allowed = cv2.morphologyEx(
+            motif_allowed.astype(np.uint8),
+            cv2.MORPH_OPEN,
+            np.ones((3, 3), dtype=np.uint8),
+        ).astype(bool)
+        if base_allowed.any():
+            base_allowed = cv2.morphologyEx(
+                base_allowed.astype(np.uint8),
+                cv2.MORPH_OPEN,
+                np.ones((5, 5), dtype=np.uint8),
+            ).astype(bool)
+            base_allowed = cv2.morphologyEx(
+                base_allowed.astype(np.uint8),
+                cv2.MORPH_CLOSE,
+                np.ones((11, 11), dtype=np.uint8),
+            ).astype(bool)
+        if catvton_mask_np is not None:
+            motif_allowed &= catvton_mask_np > 0.08
+            base_allowed &= catvton_mask_np > 0.08
+        fidelity_allowed = motif_allowed | base_allowed
+        base_fidelity_strength = 0.0
+        if light_base_repaint:
+            if needs_light_base_rescue:
+                base_fidelity_strength = 0.16
+            elif mask_guided_light_pattern and catvton_has_existing_motif:
+                base_fidelity_strength = 0.12
+            else:
+                base_fidelity_strength = 0.14
+        elif dark_base_repaint:
+            base_fidelity_strength = 0.12
+        elif (
+            motif_pixels.size > 0
+            and not catvton_has_existing_motif
+            and spatial_pattern_score <= 0.40
+        ):
+            hsv_motif = cv2.cvtColor(
+                motif_pixels.reshape(-1, 1, 3).astype(np.uint8),
+                cv2.COLOR_RGB2HSV,
+            ).reshape(-1, 3)
+            value_mean = float(hsv_motif[:, 2].mean())
+            sat_mean = float(hsv_motif[:, 1].mean())
+            if value_mean < 115:
+                base_fidelity_strength = 0.35
+            elif value_mean > 190 and sat_mean < 65:
+                base_fidelity_strength = 0.12
+            else:
+                base_fidelity_strength = 0.22
+
+        base_repaint_gate = (
+            cv2.GaussianBlur(torso_fit_mask.astype(np.float32), (31, 31), 0)
+            if light_base_repaint or dark_base_repaint
+            else (
+                np.ones_like(torso_fit_mask, dtype=np.float32)
+                if base_allowed.any()
+                else np.zeros_like(torso_fit_mask, dtype=np.float32)
+            )
+        )
+        base_repaint_gate = np.clip(base_repaint_gate, 0.0, 1.0)
+        if catvton_mask_np is not None:
+            base_repaint_gate *= catvton_mask_np
+        base_repaint_gate *= np.clip(1.0 - motif_gate * 0.75, 0.18, 1.0)
+        if light_base_repaint:
+            target_blend_strength = 0.78 if needs_light_base_rescue else 0.74
+            blend_fidelity_strength = max(float(fidelity_strength), target_blend_strength)
+        else:
+            blend_fidelity_strength = float(fidelity_strength)
+        motif_blend_strength = (
+            max(float(fidelity_strength), 0.92) if light_pattern_base else blend_fidelity_strength
+        )
+        effective_gate = motif_gate
+        motif_strength = (
+            layer_alpha * motif_blend_strength * motif_allowed.astype(np.float32) * effective_gate
+        )
+        base_strength = (
+            layer_alpha
+            * blend_fidelity_strength
+            * base_allowed.astype(np.float32)
+            * base_fidelity_strength
+            * base_repaint_gate
+        )
+        if catvton_mask_np is not None:
+            motif_strength *= catvton_mask_np
+            base_strength *= catvton_mask_np
+        strength = np.maximum(motif_strength, base_strength)
+        if debug_session_dir:
+            _save_fidelity_debug(
+                "12a_motif_gate.png",
+                _mask_debug_image(motif_gate),
+                {
+                    "stage": "motif_gate",
+                    "motif_coverage": round(float(motif_coverage), 4),
+                    "light_pattern_base": bool(light_pattern_base),
+                    "light_base_repaint": bool(light_base_repaint),
+                    "mask_guided_light_pattern": bool(mask_guided_light_pattern),
+                    "dark_pattern_base": bool(dark_pattern_base),
+                    "dark_base_repaint": bool(dark_base_repaint),
+                    "needs_light_base_rescue": bool(needs_light_base_rescue),
+                    "motif_dilate_iterations": int(motif_dilate_iterations),
+                    "motif_detail_enhance_strength": round(
+                        float(motif_detail_enhance_strength),
+                        4,
+                    ),
+                    "pale_artifact_removed_ratio": round(
+                        float(pale_artifact_removed_ratio),
+                        4,
+                    ),
+                    "protected_until_y": int(protected_until_y),
+                    "torso_fit_coverage": round(float((torso_fit_mask > 0.08).mean()), 4),
+                },
+            )
+            _save_fidelity_debug(
+                "12b_fidelity_allowed.png",
+                _mask_debug_image(fidelity_allowed.astype(np.float32)),
+                {
+                    "stage": "fidelity_allowed",
+                    "coverage": round(float(fidelity_allowed.mean()), 4),
+                    "changed_garment_coverage": round(float(changed_garment.mean()), 4),
+                    "wear_shape_applied": False,
+                    "wear_shape_coverage": (
+                        round(float((wear_shape_for_debug > 0.08).mean()), 4)
+                        if wear_shape_for_debug is not None
+                        else None
+                    ),
+                    "torso_fit_coverage": round(float((torso_fit_mask > 0.08).mean()), 4),
+                },
+            )
+            _save_fidelity_debug(
+                "12c_strength.png",
+                _mask_debug_image(strength),
+                {
+                    "stage": "strength",
+                    "mean": round(float(strength.mean()), 4),
+                    "max": round(float(strength.max()), 4),
+                    "base_fidelity_strength": round(float(base_fidelity_strength), 4),
+                    "blend_fidelity_strength": round(float(blend_fidelity_strength), 4),
+                    "motif_blend_strength": round(float(motif_blend_strength), 4),
+                    "base_mean": round(float(base_strength.mean()), 4),
+                    "base_max": round(float(base_strength.max()), 4),
+                    "motif_mean": round(float(motif_strength.mean()), 4),
+                    "motif_max": round(float(motif_strength.max()), 4),
+                    "catvton_mask_applied": catvton_mask_np is not None,
+                    "catvton_mask_coverage": (
+                        round(float((catvton_mask_np > 0.08).mean()), 4)
+                        if catvton_mask_np is not None
+                        else None
+                    ),
+                    "wear_shape_applied": False,
+                    "wear_shape_coverage": (
+                        round(float((wear_shape_for_debug > 0.08).mean()), 4)
+                        if wear_shape_for_debug is not None
+                        else None
+                    ),
+                    "torso_fit_coverage": round(float((torso_fit_mask > 0.08).mean()), 4),
+                },
+            )
+            _save_fidelity_debug(
+                "12c_base_strength.png",
+                _mask_debug_image(base_strength),
+                {
+                    "stage": "base_strength",
+                    "mean": round(float(base_strength.mean()), 4),
+                    "max": round(float(base_strength.max()), 4),
+                },
+            )
+            _save_fidelity_debug(
+                "12c_motif_strength.png",
+                _mask_debug_image(motif_strength),
+                {
+                    "stage": "motif_strength",
+                    "mean": round(float(motif_strength.mean()), 4),
+                    "max": round(float(motif_strength.max()), 4),
+                },
+            )
+            _save_fidelity_debug(
+                "12e_torso_fit_mask.png",
+                _mask_debug_image(torso_fit_mask),
+                {
+                    "stage": "torso_fit_mask",
+                    "coverage": round(float((torso_fit_mask > 0.08).mean()), 4),
+                    "torso_y0": int(torso_y0),
+                    "torso_y1": int(torso_y1),
+                    "top_half_w": round(float(top_half_w), 2),
+                    "bottom_half_w": round(float(bottom_half_w), 2),
+                },
+            )
+            if wear_shape_for_debug is not None:
+                _save_fidelity_debug(
+                    "12f_wear_shape_rejected.png",
+                    _mask_debug_image(wear_shape_for_debug),
+                    {
+                        "stage": "wear_shape_rejected",
+                        "coverage": round(float((wear_shape_for_debug > 0.08).mean()), 4),
+                    },
+                )
+            _save_fidelity_debug(
+                "12d_warped_layer.png",
+                warped_layer,
+                {
+                    "stage": "warped_layer",
+                    "alpha_mean": round(float(layer_np[:, :, 3].mean()), 4),
+                    "alpha_nonzero_coverage": round(float((layer_np[:, :, 3] > 0).mean()), 4),
+                },
+            )
 
         for c in range(3):
             result_np[:, :, c] = layer_np[:, :, c] * strength + result_np[:, :, c] * (
                 1.0 - strength
             )
+        if _is_top:
+            result_np[protected_by_mask] = catvton_for_mask[protected_by_mask]
+
+        light_block_repair_ratio = 0.0
+        if _is_top and light_pattern_base:
+            garment_repair_mask = (
+                (catvton_mask_np > 0.08)
+                if catvton_mask_np is not None
+                else ((torso_fit_mask > 0.08) & garment_layer_present)
+            )
+            result_np, light_block_repair_ratio = _repair_light_garment_block_artifacts(
+                result_np,
+                garment_repair_mask,
+                motif_gate,
+                gar_x0=gar_x0,
+                gar_y0=gar_y0,
+                gar_x1=gar_x1,
+                gar_y1=gar_y1,
+                body_cx=body_cx,
+                light_pattern_base=light_pattern_base,
+            )
+            if light_block_repair_ratio > 0.0:
+                logger.info(
+                    "catvton_color_fidelity_spatial: repaired light garment blocks "
+                    "(coverage=%.4f)",
+                    light_block_repair_ratio,
+                )
+                result_np[protected_by_mask] = catvton_for_mask[protected_by_mask]
 
         # ── Step 5b: 褶皱暗化 + 边缘投影 ─────────────────────────────
         # 参考 tryon_top_warp 的 realism pass，增加立体感
         # 图案衣服跳过，避免破坏图案
-        _pattern_score = _detect_pattern_strength(original_garment)
+        _pattern_score = spatial_pattern_score
         _skip_realism = _pattern_score > 0.40
 
         if not _skip_realism:
@@ -2703,28 +3983,47 @@ def catvton_color_fidelity_spatial(
                 _pattern_score,
             )
 
+        if _is_top:
+            result_np[protected_by_mask] = catvton_for_mask[protected_by_mask]
         result_np = np.clip(result_np, 0, 255).astype(np.uint8)
         result_img = Image.fromarray(result_np, mode="RGB")
 
         logger.info(
             "catvton_color_fidelity_spatial: region=[%d,%d,%d,%d] "
-            "strength=%.2f garment=%dx%d (body_center=%d,%d)",
+            "strength=%.2f garment=%dx%d "
+            "(body_center=%d,%d, light_base=%s, rescue=%s)",
             gar_x0,
             gar_y0,
             gar_x1,
             gar_y1,
-            fidelity_strength,
+            blend_fidelity_strength,
             sw,
             sh,
             body_cx,
             body_cy,
+            light_pattern_base,
+            needs_light_base_rescue,
         )
         return result_img, {
             "engine": "catvton_color_fidelity_spatial",
             "garment_region": {"x0": gar_x0, "y0": gar_y0, "x1": gar_x1, "y1": gar_y1},
-            "fidelity_strength": fidelity_strength,
+            "fidelity_strength": blend_fidelity_strength,
             "body_valid": body_valid,
             "method": "spatial_pixel_replace",
+            "light_pattern_base": light_pattern_base,
+            "light_base_repaint": light_base_repaint,
+            "dark_pattern_base": dark_pattern_base,
+            "dark_base_repaint": dark_base_repaint,
+            "needs_light_base_rescue": needs_light_base_rescue,
+            "catvton_mask_applied": catvton_mask_np is not None,
+            "wear_shape_applied": wear_shape_np is not None,
+            "base_fidelity_strength": base_fidelity_strength,
+            "motif_detail_enhance_strength": motif_detail_enhance_strength,
+            "pale_artifact_removed_ratio": pale_artifact_removed_ratio,
+            "light_block_repair_ratio": light_block_repair_ratio,
+            "catvton_changed_value_mean": catvton_changed_value_mean,
+            "source_value_mean": source_value_mean,
+            "source_sat_mean": source_sat_mean,
         }
 
     except Exception as e:
