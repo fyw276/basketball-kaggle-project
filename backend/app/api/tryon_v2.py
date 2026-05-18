@@ -3093,11 +3093,13 @@ async def tryon_v2_validate_input(
         "realistic_v2",
         "professional",
         "hybrid",
+        "paste",
     }:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "mode must be one of: strict, balanced, replace, realistic, professional, hybrid"
+                "mode must be one of: strict, balanced, replace, realistic, "
+                "professional, hybrid, paste"
             ),
         )
 
