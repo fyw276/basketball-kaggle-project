@@ -1803,8 +1803,6 @@ def tryon_top_garment_paste(
 
     # ── Step 3: Get body bounds from pose/SCHP ───────────────────────────────
     _used_pose = False
-    _shoulder_w_px: int | None = None
-    _hip_w_px: int | None = None
 
     # Priority 1: SCHP human parsing
     try:
@@ -1830,8 +1828,6 @@ def tryon_top_garment_paste(
                     int(ph * 0.45),
                     int(ph * 0.82),
                 )
-                _shoulder_w_px = max(2, x1 - x0)
-                _hip_w_px = max(2, int(_shoulder_w_px * 0.85))
                 _used_pose = True
                 logger.info(
                     "[PASTE] SCHP body bounds: x0=%d, x1=%d, neck_y=%d, waist_y=%d",
@@ -1853,11 +1849,9 @@ def tryon_top_garment_paste(
                 x1 = bounds["x1"]
                 neck_y = bounds["neck_y"]
                 waist_y = bounds["waist_y"]
-                _shoulder_w_px = max(2, int(bounds.get("shoulder_width", x1 - x0)))
-                _hip_w_px = max(2, int(bounds.get("hip_width", (x1 - x0) * 0.85)))
                 _used_pose = True
                 logger.info(
-                    "[PASTE] MediaPipe body bounds: x0=%d, x1=%d, neck_y=%d, waist_y=%d",
+                    "[PASTE] MediaPipe body bounds: " "x0=%d, x1=%d, neck_y=%d, waist_y=%d",
                     x0,
                     x1,
                     neck_y,
@@ -1893,50 +1887,81 @@ def tryon_top_garment_paste(
     # Force garment top below chin
     y0 = _clamp_int(int(neck_y + ph * 0.02), int(ph * 0.12), int(ph * 0.42))
     y1 = _clamp_int(int(waist_y + ph * 0.03), y0 + 2, int(ph * 0.86))
-    tw = max(2, x1 - x0)
-    th = max(2, y1 - y0)
+    body_w = max(2, x1 - x0)
+    body_h = max(2, y1 - y0)
+    body_center_x = (x0 + x1) // 2
 
-    # ── Step 4: Scale garment to FIT body proportions ─────────────────────────
-    # Use shoulder width as primary constraint. Preserve aspect ratio (no stretching).
-    if _used_pose and _shoulder_w_px:
-        target_w = int(_shoulder_w_px * 1.05)  # 5% margin for natural fit
-        scale = target_w / float(gw)
-        if int(gh * scale) > th * 1.2:
-            scale = th * 1.2 / float(gh)
-    else:
-        scale = min(tw / float(gw), th / float(gh))
+    # ── Step 4: Scale garment to COVER the full body region ────────────────────
+    # Key fix: use max() so garment FILLS the region (was min() = tiny garment).
+    target_w = int(body_w * 1.10)  # 10% wider than body for natural overhang
+    target_h = int(body_h * 1.02)
+
+    scale_by_w = target_w / float(gw)
+    scale_by_h = target_h / float(gh)
+    scale = max(scale_by_w, scale_by_h)  # max = FILL, min = FIT (old bug)
 
     itw = max(2, int(gw * scale))
     ith = max(2, int(gh * scale))
     g_scaled = g.resize((itw, ith), Image.Resampling.LANCZOS)
 
-    # ── Step 5: Trapezoid warp (body shape simulation) ────────────────────────
-    # Top edge (shoulders) is narrower, bottom edge (waist) is slightly wider.
-    # This simulates the garment conforming to the body silhouette.
-    if _used_pose and _shoulder_w_px and itw >= 16:
-        top_half_w = _clamp_int(int(min(itw, _shoulder_w_px * scale)), 4, itw)
-        bot_half_w = _clamp_int(int(min(itw, (_hip_w_px or _shoulder_w_px) * scale * 0.92)), 4, itw)
-        if abs(top_half_w - bot_half_w) > 4:
-            top_inset = (itw - top_half_w) // 2
-            bot_inset = (itw - bot_half_w) // 2
-            quad = (
-                top_inset,
-                0,
-                itw - top_inset,
-                0,
-                itw - bot_inset,
-                ith,
-                bot_inset,
-                ith,
-            )
-            g_scaled = _pil_quad_warp(g_scaled, (itw, ith), quad)
+    # ── Step 5: Trapezoid warp (body shape) ─────────────────────────────────
+    # Warp source to match body proportions. Source is much larger than dest,
+    # so the warp compresses/expands it to fill the body region naturally.
+    dest_w = body_w
+    dest_h = body_h
+    top_inset = max(1, int(dest_w * 0.05))  # 5% shoulder taper
+    bot_inset = max(1, int(dest_w * 0.00))  # no taper at waist
 
-    # ── Step 6: Center garment on body and composite ──────────────────────────
+    quad = (
+        top_inset,
+        0,  # top-left
+        dest_w - top_inset,
+        0,  # top-right
+        dest_w - bot_inset,
+        dest_h,  # bottom-right
+        bot_inset,
+        dest_h,  # bottom-left
+    )
+
+    # Crop source to match destination aspect ratio before warping
+    src_ar = itw / float(ith)
+    dst_ar = dest_w / float(dest_h)
+    if src_ar > dst_ar:
+        src_crop_w = int(ith * dst_ar)
+        src_crop_h = ith
+        src_x0 = (itw - src_crop_w) // 2
+        src_y0 = 0
+    else:
+        src_crop_w = itw
+        src_crop_h = int(itw / dst_ar)
+        src_x0 = 0
+        src_y0 = (ith - src_crop_h) // 2
+
+    g_cropped = g_scaled.crop((src_x0, src_y0, src_x0 + src_crop_w, src_y0 + src_crop_h))
+    g_warped = _pil_quad_warp(g_cropped, (dest_w, dest_h), quad)
+    logger.info("[PASTE] Warped: %dx%d -> %dx%d", src_crop_w, src_crop_h, dest_w, dest_h)
+
+    # ── Step 6: Compose onto person ────────────────────────────────────────
     layer = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
-    ox = x0 + (tw - min(itw, tw)) // 2
-    oy = y0 + (th - min(ith, th)) // 2
-    g_crop = g_scaled.crop((0, 0, min(itw, tw), min(ith, th)))
-    layer.paste(g_crop, (ox, oy), g_crop)
+    paste_x = body_center_x - dest_w // 2
+    paste_y = y0
+
+    # Remove alpha padding — paste only the non-transparent content
+    warp_mask = np.asarray(g_warped.split()[3], dtype=np.uint8)
+    valid_cols = np.where(warp_mask.max(axis=0) > 10)[0]
+    valid_rows = np.where(warp_mask.max(axis=1) > 10)[0]
+    if len(valid_cols) > 0 and len(valid_rows) > 0:
+        crop_x0 = int(valid_cols[0])
+        crop_x1 = int(valid_cols[-1]) + 1
+        crop_y0 = int(valid_rows[0])
+        crop_y1 = int(valid_rows[-1]) + 1
+        g_final = g_warped.crop((crop_x0, crop_y0, crop_x1, crop_y1))
+        paste_x += crop_x0
+        paste_y += crop_y0
+    else:
+        g_final = g_warped
+
+    layer.paste(g_final, (paste_x, paste_y), g_final)
 
     # Feather edges for smooth boundary
     feather_px = _clamp_int(int(max(pw, ph) * float(alpha_feather_ratio)), 1, 8)
