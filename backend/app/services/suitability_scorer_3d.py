@@ -34,6 +34,8 @@ STYLE_TO_SCENES: Dict[str, List[str]] = {
     "运动": ["运动健身", "休闲日常"],
     "休闲": ["休闲日常", "校园", "约会"],
     "度假": ["度假旅行", "休闲日常", "约会"],
+    "国风": ["正式宴会", "约会", "聚会", "度假旅行"],
+    "新中式": ["正式宴会", "约会", "聚会", "商务正式"],
     "朋克": ["街头潮流", "聚会"],
     "民族": ["度假旅行", "聚会", "街头潮流"],
     "优雅": ["约会", "正式宴会", "商务正式", "聚会"],
@@ -165,6 +167,8 @@ STYLE_PREFERENCE_RULES: Dict[str, List[str]] = {
     "朋克": ["朋克", "街头", "复古"],
     "民族": ["民族", "复古", "优雅"],
     "度假": ["度假", "休闲", "甜美", "民族"],
+    "国风": ["民族", "复古", "优雅", "正式"],
+    "新中式": ["民族", "复古", "优雅", "正式", "简约"],
 }
 
 
@@ -186,6 +190,8 @@ OCCASION_MAPPING: Dict[str, List[str]] = {
     "朋克": ["街头潮流", "聚会"],
     "民族": ["度假旅行", "聚会"],
     "度假": ["度假旅行", "休闲日常"],
+    "国风": ["正式宴会", "约会", "聚会"],
+    "新中式": ["正式宴会", "约会", "聚会", "商务正式"],
 }
 
 
@@ -230,24 +236,48 @@ class SuitabilityScorer3D:
             # Normalize
             self.weights = {k: v / total for k, v in self.weights.items()}
 
+    # ─── Scene name normalization (frontend → scorer internal names) ─────
+    SCENE_NORMALIZE: Dict[str, List[str]] = {
+        "日常通勤": ["通勤上班", "商务正式"],
+        "正式场合": ["商务正式", "正式宴会"],
+        "休闲娱乐": ["休闲日常", "聚会"],
+        "约会聚会": ["约会", "聚会"],
+        "运动健身": ["运动健身"],
+        "旅行出游": ["度假旅行"],
+    }
+
     # ─── Dimension 1: Scene Score ──────────────────────────────────────────
 
     def _compute_scene_score(
         self,
         style_tags: List[str],
         user_profile: UserProfileResponse,
+        selected_scene: Optional[str] = None,
     ) -> Tuple[int, str]:
         """
         Compute scene compatibility score.
         - Maps garment styles → suitable scenes
         - Maps user style_preference → dominant user scenes
         - Computes overlap as scene compatibility
+        - If selected_scene is provided, boosts/penalizes based on garment-scene fit
         """
         # Derive user-preferred scenes from their style preferences
+        # SCENE_PREFERENCE_STYLES keys are scene names, values are style lists.
+        # Reverse-map: for each scene, check if user prefers any of its styles.
         user_scenes: Dict[str, int] = {}
-        for style_pref in user_profile.style_preference:
-            for scene in SCENE_PREFERENCE_STYLES.get(style_pref, []):
-                user_scenes[scene] = user_scenes.get(scene, 0) + 1
+        user_prefs_set = set(user_profile.style_preference)
+        for scene, styles in SCENE_PREFERENCE_STYLES.items():
+            matched = sum(1 for s in styles if s in user_prefs_set)
+            if matched:
+                user_scenes[scene] = matched
+
+        # Debug: trace scene computation
+        print(
+            f"[Scorer] style_preference={list(user_profile.style_preference)}, "
+            f"user_scenes={user_scenes}, "
+            f"style_tags={style_tags}, "
+            f"selected_scene={selected_scene!r}"
+        )
 
         if not user_scenes:
             return 70, "无法判断场景适合度（用户画像缺少场景偏好）"
@@ -257,6 +287,8 @@ class SuitabilityScorer3D:
         for style_tag in style_tags:
             for scene in STYLE_TO_SCENES.get(style_tag, []):
                 garment_scenes[scene] = garment_scenes.get(scene, 0) + 1
+
+        print(f"[Scorer] garment_scenes={garment_scenes}")
 
         if not garment_scenes:
             return 70, "无法判断场景适合度（服装缺少风格标签）"
@@ -268,8 +300,19 @@ class SuitabilityScorer3D:
             # Check compatibility via 1-hop (user scene → compatible styles → garment scene)
             expanded_common = self._expand_scene_compatibility(user_scenes, garment_scenes)
             if expanded_common:
-                return 60, f"服装适合{expanded_common}等场合，与您的偏好场景有所不同"
-            return 50, "服装场景与您的偏好场景差异较大，建议根据场合选择"
+                score = 60
+                score, scene_fit_note = self._adjust_for_selected_scene(
+                    score, selected_scene, style_tags, garment_scenes
+                )
+                return (
+                    score,
+                    f"服装适合{expanded_common}等场合，与您的偏好场景有所不同{scene_fit_note}",
+                )
+            score = 50
+            score, scene_fit_note = self._adjust_for_selected_scene(
+                score, selected_scene, style_tags, garment_scenes
+            )
+            return score, f"服装场景与您的偏好场景差异较大，建议根据场合选择{scene_fit_note}"
 
         # Score based on overlap ratio and weight of common scenes
         # Weight each common scene by how strongly user prefers it
@@ -283,21 +326,66 @@ class SuitabilityScorer3D:
         raw_score = int(60 + overlap_weight * 30 + top_match_bonus)
         score = min(100, raw_score)
 
+        # ── Selected scene adjustment ──
+        score, scene_fit_note = self._adjust_for_selected_scene(
+            score, selected_scene, style_tags, garment_scenes
+        )
+
         # Build explanation
         common_list = "、".join(
             sorted(common_scenes, key=lambda s: user_scenes[s], reverse=True)[:3]
         )
         explanation = (
-            f"服装适合{common_list}等场合，与您的风格偏好高度匹配"
+            f"服装适合{common_list}等场合，与您的风格偏好高度匹配{scene_fit_note}"
             if score >= 80
             else (
-                f"服装适合{common_list}等场合，与您的偏好较为匹配"
+                f"服装适合{common_list}等场合，与您的偏好较为匹配{scene_fit_note}"
                 if score >= 60
-                else f"服装适合{common_list}等场合，与您的偏好有所差异"
+                else f"服装适合{common_list}等场合，与您的偏好有所差异{scene_fit_note}"
             )
         )
 
         return score, explanation
+
+    def _adjust_for_selected_scene(
+        self,
+        score: int,
+        selected_scene: Optional[str],
+        style_tags: List[str],
+        garment_scenes: Dict[str, int],
+    ) -> Tuple[int, str]:
+        if not selected_scene:
+            return score, ""
+
+        normalized = self.SCENE_NORMALIZE.get(selected_scene, [selected_scene])
+        garment_scene_set = set(garment_scenes.keys())
+        scene_match = bool(set(normalized) & garment_scene_set)
+        matched_ranks = []
+        for style_tag in style_tags:
+            ranked_scenes = STYLE_TO_SCENES.get(style_tag, [])
+            for normalized_scene in normalized:
+                if normalized_scene in ranked_scenes:
+                    matched_ranks.append(ranked_scenes.index(normalized_scene))
+
+        print(
+            f"[Scorer] scene_adjust: selected={selected_scene!r}, "
+            f"normalized={normalized}, "
+            f"garment_scenes={garment_scene_set}, "
+            f"match={scene_match}, "
+            f"score_before={score}"
+        )
+
+        if scene_match:
+            best_rank = min(matched_ranks) if matched_ranks else 2
+            boost = 12 if best_rank == 0 else (8 if best_rank == 1 else 5)
+            score = min(100, score + boost)
+            scene_fit_note = f"，且非常适合「{selected_scene}」场景"
+        else:
+            score = max(30, score - 18)
+            scene_fit_note = f"，但不太适合「{selected_scene}」场景"
+
+        print(f"[Scorer] scene_adjust result: score_after={score}")
+        return score, scene_fit_note
 
     def _expand_scene_compatibility(
         self,
@@ -331,6 +419,7 @@ class SuitabilityScorer3D:
         category: str,
         body_type: str,
         avoid_body_parts: List[str],
+        selected_scene: Optional[str] = None,
     ) -> Tuple[int, str]:
         """
         Compute body-type fit score.
@@ -377,7 +466,38 @@ class SuitabilityScorer3D:
                 )
             )
 
+        scene_note = self._body_scene_note(selected_scene, fit_type, category)
+        if scene_note:
+            explanation += scene_note
+
         return final_score, explanation
+
+    def _body_scene_note(
+        self,
+        selected_scene: Optional[str],
+        fit_type: Optional[str],
+        category: str,
+    ) -> str:
+        if not selected_scene or not fit_type:
+            return ""
+
+        if selected_scene == "正式场合":
+            if fit_type in ("修身", "标准"):
+                return "；正式场合更看重利落线条，这个版型能保持轮廓整洁"
+            return "；正式场合通常需要更利落的轮廓，过于宽松会削弱精致感"
+        if selected_scene == "日常通勤":
+            return "；日常通勤需要兼顾活动量和整洁度，版型稳定性会影响全天穿着状态"
+        if selected_scene == "休闲娱乐":
+            return "；休闲娱乐场景更重视舒适和松弛感，体型修饰不必过度强调"
+        if selected_scene == "约会聚会":
+            return "；约会聚会会更关注整体比例和上镜效果，剪裁轮廓会被放大感知"
+        if selected_scene == "运动健身":
+            if category in ("鞋", "裤子", "上衣"):
+                return "；运动健身更需要活动余量，版型是否限制动作会影响适配度"
+            return "；运动健身场景对功能性要求更高，配饰类单品对体型影响较弱"
+        if selected_scene == "旅行出游":
+            return "；旅行出游更看重长时间穿着舒适度，宽容的版型会更友好"
+        return ""
 
     # ─── Dimension 3: Style Score ─────────────────────────────────────────
 
@@ -385,6 +505,7 @@ class SuitabilityScorer3D:
         self,
         garment_styles: List[str],
         user_style_preferences: List[str],
+        selected_scene: Optional[str] = None,
     ) -> Tuple[int, str]:
         """
         Compute style consistency score.
@@ -408,7 +529,8 @@ class SuitabilityScorer3D:
                 compatible_matches += 1
 
         if perfect_matches + compatible_matches == 0:
-            return 50, "服装风格与您的偏好差异较大，建议选择更符合个人风格的款式"
+            scene_note = self._style_scene_note(selected_scene, garment_styles)
+            return 50, f"服装风格与您的偏好差异较大，建议选择更符合个人风格的款式{scene_note}"
 
         total_score = (perfect_matches * 100 + compatible_matches * 80) / total_tags
         score = int(total_score)
@@ -423,7 +545,28 @@ class SuitabilityScorer3D:
         else:
             explanation = f"{garment_str}风格与您的{pref_str}偏好有一定差异"
 
+        scene_note = self._style_scene_note(selected_scene, garment_styles)
+        if scene_note:
+            explanation += scene_note
+
         return score, explanation
+
+    def _style_scene_note(
+        self,
+        selected_scene: Optional[str],
+        garment_styles: List[str],
+    ) -> str:
+        if not selected_scene or not garment_styles:
+            return ""
+        normalized = self.SCENE_NORMALIZE.get(selected_scene, [selected_scene])
+        matching_styles = []
+        for style in garment_styles:
+            if set(STYLE_TO_SCENES.get(style, [])) & set(normalized):
+                matching_styles.append(style)
+        if matching_styles:
+            matched_style_text = "、".join(matching_styles[:2])
+            return f"；同时也呼应「{selected_scene}」对{matched_style_text}风格的需求"
+        return f"；但与「{selected_scene}」的典型风格要求不完全一致"
 
     def _get_compatible_user_styles(self, garment_style: str, user_prefs: List[str]) -> List[str]:
         """Get all styles compatible with user's preferences."""
@@ -489,12 +632,15 @@ class SuitabilityScorer3D:
         secondary_colors: List[ColorSchema],
         skin_tone: str,
         user_profile: UserProfileResponse,
+        selected_scene: Optional[str] = None,
     ) -> Tuple[int, str]:
         """
         Full scene dimension score = scene compatibility (70%) + color compatibility (30%).
         Color sub-score acts as a bonus/penalty within the scene dimension.
         """
-        scene_score, scene_exp = self._compute_scene_score(style_tags, user_profile)
+        scene_score, scene_exp = self._compute_scene_score(
+            style_tags, user_profile, selected_scene=selected_scene
+        )
         color_score, color_exp = self._compute_color_score(
             garment_color, secondary_colors, skin_tone
         )
@@ -520,6 +666,7 @@ class SuitabilityScorer3D:
         garment_styles: List[str],
         garment_category: str,
         user_profile: UserProfileResponse,
+        selected_scene: Optional[str] = None,
     ) -> dict:
         """
         Compute full 3D suitability score.
@@ -542,6 +689,7 @@ class SuitabilityScorer3D:
             secondary_colors,
             user_profile.skin_tone,
             user_profile,
+            selected_scene=selected_scene,
         )
 
         # Dimension 2: Body type fit
@@ -550,12 +698,14 @@ class SuitabilityScorer3D:
             garment_category,
             user_profile.body_type,
             user_profile.avoid_body_parts,
+            selected_scene=selected_scene,
         )
 
         # Dimension 3: Style consistency
         style_score, style_explanation = self._compute_style_score(
             garment_styles,
             user_profile.style_preference,
+            selected_scene=selected_scene,
         )
 
         # Color sub-score (also returned separately for UI)

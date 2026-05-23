@@ -103,6 +103,47 @@ class Settings(BaseSettings):
         description="为 true 时请求 response_format=json_object；若上游不支持会自动回退",
     )
 
+    # Agent Loop（统一工具调用循环）
+    AGENT_MODEL: str = Field(
+        default="",
+        description="Agent loop LLM model name; empty falls back to AI_RECOMMENDER_MODEL",
+    )
+    AGENT_MAX_ROUNDS: int = Field(
+        default=5,
+        description="Maximum LLM call rounds per agent request (tool call + response cycles)",
+    )
+    AGENT_TIMEOUT_SECONDS: float = Field(
+        default=60.0,
+        description="Total wall-clock timeout for a single agent request in seconds",
+    )
+    AGENT_TOTAL_TOKEN_BUDGET: int = Field(
+        default=50000,
+        description="Maximum total tokens (prompt + completion) across all rounds",
+    )
+    AGENT_MAX_TOOL_CALLS: int = Field(
+        default=15,
+        description="Maximum number of tool executions per agent request",
+    )
+
+    # Memory embedding
+    EMBEDDING_MODEL: str = Field(
+        default="text-embedding-v3",
+        description="Text embedding model name (OpenAI-compatible /embeddings endpoint)",
+    )
+    EMBEDDING_DIM: int = Field(default=1024, description="Embedding vector dimension")
+    EMBEDDING_TIMEOUT_SECONDS: float = Field(
+        default=10.0, description="Embedding API timeout in seconds"
+    )
+    MEMORY_KEYWORD_WEIGHT: float = Field(
+        default=0.3, description="Keyword search weight in hybrid scoring"
+    )
+    MEMORY_EMBEDDING_WEIGHT: float = Field(
+        default=0.7, description="Embedding search weight in hybrid scoring"
+    )
+    MEMORY_PRELOAD_TOP_K: int = Field(
+        default=3, description="Number of memory snippets to preload in agent loop"
+    )
+
     # Fine-tuned model inference
     FINETUNED_INFER_ENABLED: bool = Field(
         default=False,
@@ -190,6 +231,16 @@ class Settings(BaseSettings):
         description="v2 replace 模式跳过几何贴合，直接使用AI生成",
     )
 
+    # Try-on engine switches
+    TRYON_V2_HYBRID_WARP_OVERLAY_ENABLED: bool = Field(
+        default=False,
+        description=(
+            "v2 hybrid mode legacy warp overlay switch. False returns CatVTON diffusion output "
+            "directly after a successful local CatVTON run; True restores the old "
+            "warp_preserve + CatVTON + overlay_draping path."
+        ),
+    )
+
     # DashScope / Bailian (阿里云百炼) for virtual try-on
     DASHSCOPE_TRYON_ENABLED: bool = Field(
         default=False,
@@ -275,6 +326,10 @@ class Settings(BaseSettings):
         default=2.5,
         description="CatVTON CFG 强度（1.5 低显存快速 / 2.0 标准 / 2.5 高保真）",
     )
+    CATVTON_SEED: int = Field(
+        default=42,
+        description="CatVTON random seed. -1 for random; fixed values make runs reproducible.",
+    )
     CATVTON_REPAINT: bool = Field(
         default=True,
         description="CatVTON 是否使用背景重绘（repaint 模式恢复原始背景）",
@@ -336,6 +391,23 @@ class Settings(BaseSettings):
     TRYON_V2_PATTERN_DETAIL_BOOST: bool = Field(
         default=True,
         description="启用频率分离增强保护图案细节（unsharp mask + 高频叠加，图案衣服专用）",
+    )
+
+    TRYON_V2_PREFLIGHT_QC_ENABLED: bool = Field(
+        default=True,
+        description="Enable preflight hard-gate QC before color fidelity injection",
+    )
+    TRYON_V2_FIDELITY_GUARD_BAND_MIN: float = Field(
+        default=0.38,
+        description="Lower bound for hysteresis guard band in engine selection",
+    )
+    TRYON_V2_FIDELITY_GUARD_BAND_MAX: float = Field(
+        default=0.45,
+        description="Upper bound for hysteresis guard band in engine selection",
+    )
+    TRYON_V2_ADAPTIVE_PATTERN_ENHANCE_ENABLED: bool = Field(
+        default=True,
+        description="Enable adaptive pattern enhance strength and artifact-triggered disable",
     )
 
     # Subscription & quota
@@ -407,14 +479,18 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_FILE: str = "./logs/app.log"
 
-    # Rate Limiting（需 ENABLE_RATE_LIMIT=true 才生效；pytest 默认关闭）
+    # Rate Limiting（默认开启；pytest 通过环境变量 ENABLE_RATE_LIMIT=false 关闭）
     ENABLE_RATE_LIMIT: bool = Field(
-        default=False,
+        default=True,
         description="启用后按 IP 滑动窗口限制请求（RATE_LIMIT_PER_MINUTE 次/分钟）",
     )
     RATE_LIMIT_PER_MINUTE: int = Field(
         default=60,
         description="每分钟上限；仅当 ENABLE_RATE_LIMIT=true 时启用",
+    )
+    RATE_LIMIT_TRYON_PER_MINUTE: int = Field(
+        default=10,
+        description="试衣接口每分钟上限（/api/v1/tryon, /api/v2/tryon），0 则使用全局限制",
     )
 
     # Release ledger（CD/部署脚本写入 manifest 或下列环境变量；供 /release 台账）

@@ -78,7 +78,7 @@ def test_preservation_non_replace_modes_use_pipeline_a(
 
     EXPECTED: PASS (baseline behavior, no regression after any changes)
     """
-    import app.api.tryon_v2 as tryon_v2_api
+    import app.api.tryon_v2 as tryon_v2_api  # noqa: F401
 
     async def mock_call_local_catvton(**kwargs):
         return {
@@ -211,7 +211,7 @@ def test_preservation_bailian_not_configured_skips_bailian(
 
     EXPECTED: PASS (baseline behavior, no regression)
     """
-    import app.api.tryon_v2 as tryon_v2_api
+    import app.api.tryon_v2 as tryon_v2_api  # noqa: F401
     import app.services.bailian_tryon_client as bailian_client
     import app.services.tryon_v2.catvton_engine_client as catvton_client
     import app.services.vton_remote_client as vton_client
@@ -316,7 +316,7 @@ def test_preservation_bailian_success_returns_result(
 
     CatVTON must be skipped via mock so Bailian is the first engine tried.
     """
-    import app.api.tryon_v2 as tryon_v2_api
+    import app.api.tryon_v2 as tryon_v2_api  # noqa: F401
     import app.services.bailian_tryon_client as bailian_client
     import app.services.tryon_v2.catvton_engine_client as catvton_client
 
@@ -411,7 +411,7 @@ def test_preservation_fallback_to_remote_vton_when_bailian_fails(
 
     EXPECTED: PASS (baseline behavior, no regression)
     """
-    import app.api.tryon_v2 as tryon_v2_api
+    import app.api.tryon_v2 as tryon_v2_api  # noqa: F401
     import app.services.bailian_tryon_client as bailian_client
     import app.services.tryon_v2.catvton_engine_client as catvton_client
     import app.services.vton_remote_client as vton_client
@@ -507,7 +507,7 @@ def test_preservation_fallback_to_local_diffusion_when_all_fail(
 
     EXPECTED: PASS (baseline behavior, no regression)
     """
-    import app.api.tryon_v2 as tryon_v2_api
+    import app.api.tryon_v2 as tryon_v2_api  # noqa: F401
     import app.services.bailian_tryon_client as bailian_client
     import app.services.tryon_v2.catvton_engine_client as catvton_client
     import app.services.vton_remote_client as vton_client

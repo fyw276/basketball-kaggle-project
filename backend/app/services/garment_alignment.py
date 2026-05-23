@@ -24,11 +24,12 @@ Pipeline:
 from __future__ import annotations
 
 import logging
-from typing import Dict, Tuple, Any
 
 import cv2
 import numpy as np
 from PIL import Image
+
+from app.core.logging import setup_logging  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +225,23 @@ def correct_perspective(rgb: Image.Image) -> Image.Image:
 
     # Always use minAreaRect to get exactly 4 corner points (handles n-point contours)
     rect = cv2.minAreaRect(approx)
+    rect_w, rect_h = rect[1]
+
+    # 防止90°误旋转：minAreaRect 的角度范围是 [-90°, 0°)。
+    # 当衣服轮廓接近矩形时，minAreaRect 可能检测到接近 -90° 的角度，
+    # 此时 boxPoints 的角点顺序会导致透视变换将衣服旋转90°。
+    # 通过比较 minAreaRect 检测到的宽高比和实际轮廓的宽高比来判断是否会发生旋转。
+    angle = rect[2]
+    if abs(angle) > 40.0:
+        # minAreaRect 可能将竖直衣服检测为水平（或反之），跳过透视变换
+        logger.debug(
+            f"[GARMENT-ALIGN] correct_perspective: skipping (angle={angle:.1f}°, "
+            f"rect_size={rect_w:.0f}x{rect_h:.0f}), would cause 90° rotation"
+        )
+        return rgb
+
+    # 额外检查：比较 src_pts 宽高比和目标宽高比
+    # 如果宽高比反转（一个是竖矩形，另一个是横矩形），说明发生了90°旋转
     box = cv2.boxPoints(rect)
     src_pts = box.astype(np.float32)
 
@@ -237,6 +255,16 @@ def correct_perspective(rgb: Image.Image) -> Image.Image:
     ]
     max_width = max(int(max(widths)), 1)
     max_height = max(int(max(heights)), 1)
+
+    # 如果 src 宽高比和目标宽高比方向相反（一个>1，一个<1），跳过
+    src_ratio = max_width / max(max_height, 1)
+    img_ratio = w / max(h, 1)
+    if (src_ratio > 1.3 and img_ratio < 0.77) or (src_ratio < 0.77 and img_ratio > 1.3):
+        logger.debug(
+            f"[GARMENT-ALIGN] correct_perspective: skipping (src_ratio={src_ratio:.2f}, "
+            f"img_ratio={img_ratio:.2f}), aspect ratio inversion detected"
+        )
+        return rgb
 
     dst_pts = np.array(
         [

@@ -29,8 +29,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple, Dict, Any
+from typing import Tuple  # noqa: F401
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -93,13 +94,13 @@ def _create_body_surface_map(
         return (lm.x * w, lm.y * h)
 
     # Map keypoints to pixel coords
-    nose = lm(0)
+    _nose = lm(0)  # noqa: F841
     ls = lm(11)  # left_shoulder
     rs = lm(12)  # right_shoulder
     lh = lm(23)  # left_hip
     rh = lm(24)  # right_hip
-    la = lm(27)  # left_ankle
-    ra = lm(28)  # right_ankle
+    _la = lm(27)  # noqa: F841
+    _ra = lm(28)  # noqa: F841
 
     if not (ls and rs and lh and rh):
         return iuv
@@ -117,7 +118,7 @@ def _create_body_surface_map(
         torso_pts.append(lh)
 
     if len(torso_pts) >= 3:
-        
+
         torso_np = np.array(torso_pts, dtype=np.int32)
         torso_np[:, 0] = np.clip(torso_np[:, 0], 0, w - 1)
         torso_np[:, 1] = np.clip(torso_np[:, 1], 0, h - 1)
@@ -140,7 +141,7 @@ def _create_body_surface_map(
         el = lm(elbow_idx)
         wr = lm(wrist_idx)
         if sh and el and wr:
-            
+
             arm_pts = [sh, el, wr]
             arm_np = np.array(arm_pts, dtype=np.int32)
             arm_np[:, 0] = np.clip(arm_np[:, 0], 0, w - 1)
@@ -234,7 +235,7 @@ class DensePoseWrapper:
     def _detect_detectron2(self, arr: np.ndarray, image: Image.Image) -> DensePoseResult:
         """Use Detectron2 DensePose."""
         try:
-            
+
             outputs = self._predictor(arr)
             instances = outputs.get("instances")
             if instances is None or len(instances) == 0:

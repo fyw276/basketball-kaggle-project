@@ -15,6 +15,7 @@ import 'features/analysis/screens/outfit_screen.dart';
 import 'features/analysis/screens/similarity_screen.dart';
 import 'features/analysis/screens/suitability_screen.dart';
 import 'features/profile/screens/style_settings_screen.dart';
+import 'features/agent/screens/agent_chat_screen.dart';
 
 void main() {
   ErrorWidget.builder = (FlutterErrorDetails details) {
@@ -131,6 +132,10 @@ class _AppRouterHostState extends State<_AppRouterHost> {
         GoRoute(
           path: '/style-settings',
           builder: (context, state) => const StyleSettingsScreen(),
+        ),
+        GoRoute(
+          path: '/agent-chat',
+          builder: (context, state) => const AgentChatScreen(),
         ),
       ],
       errorBuilder: (context, state) => Scaffold(

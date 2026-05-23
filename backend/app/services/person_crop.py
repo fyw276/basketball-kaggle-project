@@ -313,7 +313,7 @@ def crop_person_to_standard(
         info: PersonCropInfo metadata.
     """
     orig_w, orig_h = image.size
-    arr = np.array(image.convert("RGB"))
+    _arr = np.array(image.convert("RGB"))  # noqa: F841
 
     bbox: tuple[int, int, int, int] | None = None
     method = "aspect_ratio"
@@ -358,7 +358,7 @@ def crop_person_to_standard(
     target_body_h = int(target_height * body_height_ratio)
     scale = target_body_h / body_h
 
-    new_w = int(body_w * scale)
+    _new_w = int(body_w * scale)  # noqa: F841
     new_h = target_body_h
 
     # Make width match target aspect (typically 3:4 portrait)

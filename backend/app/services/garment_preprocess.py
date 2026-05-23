@@ -7,7 +7,7 @@ without white/gray padding noise polluting the VAE latent space.
 Pipeline:
     1. rembg alpha background removal
     2. Bbox crop to garment body
-    3. Center on 512x512 black canvas
+    3. Center on 512x512 white canvas
     4. Output: numpy RGB (H=512, W=512)
 """
 
@@ -66,16 +66,20 @@ def _fill_alpha_holes(alpha: np.ndarray, max_hole_ratio: float = 0.40) -> np.nda
     fg_mask = (alpha > 20).astype(np.uint8)
 
     try:
-        # Flood-fill from all 4 corners to mark the true external background
-        bg = np.zeros((h + 2, w + 2), dtype=np.uint8)
-        cv2.floodFill(bg, seedPoint=(0, 0), newVal=1)
-        cv2.floodFill(bg, seedPoint=(w + 1, 0), newVal=1)
-        cv2.floodFill(bg, seedPoint=(0, h + 1), newVal=1)
-        cv2.floodFill(bg, seedPoint=(w + 1, h + 1), newVal=1)
-        bg = bg[1:-1, 1:-1]
+        bg_components = (fg_mask == 0).astype(np.uint8)
+        n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(bg_components, connectivity=8)
+        if n_labels <= 1:
+            return alpha
 
-        # Everything not background and not foreground = internal hole
-        internal_hole = ((bg == 0) & (fg_mask == 0)).astype(np.uint8)
+        border_labels = set(labels[0, :].tolist())
+        border_labels.update(labels[-1, :].tolist())
+        border_labels.update(labels[:, 0].tolist())
+        border_labels.update(labels[:, -1].tolist())
+
+        internal_hole = np.zeros_like(fg_mask, dtype=np.uint8)
+        for label_idx in range(1, n_labels):
+            if label_idx not in border_labels:
+                internal_hole[labels == label_idx] = 1
 
         if internal_hole.sum() == 0:
             return alpha
@@ -99,9 +103,175 @@ def _fill_alpha_holes(alpha: np.ndarray, max_hole_ratio: float = 0.40) -> np.nda
             if stats[i, cv2.CC_STAT_AREA] <= max_hole_area:
                 fill_mask[hole_labels == i] = 255
 
-        return np.minimum(alpha, fill_mask).astype(np.uint8)
+        out = alpha.copy()
+        out[fill_mask > 0] = 255
+        return out.astype(np.uint8)
     except Exception:
         return alpha
+
+
+def _composite_rgb_on_background(
+    rgb: np.ndarray,
+    alpha: np.ndarray | None,
+    background: tuple[int, int, int] = (255, 255, 255),
+) -> np.ndarray:
+    """Composite RGBA-style pixels onto a solid background before RGB-only resize."""
+    if alpha is None or alpha.size == 0 or alpha.max() == 0:
+        return rgb
+
+    rgb_f = rgb.astype(np.float32)
+    a = np.clip(alpha.astype(np.float32) / 255.0, 0.0, 1.0)[..., None]
+    bg = np.full_like(rgb_f, background, dtype=np.float32)
+    return np.clip(rgb_f * a + bg * (1.0 - a), 0, 255).astype(np.uint8)
+
+
+def _border_connected_background_mask(
+    rgb: np.ndarray, alpha: np.ndarray | None = None
+) -> np.ndarray:
+    """Detect solid product-photo background connected to image borders."""
+    if rgb.ndim != 3 or rgb.shape[2] != 3:
+        return np.zeros(rgb.shape[:2], dtype=bool)
+
+    h, w = rgb.shape[:2]
+    if h < 16 or w < 16:
+        return np.zeros((h, w), dtype=bool)
+
+    border_px = max(3, min(16, min(h, w) // 32))
+    border = np.concatenate(
+        [
+            rgb[:border_px, :, :].reshape(-1, 3),
+            rgb[-border_px:, :, :].reshape(-1, 3),
+            rgb[:, :border_px, :].reshape(-1, 3),
+            rgb[:, -border_px:, :].reshape(-1, 3),
+        ],
+        axis=0,
+    ).astype(np.float32)
+    if border.size == 0:
+        return np.zeros((h, w), dtype=bool)
+
+    bg = np.median(border, axis=0)
+    border_dist = np.linalg.norm(border - bg, axis=1)
+    border_uniform = float(np.percentile(border_dist, 75)) < 38.0
+    dark_border = float(bg.mean()) < 70.0
+    light_border = float(bg.mean()) > 220.0 and float(border_dist.mean()) < 45.0
+    if not (border_uniform or dark_border or light_border):
+        return np.zeros((h, w), dtype=bool)
+
+    arr = rgb.astype(np.float32)
+    dist = np.linalg.norm(arr - bg.reshape(1, 1, 3), axis=2)
+    threshold = float(np.clip(np.percentile(border_dist, 92) + 18.0, 24.0, 78.0))
+    candidate = dist <= threshold
+
+    channel_max = rgb.max(axis=2)
+    channel_min = rgb.min(axis=2)
+    channel_span = channel_max - channel_min
+    if dark_border:
+        if alpha is not None and alpha.size > 0:
+            a_h, a_w = alpha.shape[:2]
+            bp = max(3, min(16, min(a_h, a_w) // 32))
+            border_alpha = np.concatenate(
+                [
+                    alpha[:bp, :].ravel(),
+                    alpha[-bp:, :].ravel(),
+                    alpha[:, :bp].ravel(),
+                    alpha[:, -bp:].ravel(),
+                ]
+            )
+            if float(np.mean(border_alpha < 30)) > 0.70:
+                pass
+            else:
+                candidate |= (channel_max < 70) & (channel_span < 42)
+        else:
+            candidate |= (channel_max < 70) & (channel_span < 42)
+    if light_border:
+        candidate |= (channel_min > 232) & (channel_span < 34)
+
+    candidate_u8 = candidate.astype(np.uint8)
+    num, labels, _stats, _centroids = cv2.connectedComponentsWithStats(candidate_u8, 8)
+    if num <= 1:
+        return np.zeros((h, w), dtype=bool)
+
+    border_labels = set(labels[0, :].tolist())
+    border_labels.update(labels[-1, :].tolist())
+    border_labels.update(labels[:, 0].tolist())
+    border_labels.update(labels[:, -1].tolist())
+
+    bg_mask = np.zeros((h, w), dtype=bool)
+    for label_idx in border_labels:
+        if label_idx != 0:
+            bg_mask |= labels == label_idx
+
+    coverage = float(bg_mask.mean())
+    if coverage < 0.02:
+        return np.zeros((h, w), dtype=bool)
+    if dark_border and coverage > 0.70 and alpha is not None and alpha.size > 0:
+        return np.zeros((h, w), dtype=bool)
+    return bg_mask
+
+
+def _remove_border_background(rgb: np.ndarray, alpha: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Remove uniform black/white product-photo backgrounds that rembg leaves opaque.
+
+    The mask is restricted to pixels connected to the image border, so black labels,
+    printed outlines, and inner garment details are preserved.
+    """
+    if alpha.size == 0 or alpha.max() == 0:
+        return rgb, alpha
+
+    bg_mask = _border_connected_background_mask(rgb, alpha=alpha)
+    if not bg_mask.any():
+        return rgb, alpha
+
+    out_rgb = rgb.copy()
+    out_alpha = alpha.copy()
+    out_rgb[bg_mask] = 255
+    out_alpha[bg_mask] = 0
+    logger.info(
+        "Removed border-connected product background from garment (coverage=%.3f)",
+        float(bg_mask.mean()),
+    )
+    return out_rgb, out_alpha
+
+
+def _remove_dark_edge_contamination(
+    rgb: np.ndarray,
+    alpha: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Trim dark halos left by black-background product photos around light garments."""
+    if alpha.size == 0 or alpha.max() == 0:
+        return rgb, alpha
+
+    fg = alpha > 20
+    if float(fg.mean()) < 0.03:
+        return rgb, alpha
+
+    fg_u8 = fg.astype(np.uint8)
+    dist = cv2.distanceTransform(fg_u8, cv2.DIST_L2, 3)
+    interior = fg & (dist > 10)
+    if not interior.any():
+        return rgb, alpha
+
+    interior_value = float(rgb[interior].mean())
+    if interior_value < 145.0:
+        return rgb, alpha
+
+    channel_max = rgb.max(axis=2)
+    channel_min = rgb.min(axis=2)
+    channel_span = channel_max - channel_min
+    dark_edge = fg & (dist <= 7.0) & (channel_max < 105) & (channel_span < 58)
+    if float(dark_edge.sum()) / max(float(fg.sum()), 1.0) < 0.002:
+        return rgb, alpha
+
+    out_rgb = rgb.copy()
+    out_alpha = alpha.copy()
+    out_rgb[dark_edge] = 255
+    out_alpha[dark_edge] = 0
+    logger.info(
+        "Removed dark edge contamination from light garment (coverage=%.3f)",
+        float(dark_edge.sum()) / max(float(fg.sum()), 1.0),
+    )
+    return out_rgb, out_alpha
 
 
 def _inpaint_holes(rgb: np.ndarray, alpha: np.ndarray) -> np.ndarray:
@@ -164,7 +334,7 @@ def preprocess_garment(image: Image.Image, canvas_size: int = 512) -> tuple[np.n
         1. Remove background (rembg with alpha, fallback to color threshold)
         2. Crop tightly to garment bounding box (with auto-expand if too small)
         3. Scale to fit within canvas_size with margin
-        4. Center on a 512x512 black canvas
+        4. Center on a 512x512 white canvas
 
     Args:
         image: Input PIL Image (any size, any mode)
@@ -188,6 +358,8 @@ def preprocess_garment(image: Image.Image, canvas_size: int = 512) -> tuple[np.n
     else:
         rgb_np = _fallback_bg_removal(image)
         alpha_np = None
+
+    rgb_np = _composite_rgb_on_background(rgb_np, alpha_np)
 
     crop_result = _crop_to_bbox_with_ratio(rgb_np, alpha_np, margin=8)
     rgb_np, ratio = crop_result[0], crop_result[1]
@@ -219,6 +391,9 @@ def _rembg_remove(image: Image.Image) -> tuple[np.ndarray, np.ndarray]:
 
     rgb = rgba_np[:, :, :3]
     alpha = rgba_np[:, :, 3]
+
+    rgb, alpha = _remove_border_background(rgb, alpha)
+    rgb, alpha = _remove_dark_edge_contamination(rgb, alpha)
 
     alpha = _fill_alpha_holes(alpha)
 
@@ -287,7 +462,7 @@ def _crop_to_bbox_with_ratio(
 
 def _center_on_canvas(rgb: np.ndarray, canvas_size: int = 512) -> np.ndarray:
     """
-    Scale garment to fit canvas with margin, then center on black canvas.
+    Scale garment to fit canvas with margin, then center on white canvas.
 
     Args:
         rgb: Cropped garment RGB image

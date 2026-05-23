@@ -24,7 +24,9 @@ from app.api import (
     users_router,
     wardrobe_router,
 )
+from app.api.agent_chat import router as agent_chat_router
 from app.api.agent_intent import router as agent_intent_router
+from app.api.agent_skills import router as agent_skills_router
 from app.api.analytics import router as analytics_router
 from app.api.feedback import router as feedback_router
 from app.api.memory_rag import router as memory_rag_router
@@ -277,6 +279,26 @@ async def _app_lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Failed to initialize Haar Cascades at startup: %s", e)
 
+    # Initialize embedding client for memory hybrid search
+    if settings.AI_RECOMMENDER_API_BASE_URL and settings.AI_RECOMMENDER_API_KEY:
+        from app.services.embedding_client import EmbeddingClient, init_embedding_client
+
+        _emb_client = EmbeddingClient(
+            api_base=settings.AI_RECOMMENDER_API_BASE_URL,
+            api_key=settings.AI_RECOMMENDER_API_KEY,
+            model=settings.EMBEDDING_MODEL,
+            dim=settings.EMBEDDING_DIM,
+            timeout_seconds=settings.EMBEDDING_TIMEOUT_SECONDS,
+        )
+        init_embedding_client(_emb_client)
+        logger.info(
+            "Embedding client initialized: model=%s dim=%d",
+            settings.EMBEDDING_MODEL,
+            settings.EMBEDDING_DIM,
+        )
+    else:
+        logger.info("Embedding client skipped (AI_RECOMMENDER_API_BASE_URL / API_KEY not set)")
+
     # Warn if CatVTON is enabled but DISABLE_HOT_RELOAD is not set
     import os as _os
 
@@ -451,10 +473,16 @@ app.add_middleware(_PrivateNetworkAccessMiddleware)
 if settings.ENABLE_RATE_LIMIT and settings.RATE_LIMIT_PER_MINUTE > 0:
     from app.middleware.rate_limit import SlidingWindowRateLimitMiddleware
 
+    _prefix_limits = {}
+    if settings.RATE_LIMIT_TRYON_PER_MINUTE > 0:
+        _prefix_limits["/api/v1/tryon"] = settings.RATE_LIMIT_TRYON_PER_MINUTE
+        _prefix_limits["/api/v2/tryon"] = settings.RATE_LIMIT_TRYON_PER_MINUTE
+
     app.add_middleware(
         SlidingWindowRateLimitMiddleware,
         limit=settings.RATE_LIMIT_PER_MINUTE,
         window_seconds=60,
+        prefix_limits=_prefix_limits,
     )
 
 # Register exception handlers
@@ -520,6 +548,19 @@ async def ops_dependency_board():
         ensure_ascii=False,
     )
     return HTMLResponse(render_dependency_board_html(rel))
+
+
+@app.get("/metrics", include_in_schema=False)
+async def prometheus_metrics():
+    """Prometheus exposition-format metrics endpoint (零依赖纯文本）。"""
+    from fastapi.responses import PlainTextResponse
+
+    from app.observability.prometheus_exporter import render_prometheus_metrics
+
+    return PlainTextResponse(
+        render_prometheus_metrics(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @app.get("/health/ready")
@@ -704,6 +745,8 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(feedback_router, prefix="/api/v1")
 app.include_router(analytics_router, prefix="/api/v1")
 app.include_router(agent_intent_router, prefix="/api/v1")
+app.include_router(agent_chat_router, prefix="/api/v1")
+app.include_router(agent_skills_router, prefix="/api/v1")
 app.include_router(memory_rag_router, prefix="/api/v1")
 app.include_router(users_router, prefix="/api/v1")
 app.include_router(profile_router, prefix="/api/v1")

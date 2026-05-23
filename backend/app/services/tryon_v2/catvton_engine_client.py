@@ -126,6 +126,12 @@ def _get_catvton_path() -> str:
 def _catvton_category_hint(garment_category: Optional[str]) -> str:
     """Map garment category string to CatVTON type."""
     s = (garment_category or "").strip().lower()
+    if s in {"lower", "bottom", "pants", "trousers"}:
+        return "lower"
+    if s in {"overall", "skirt", "dress"}:
+        return "overall"
+    if s in {"upper", "top", "shirt", "tshirt", "t-shirt"}:
+        return "upper"
     if any(k in s for k in ("裙", "连衣裙", "dress", "skirt", "裙装")):
         return "overall"
     if any(k in s for k in ("下装", "裤", "裤装", "bottom", "短裤", "pants", "长裤")):
@@ -664,6 +670,11 @@ async def call_local_catvton(
     xformers = getattr(settings, "CATVTON_ENABLE_XFORMERS", True)
     force_fp16 = getattr(settings, "CATVTON_FORCE_FP16", False)
     torch_compile = getattr(settings, "CATVTON_TORCH_COMPILE", False)
+    effective_seed = (
+        seed
+        if seed is not None and int(seed) >= 0
+        else int(getattr(settings, "CATVTON_SEED", -1) or -1)
+    )
 
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
@@ -672,7 +683,7 @@ async def call_local_catvton(
             person_bytes=person_bytes,
             garment_bytes=garment_bytes,
             cloth_type=catvton_type,
-            seed=seed,
+            seed=effective_seed,
             timeout=effective_timeout,
             debug_dir=debug_dir,
             preprocess_only=preprocess_only,

@@ -1,6 +1,6 @@
 # Smart Outfit Assistant - Backend
 
-更新时间：2026-05-02
+更新时间：2026-05-24
 
 FastAPI 后端服务，提供智能穿搭助手的核心功能。
 
@@ -85,7 +85,7 @@ copy .env.example .env  # Windows
 > 模型相关提示：
 > - FashionCLIP / 虚拟试衣首次运行可能会下载权重（弱网易超时）。
 > - 在 `.env` 中设置 `HF_ENDPOINT=https://hf-mirror.com`（及可选 `HF_HUB_DOWNLOAD_TIMEOUT` 等）；这些键已在 `app.core.config.Settings` 中声明，启动时会注入 `os.environ`。详见仓库根目录 [docs/WEATHER_DISPLAY_AND_HF_ENV.md](../docs/WEATHER_DISPLAY_AND_HF_ENV.md)。
-> - **扩散试衣依赖**：`torch` 与 `torchvision` 须版本匹配（同一轮 `pip install`）；可选表单字段 `garment_category` 改善 fallback 粘贴。CatVTON realistic/professional 模式见 [docs/VTON_INTEGRATION.md](../docs/VTON_INTEGRATION.md)。
+> - **扩散试衣依赖**：`torch` 与 `torchvision` 须版本匹配（同一轮 `pip install`）；可选表单字段 `garment_category` 改善 fallback 粘贴。CatVTON realistic/realistic_v2/professional/hybrid 模式见 [docs/VTON_INTEGRATION.md](../docs/VTON_INTEGRATION.md)。
 
 ### 4. 启动开发服务器
 
@@ -123,15 +123,16 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8010
 ```
 backend/
 ├── app/
-│   ├── api/                    # 20 个路由模块（含 tryon_v2）
+│   ├── api/                    # 路由模块（含 tryon_v2 / agent_chat / agent_skills）
+│   ├── agent/                  # Agent 工具注册表与工具实现
 │   ├── core/                  # 配置、错误处理、日志、超参
 │   ├── db/                    # 数据库配置
 │   ├── models/               # SQLAlchemy 模型
 │   ├── ml/                   # 模型加载（CLIP）
-│   ├── observability/         # 指标收集
+│   ├── observability/         # 指标收集与 Prometheus exporter
 │   ├── schemas/              # Pydantic schemas
 │   └── services/             # 50 个服务模块
-│       └── tryon_v2/         # 14 个虚拟试衣 v2 管线模块
+│       └── tryon_v2/         # 虚拟试衣 v2 管线模块（含 fidelity_guard）
 ├── scripts/                   # 诊断与测试脚本
 ├── tests/                    # pytest 套件
 ├── uploads/                  # 上传图片
@@ -208,12 +209,14 @@ pre-commit run --all-files
 **反馈**（`/api/v1/feedback/events`）: like/dislike/adopt/view
 **分析**（`/api/v1/analytics/`）: summary、dependency-observability
 **意图路由**（`/api/v1/agent/intent`）: 自然语言 → MCP 工具名
+**Agent 对话**（`/api/v1/agent/chat-stream`）: SSE 多轮工具调用、记忆预加载、技能匹配、执行步骤流
+**Agent 技能**（`/api/v1/agent/skills`）: 列表、创建、capture、execute-preview
 **记忆 RAG**（`/api/v1/memory/snippets`）: POST/GET/DELETE + 搜索
 **订阅**（`/api/v1/subscription/`）: 管理；`/api/v1/subscription/usage`: 用量
 
 ### 虚拟试衣 v2（`/api/v2`）
 
-- `POST /api/v2/tryon/garment` — 多模式试衣（mode: strict/balanced/replace/realistic/professional）
+- `POST /api/v2/tryon/garment` — 多模式试衣（mode: strict/balanced/replace/realistic/realistic_v2/professional/hybrid）
 - `POST /api/v2/tryon/validate-input` — 输入门禁评估
 - `POST /api/v2/tryon/preprocess` — 衣物预处理（自动品类检测）
 - `POST /api/v2/tryon/preprocess-batch` — 批量预处理
@@ -223,6 +226,7 @@ pre-commit run --all-files
 ### AI 穿搭风格分（无前缀）
 
 - `POST /predict` — sklearn 风格分 + Top3 推荐
+- `GET /metrics` — Prometheus 文本指标（dependency / try-on v2 / agent）
 
 > 完整 API 以 http://127.0.0.1:8010/docs（Swagger）为准。业务路径均在 `/api/v1/...` 或 `/api/v2/...` 下。
 
@@ -239,6 +243,11 @@ pre-commit run --all-files
 - `AI_RECOMMENDER_API_BASE_URL` - OpenAI 兼容接口地址
 - `AI_RECOMMENDER_API_KEY` - AI 推荐接口密钥
 - `AI_RECOMMENDER_MODEL` - AI 推荐模型名（默认 `gpt-4o-mini`）
+- `AGENT_MODEL` - Agent loop 模型名；为空时回退 `AI_RECOMMENDER_MODEL`
+- `AGENT_MAX_ROUNDS` / `AGENT_TIMEOUT_SECONDS` / `AGENT_MAX_TOOL_CALLS` - Agent 回合、超时与工具调用上限
+- `EMBEDDING_MODEL` / `EMBEDDING_DIM` - 记忆混合检索 embedding 配置
+- `ENABLE_RATE_LIMIT` - 默认开启；pytest 通过环境变量关闭
+- `RATE_LIMIT_TRYON_PER_MINUTE` - 试衣接口独立限流上限
 
 ## 模型说明
 

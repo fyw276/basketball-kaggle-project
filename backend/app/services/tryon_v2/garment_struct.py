@@ -101,6 +101,146 @@ def _generate_white_bg_mask(rgb: Image.Image) -> Image.Image:
     return pil
 
 
+def _border_connected_background_mask(
+    rgb: Image.Image, alpha: np.ndarray | None = None
+) -> np.ndarray:
+    """Detect solid product-photo background connected to image borders."""
+    arr = np.asarray(rgb.convert("RGB"), dtype=np.uint8)
+    h, w = arr.shape[:2]
+    if h < 16 or w < 16:
+        return np.zeros((h, w), dtype=bool)
+
+    border_px = max(3, min(16, min(h, w) // 32))
+    border = np.concatenate(
+        [
+            arr[:border_px, :, :].reshape(-1, 3),
+            arr[-border_px:, :, :].reshape(-1, 3),
+            arr[:, :border_px, :].reshape(-1, 3),
+            arr[:, -border_px:, :].reshape(-1, 3),
+        ],
+        axis=0,
+    ).astype(np.float32)
+    if border.size == 0:
+        return np.zeros((h, w), dtype=bool)
+
+    bg = np.median(border, axis=0)
+    border_dist = np.linalg.norm(border - bg, axis=1)
+    border_uniform = float(np.percentile(border_dist, 75)) < 38.0
+    dark_border = float(bg.mean()) < 70.0
+    light_border = float(bg.mean()) > 220.0 and float(border_dist.mean()) < 45.0
+    if not (border_uniform or dark_border or light_border):
+        return np.zeros((h, w), dtype=bool)
+
+    arr_f = arr.astype(np.float32)
+    dist = np.linalg.norm(arr_f - bg.reshape(1, 1, 3), axis=2)
+    threshold = float(np.clip(np.percentile(border_dist, 92) + 18.0, 24.0, 78.0))
+    candidate = dist <= threshold
+
+    channel_max = arr.max(axis=2)
+    channel_min = arr.min(axis=2)
+    channel_span = channel_max - channel_min
+    if dark_border:
+        if alpha is not None and alpha.size > 0:
+            a_h, a_w = alpha.shape[:2]
+            bp = max(3, min(16, min(a_h, a_w) // 32))
+            border_alpha = np.concatenate(
+                [
+                    alpha[:bp, :].ravel(),
+                    alpha[-bp:, :].ravel(),
+                    alpha[:, :bp].ravel(),
+                    alpha[:, -bp:].ravel(),
+                ]
+            )
+            if float(np.mean(border_alpha < 30)) > 0.70:
+                pass
+            else:
+                candidate |= (channel_max < 70) & (channel_span < 42)
+        else:
+            candidate |= (channel_max < 70) & (channel_span < 42)
+    if light_border:
+        candidate |= (channel_min > 232) & (channel_span < 34)
+
+    num, labels, _stats, _centroids = cv2.connectedComponentsWithStats(
+        candidate.astype(np.uint8), 8
+    )
+    if num <= 1:
+        return np.zeros((h, w), dtype=bool)
+
+    border_labels = set(labels[0, :].tolist())
+    border_labels.update(labels[-1, :].tolist())
+    border_labels.update(labels[:, 0].tolist())
+    border_labels.update(labels[:, -1].tolist())
+
+    bg_mask = np.zeros((h, w), dtype=bool)
+    for label_idx in border_labels:
+        if label_idx != 0:
+            bg_mask |= labels == label_idx
+
+    coverage = float(bg_mask.mean())
+    if coverage < 0.02:
+        return np.zeros((h, w), dtype=bool)
+    if dark_border and coverage > 0.70 and alpha is not None and alpha.size > 0:
+        return np.zeros((h, w), dtype=bool)
+    return bg_mask
+
+
+def _remove_border_background_from_rgba(rgba: Image.Image, rgb: Image.Image) -> Image.Image:
+    """
+    Clear black/white product-photo backgrounds that segmentation leaves opaque.
+
+    Only border-connected pixels are removed, so internal black labels and prints stay.
+    """
+    im = rgba.convert("RGBA")
+    alpha_arr = np.asarray(im, dtype=np.uint8)[:, :, 3]
+    bg_mask = _border_connected_background_mask(rgb, alpha=alpha_arr)
+    if not bg_mask.any():
+        return im
+
+    arr = np.asarray(im, dtype=np.uint8).copy()
+    arr[bg_mask, :3] = 255
+    arr[bg_mask, 3] = 0
+    logger.info(
+        "[GARMENT-STRUCT] removed border-connected product background (coverage=%.3f)",
+        float(bg_mask.mean()),
+    )
+    return Image.fromarray(arr, mode="RGBA")
+
+
+def _remove_dark_edge_contamination_from_rgba(rgba: Image.Image) -> Image.Image:
+    """Trim black-background halos around light garments without touching inner prints."""
+    im = rgba.convert("RGBA")
+    arr = np.asarray(im, dtype=np.uint8).copy()
+    alpha = arr[:, :, 3]
+    fg = alpha > 20
+    if float(fg.mean()) < 0.03:
+        return im
+
+    dist = cv2.distanceTransform(fg.astype(np.uint8), cv2.DIST_L2, 3)
+    interior = fg & (dist > 10)
+    if not interior.any():
+        return im
+
+    interior_value = float(arr[:, :, :3][interior].mean())
+    if interior_value < 145.0:
+        return im
+
+    channel_max = arr[:, :, :3].max(axis=2)
+    channel_min = arr[:, :, :3].min(axis=2)
+    channel_span = channel_max - channel_min
+    dark_edge = fg & (dist <= 7.0) & (channel_max < 105) & (channel_span < 58)
+    dark_ratio = float(dark_edge.sum()) / max(float(fg.sum()), 1.0)
+    if dark_ratio < 0.002:
+        return im
+
+    arr[dark_edge, :3] = 255
+    arr[dark_edge, 3] = 0
+    logger.info(
+        "[GARMENT-STRUCT] removed dark edge contamination from light garment " "(coverage=%.3f)",
+        dark_ratio,
+    )
+    return Image.fromarray(arr, mode="RGBA")
+
+
 def _keep_largest_alpha_component(rgba: Image.Image, min_alpha: int = 20) -> Image.Image:
     """Remove small disconnected noise in alpha while preserving garment details.
 
@@ -424,6 +564,9 @@ def cutout_garment_rgba(
         rgba = rgb.convert("RGBA")
         rgba.putalpha(mask)
 
+    rgba = _remove_border_background_from_rgba(rgba, rgb)
+    rgba = _remove_dark_edge_contamination_from_rgba(rgba)
+
     # ── Post-processing: fill alpha holes + smooth boundary ──────────────────
     # For non-SAM paths: rembg and color-threshold can produce holes (lace/mesh gaps).
     # These holes cause the "floating garment" bug where the person bleeds through.
@@ -482,8 +625,10 @@ def split_pants_parts(
     if w < 16 or h < 16:
         raise ValueError("garment too small for structuring")
 
-    # Split row for waistband: keep top ~22% as waistband.
-    y_band = _clamp_int(int(h * 0.22), 6, h - 6)
+    # Split row for waistband: keep only the visible waistband/crotch transition.
+    # A tall product-photo waistband becomes an obvious pasted horizontal block
+    # when stretched onto the person, especially for plaid pants.
+    y_band = _clamp_int(int(h * 0.12), 6, h - 6)
     waistband = im.crop((0, 0, w, y_band))
 
     # Remaining region: split legs by alpha median x in lower region.

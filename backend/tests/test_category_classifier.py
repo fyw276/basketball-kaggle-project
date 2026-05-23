@@ -6,11 +6,9 @@ Key requirement: when confidence < 0.12, classifier returns heuristic_category f
 The threshold was lowered from 0.3 to 0.12 to use more classifications.
 """
 
-import io
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
-import pytest
 from PIL import Image
 
 from app.ml.category_classifier import CategoryClassifier
@@ -43,7 +41,6 @@ class TestCategoryClassifierLowConfidence:
         mock_predictions[788] = 0.04
         mock_predictions[789] = 0.034
         # Make "shoes" the highest-scoring category but still very low
-        total = mock_predictions[788] + mock_predictions[789]
 
         with patch.object(classifier, "model") as mock_model:
             mock_model.predict.return_value = np.array([mock_predictions])
@@ -55,8 +52,9 @@ class TestCategoryClassifierLowConfidence:
             # At confidence < 0.12, classifier falls back to heuristic (aspect ratio).
             # For a 224x224 (square) image, aspect=1.0 > 0.9, so heuristic returns "upper".
             assert category != "鞋", (
-                f"Expected heuristic fallback, not {category!r} when confidence={confidence:.3f} < 0.12. "
-                f"Low confidence results should NOT be the model's misclassified category."
+                f"Expected heuristic fallback, not {category!r} "
+                f"when confidence={confidence:.3f} < 0.12. "
+                "Low confidence results should NOT be the model's misclassified category."
             )
             assert confidence < 0.12
 

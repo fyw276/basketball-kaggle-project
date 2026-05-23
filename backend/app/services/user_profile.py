@@ -40,6 +40,9 @@ def create_profile(db: Session, user_id: UUID, profile_in: UserProfileCreate) ->
     """
     db_profile = UserProfile(
         user_id=user_id,
+        gender=profile_in.gender,
+        gender_expression=profile_in.gender_expression,
+        explore_cross_gender=profile_in.explore_cross_gender,
         height=profile_in.height,
         body_type=profile_in.body_type,
         skin_tone=profile_in.skin_tone,

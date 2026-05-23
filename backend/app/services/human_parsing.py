@@ -19,6 +19,7 @@ Usage:
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -213,7 +214,7 @@ class SCHPParser:
         Fallback: use GrabCut body segmentation to create pseudo-SCHP masks.
         This separates upper/lower/arms based on body proportions.
         """
-        
+
         arr = np.array(image.convert("RGB"))
         h, w = arr.shape[:2]
 
@@ -244,7 +245,7 @@ class SCHPParser:
 
     def _get_body_mask(self, image: Image.Image) -> np.ndarray:
         """Get a rough body foreground mask using GrabCut."""
-        
+
         arr = np.array(image.convert("RGB"))
         h, w = arr.shape[:2]
 

@@ -1,3 +1,20 @@
+# 最新变更总结
+
+## 2026-05-24 Agent、Try-On Fidelity 与文档同步
+
+本轮更新补齐了 Agent 对话、技能、混合记忆、Prometheus 指标、Flutter SSE 客户端，以及 CatVTON / try-on v2 保真修复的文档。当前虚拟试衣 v2 是 **7 种模式**：`strict`、`balanced`、`replace`、`realistic`、`realistic_v2`、`professional`、`hybrid`。
+
+关键新增：
+- `POST /api/v1/agent/chat-stream`：SSE 流式 Agent loop，输出 `step` / `tool_call` / `tool_result` / `answer` / `done` 等事件。
+- `/api/v1/agent/skills`：用户技能列表、创建、capture、execute-preview。
+- `GET /metrics`：Prometheus exposition 指标，覆盖 dependency、try-on v2、Agent。
+- `fidelity_guard.py` / `tryon_mask_utils.py`：CatVTON 颜色保真门禁、异常检测、mask target-ratio 扩展。
+- Flutter：Agent 对话页、chunk-safe SSE parser、衣橱选择器。
+
+详细同步文档见 [`docs/AGENT_AND_TRYON_FIDELITY_SYNC_2026-05-24.md`](docs/AGENT_AND_TRYON_FIDELITY_SYNC_2026-05-24.md)。
+
+---
+
 # 2026-05-08 虚拟试衣 v2 (TryOn v2) 模块化重构与真实模式修复
 
 ## 概述

@@ -1,6 +1,6 @@
 # 智能穿搭助手 (Smart Outfit Assistant)
 
-**最后更新**: 2026-05-13
+**最后更新**: 2026-05-24
 **状态**: 生产级可用（FastAPI 后端 + Flutter Web/移动端 + CLI + MCP Agent 工具面）
 
 ## 项目简介
@@ -12,6 +12,7 @@
 - 适合度评分：颜色 / 风格 / 体型友好度建议（含三维原因说明）
 - 情绪穿搭：根据心情给出配色与风格方向，并匹配衣橱单品
 - 虚拟试衣 v2：多引擎多模式虚拟试穿（CatVTON 深度学习 / 百炼 / Warp 几何粘贴 / Stable Diffusion），支持白盒调试与极限低显存优化
+- AI Agent 对话：SSE 流式多轮工具调用，可查询衣橱、天气、记忆、套装并输出可观察执行步骤
 - 首页天气与今日推荐卡：展示城市/天气/温度、AI 评分/风格/理由
 - 性别表达指数系统：动态全局配色（柔粉 ↔ 深蓝）
 
@@ -62,6 +63,7 @@
 | `warp_engine.py` | Warp 几何引擎：上装 / 下装 / 裙装 / 套装多段贴合，含阴影生成 |
 | `catvton_engine_client.py` | CatVTON 本地引擎客户端（子进程调用） |
 | `catvton_client.py` | CatVTON HTTP 远程推理客户端 |
+| `fidelity_guard.py` | CatVTON/warp 颜色保真策略门禁、异常检测、后处理伪影检测 |
 | `postprocess.py` | 后处理增强：`quick_enhance()` + 完整 `enhance_tryon_result()` |
 | `qc.py` | 质量评分：身份保真度 / 边缘伪影检测 |
 | `preprocess.py` | 衣物预处理：自动品类检测（top/bottom/skirt/outfit）+ 标准化 |
@@ -93,15 +95,25 @@ debug_mode=preprocess_only
 # 完整运行（含扩散，耗时最长）
 debug_mode=full
 # 输出目录：CATVTON_DEBUG_DIR 中每个请求一个独立时间戳会话目录
-# 中间产物：01_input_person.jpg, 02_input_garment.jpg, 03_mask.png, 04_pose_keypoints.jpg, 05_mask_overlay.png ...
+# 中间产物：01_input_person.jpg, 02_input_garment.jpg, 03_mask.png, 04_pose_keypoints.jpg,
+# 05_mask_overlay.png, 12_after_color_fidelity.jpg, 99_backend_final_returned.jpg ...
 ```
 
-### 6. AI 穿搭风格分（`POST /predict`）
+### 6. AI Agent 对话与技能
+
+- `POST /api/v1/agent/chat-stream`：SSE 流式 Agent loop，事件包含 `step` / `tool_call` / `tool_result` / `answer` / `done`
+- `GET/POST /api/v1/agent/skills`：用户级技能列表与手工创建
+- `POST /api/v1/agent/skills/capture`：从成功工具调用序列捕获可复用技能
+- `POST /api/v1/agent/skills/{skill_id}/execute-preview`：预览命中关键词与注入提示词
+- 支持混合记忆检索：关键词 Jaccard + embedding cosine，embedding 不可用时自动退化为关键词搜索
+- `/metrics` 输出 Prometheus 文本指标，包含 dependency、try-on v2、agent run/tool/failure 指标
+
+### 7. AI 穿搭风格分（`POST /predict`）
 
 - **sklearn** 风格分 + Top3 推荐与中文解释；与 Flutter / Vite 共用同一契约
 - 独立服务默认端口 **8765**；主应用 `app.main` 亦提供 `POST /predict`（无 `/api/v1` 前缀）
 
-### 7. 智能穿搭（Flutter Web 行为、CORS、认证顺序、响应式）
+### 8. 智能穿搭（Flutter Web 行为、CORS、认证顺序、响应式）
 
 详见 [`docs/SMART_OUTFIT_FLUTTER_WEB.md`](docs/SMART_OUTFIT_FLUTTER_WEB.md)。
 
@@ -113,6 +125,7 @@ debug_mode=full
 - **AI**:
   - CLIP/FashionCLIP（`transformers` + `torch`）用于零样本品类/风格/场景识别与相似检索
   - 虚拟试衣：**CatVTON**（本地子进程深度学习）/ **百炼（DashScope）** / **Warp 几何引擎** / **diffusers** SD Inpainting（fallback）
+  - Agent loop：OpenAI-compatible chat-completions tool calling + user memory preload + skill matcher
 - **独立推理服务**: `vton_inference_service/` 最小 HTTP 服务，支持 CatVTON 子进程 / HTTP 上游 / Stub 三种模式
 
 ### 移动端 (Flutter)
@@ -141,22 +154,23 @@ debug_mode=full
 clothing-assistant/
 ├── backend/
 │   ├── app/
-│   │   ├── api/                   # 20 个路由模块（含 tryon_v2）
+│   │   ├── api/                   # 路由模块（含 tryon_v2 / agent_chat / agent_skills）
+│   │   ├── agent/                 # Agent 工具注册表与工具实现
 │   │   ├── core/                  # 配置、错误处理、日志、超参
 │   │   ├── db/                    # 数据库会话 + SQLite schema patches
 │   │   ├── ml/                    # 模型加载（CLIP）
 │   │   ├── models/                # ORM 模型（含 FeedbackEvent、MemorySnippet 等）
-│   │   ├── observability/          # 指标收集（tryon_v2_metrics, dependency_metrics）
+│   │   ├── observability/          # 指标收集与 Prometheus exporter
 │   │   ├── schemas/               # Pydantic schemas
 │   │   └── services/              # 50 个服务模块
-│   │       └── tryon_v2/           # 14 个 v2 管线模块（pipeline_a / warp_engine 等）
+│   │       └── tryon_v2/           # v2 管线模块（pipeline_a / warp_engine / fidelity_guard 等）
 │   ├── scripts/                    # 诊断与测试脚本
 │   ├── tests/                     # pytest 套件
 │   └── uploads/                   # 上传的图片
 ├── mobile/                         # Flutter 前端（Provider + GoRouter）
 │   └── lib/
 │       ├── core/                  # API 客户端、主题、性别表达系统
-│       └── features/              # auth / home / profile / wardrobe / analysis
+│       └── features/              # auth / home / profile / wardrobe / analysis / agent
 ├── vton_inference_service/         # 独立最小 HTTP 推理服务
 │   ├── catvton_runner.py          # CatVTON 子进程推理（含 MediaPipe PoseLandmarker）
 │   ├── catvton_engine.py          # CatVTON 引擎封装
@@ -228,6 +242,17 @@ python -m mcp.server  # 需要先设置 OUTFIT_API_BASE_URL / OUTFIT_API_TOKEN
 | `POST` | `/api/v2/tryon/preprocess-batch` | 批量预处理 |
 | `GET` | `/api/v2/tryon/capabilities` | 能力开关、默认模式、支持品类 |
 | `GET` | `/api/v2/tryon/model-status` | CatVTON 等引擎就绪状态诊断 |
+
+## Agent 与观测 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/v1/agent/chat-stream` | SSE 流式多轮工具调用对话 |
+| `GET` | `/api/v1/agent/skills` | 列出当前用户技能 |
+| `POST` | `/api/v1/agent/skills` | 创建当前用户技能 |
+| `POST` | `/api/v1/agent/skills/capture` | 从工具调用记录捕获技能 |
+| `POST` | `/api/v1/agent/skills/{skill_id}/execute-preview` | 技能命中预览 |
+| `GET` | `/metrics` | Prometheus exposition metrics |
 
 ### CLI 调用示例
 

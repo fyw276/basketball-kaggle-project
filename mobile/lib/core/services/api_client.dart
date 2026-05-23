@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 
 import 'api_base_resolver.dart';
 import 'api_port_config.dart';
+import 'sse_parser.dart';
 
 /// 智能穿搭：情绪字段去控制字符、折叠空白、限长，保证 JSON 与后端解析稳定。
 String _normalizeSmartOutfitMood(String mood) {
@@ -167,8 +168,9 @@ class ApiClient {
         final decoded = json.decode(response.body);
         final unwrapped = unwrapApiResponseEnvelope(decoded);
         if (unwrapped is List) return unwrapped;
-        if (unwrapped is Map && unwrapped['data'] is List)
+        if (unwrapped is Map && unwrapped['data'] is List) {
           return unwrapped['data'];
+        }
         return unwrapped;
       }
       lastGetListError = parseFastApiErrorBody(response.body) ??
@@ -565,6 +567,8 @@ class ApiClient {
 
   Future<Map<String, dynamic>> analyzeSimilarity({
     dynamic imageFile,
+    String? garmentId,
+    String? imageUrl,
   }) async {
     try {
       final request = http.MultipartRequest(
@@ -573,10 +577,16 @@ class ApiClient {
       );
       request.headers.addAll(_authHeaders);
 
-      if (imageFile != null) {
+      if (garmentId != null && garmentId.isNotEmpty) {
+        request.fields['garment_id'] = garmentId;
+      } else if (imageUrl != null && imageUrl.isNotEmpty) {
+        request.fields['image_url'] = imageUrl;
+      } else if (imageFile != null) {
         final part = await _multipartImage('file', imageFile);
         if (part == null) return {'error': 'Unsupported image type'};
         request.files.add(part);
+      } else {
+        return {'error': 'No image provided'};
       }
 
       final streamedResponse = await request.send().timeout(
@@ -606,6 +616,8 @@ class ApiClient {
   Future<Map<String, dynamic>> recommendOutfits({
     dynamic imageFile,
     List<dynamic>? imageFiles,
+    List<String>? garmentIds,
+    List<String>? imageUrls,
     int numOutfits = 5,
     double? genderExpression,
     String? scene,
@@ -617,25 +629,32 @@ class ApiClient {
       );
       request.headers.addAll(_authHeaders);
 
-      final List<dynamic> parts = <dynamic>[];
-      if (imageFiles != null && imageFiles.isNotEmpty) {
-        parts.addAll(imageFiles);
-      } else if (imageFile != null) {
-        parts.add(imageFile);
-      }
-      if (parts.isEmpty) {
-        return {'error': 'No image provided'};
-      }
-      // 多图：multipart 字段名 files（每张重复一次）；单图仍用 file 兼容旧调用
-      if (parts.length == 1) {
-        final part = await _multipartImage('file', parts.first);
-        if (part == null) return {'error': 'Unsupported image type'};
-        request.files.add(part);
+      final ids = garmentIds?.where((e) => e.trim().isNotEmpty).toList() ?? [];
+      final urls = imageUrls?.where((e) => e.trim().isNotEmpty).toList() ?? [];
+      if (ids.isNotEmpty) {
+        request.fields['garment_ids'] = ids.join(',');
+      } else if (urls.isNotEmpty) {
+        request.fields['image_urls'] = urls.join(',');
       } else {
-        for (final img in parts) {
-          final part = await _multipartImage('files', img);
+        final List<dynamic> parts = <dynamic>[];
+        if (imageFiles != null && imageFiles.isNotEmpty) {
+          parts.addAll(imageFiles);
+        } else if (imageFile != null) {
+          parts.add(imageFile);
+        }
+        if (parts.isEmpty) {
+          return {'error': 'No image provided'};
+        }
+        if (parts.length == 1) {
+          final part = await _multipartImage('file', parts.first);
           if (part == null) return {'error': 'Unsupported image type'};
           request.files.add(part);
+        } else {
+          for (final img in parts) {
+            final part = await _multipartImage('files', img);
+            if (part == null) return {'error': 'Unsupported image type'};
+            request.files.add(part);
+          }
         }
       }
 
@@ -734,6 +753,8 @@ class ApiClient {
 
   Future<Map<String, dynamic>> analyzeSuitability({
     dynamic imageFile,
+    String? garmentId,
+    String? imageUrl,
     String? scene,
   }) async {
     try {
@@ -743,10 +764,16 @@ class ApiClient {
       );
       request.headers.addAll(_authHeaders);
 
-      if (imageFile != null) {
+      if (garmentId != null && garmentId.isNotEmpty) {
+        request.fields['garment_id'] = garmentId;
+      } else if (imageUrl != null && imageUrl.isNotEmpty) {
+        request.fields['image_url'] = imageUrl;
+      } else if (imageFile != null) {
         final part = await _multipartImage('file', imageFile);
         if (part == null) return {'error': 'Unsupported image type'};
         request.files.add(part);
+      } else {
+        return {'error': 'No image provided'};
       }
 
       if (scene != null) request.fields['scene'] = scene;
@@ -1357,25 +1384,91 @@ class ApiClient {
     }
   }
 
-  /// FastAPI 422/500 等返回的 JSON `detail` 字段。
-  String? _parseFastApiErrorBody(String body) {
-    if (body.isEmpty) return null;
+  /// SSE 流式智能穿搭：逐条接收搭配结果，通过 [onOutfit] 回调实时通知调用方。
+  Future<Map<String, dynamic>> generateSmartOutfitStream({
+    required String imageUrl,
+    required String location,
+    String city = '',
+    Map<String, String>? address,
+    required String weather,
+    required double temperature,
+    String mood = '',
+    int count = 3,
+    int regenerationIndex = 0,
+    double? genderExpression,
+    void Function(int index, Map<String, dynamic> outfit)? onOutfit,
+  }) async {
+    final loc = location.trim();
+    final moodNorm = _normalizeSmartOutfitMood(mood);
+    final body = <String, dynamic>{
+      'image_url': imageUrl,
+      'location': loc,
+      'city': city.trim().isNotEmpty ? city.trim() : loc,
+      if (address != null) 'address': address,
+      'weather': weather,
+      'temperature': temperature,
+      'mood': moodNorm,
+      'count': count,
+      'regeneration_index': regenerationIndex,
+    };
+    if (genderExpression != null) {
+      body['gender_expression'] = genderExpression;
+    }
+    final genUri = Uri.parse(
+      '${baseUrl.replaceAll(RegExp(r'/$'), '')}/smart-outfit/generate-stream',
+    );
+    final genHeaders = <String, String>{
+      ..._jsonHeaders,
+      'Content-Type': 'application/json; charset=utf-8',
+      'Accept': 'text/event-stream',
+    };
+    final request = http.Request('POST', genUri)
+      ..headers.addAll(genHeaders)
+      ..body = utf8.encode(json.encode(body)) as String;
+    final client = http.Client();
     try {
-      final decoded = json.decode(body);
-      if (decoded is Map) {
-        if (decoded['detail'] != null) {
-          return decoded['detail'].toString();
-        }
-        final error = decoded['error'];
-        if (error is Map && error['message'] != null) {
-          return error['message'].toString();
-        }
-        if (decoded['message'] != null) {
-          return decoded['message'].toString();
+      final streamedResponse = await client.send(request).timeout(
+            const Duration(seconds: 180),
+          );
+      if (streamedResponse.statusCode != 200) {
+        final bodyBytes = await streamedResponse.stream.toBytes();
+        final bodyStr = utf8.decode(bodyBytes, allowMalformed: true);
+        final errMap = _parseFastApiErrorBodyMap(bodyStr);
+        return {
+          'error': errMap?['message']?.toString() ??
+              'Generate failed: ${streamedResponse.statusCode}',
+        };
+      }
+
+      Map<String, dynamic>? lastMeta;
+      int outfitCount = 0;
+      await for (final message in parseSseStream(streamedResponse.stream)) {
+        final jsonStr = message.data.trim();
+        if (jsonStr.isEmpty) continue;
+        try {
+          final data = json.decode(jsonStr) as Map<String, dynamic>;
+          if (data.containsKey('outfit')) {
+            final idx = data['index'] as int? ?? outfitCount;
+            final outfit = Map<String, dynamic>.from(data['outfit'] as Map);
+            if (data['meta'] != null) {
+              lastMeta = Map<String, dynamic>.from(data['meta'] as Map);
+            }
+            onOutfit?.call(idx, outfit);
+            outfitCount++;
+          }
+        } catch (_) {
+          // skip malformed SSE data lines
         }
       }
-    } catch (_) {}
-    return null;
+      return {
+        if (lastMeta != null) ...lastMeta,
+        'outfit_count': outfitCount,
+      };
+    } catch (e) {
+      return {'error': e.toString()};
+    } finally {
+      client.close();
+    }
   }
 
   Map<String, dynamic>? _parseFastApiErrorBodyMap(String body) {
@@ -1389,7 +1482,7 @@ class ApiClient {
         return {'message': detail};
       }
       if (detail is Map) {
-        final m = Map<String, dynamic>.from(detail as Map);
+        final m = Map<String, dynamic>.from(detail);
         final nestedDetails = m['details'];
         return {
           'message': m['message']?.toString() ?? m.toString(),
@@ -1481,6 +1574,56 @@ class ApiClient {
       return {'error': 'Request failed with status: ${response.statusCode}'};
     } catch (e) {
       return {'error': e.toString()};
+    }
+  }
+
+  /// Agent chat stream: sends a message and yields parsed pipeline events.
+  Stream<Map<String, dynamic>> agentChatStream({
+    required String message,
+    List<Map<String, String>>? conversationHistory,
+  }) async* {
+    final uri = Uri.parse(
+      '${baseUrl.replaceAll(RegExp(r'/$'), '')}/agent/chat-stream',
+    );
+    final headers = <String, String>{
+      ..._jsonHeaders,
+      'Content-Type': 'application/json; charset=utf-8',
+      'Accept': 'text/event-stream',
+    };
+    final body = <String, dynamic>{
+      'message': message,
+      if (conversationHistory != null)
+        'conversation_history': conversationHistory,
+    };
+
+    final request = http.Request('POST', uri)
+      ..headers.addAll(headers)
+      ..body = utf8.encode(json.encode(body)) as String;
+
+    final client = http.Client();
+    try {
+      final streamedResponse = await client.send(request).timeout(
+            const Duration(seconds: 120),
+          );
+
+      if (streamedResponse.statusCode != 200) {
+        final bodyBytes = await streamedResponse.stream.toBytes();
+        final bodyStr = utf8.decode(bodyBytes, allowMalformed: true);
+        yield {
+          'event': 'error',
+          'data': {'message': 'HTTP ${streamedResponse.statusCode}: $bodyStr'},
+        };
+        return;
+      }
+
+      await for (final message in parseSseStream(streamedResponse.stream)) {
+        try {
+          final parsed = json.decode(message.data) as Map<String, dynamic>;
+          yield parsed;
+        } catch (_) {}
+      }
+    } finally {
+      client.close();
     }
   }
 }

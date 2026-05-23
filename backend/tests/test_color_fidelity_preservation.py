@@ -23,7 +23,6 @@ After the fix is implemented, these tests should still PASS to confirm no regres
 from __future__ import annotations
 
 import numpy as np
-import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from PIL import Image

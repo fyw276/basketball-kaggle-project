@@ -934,6 +934,65 @@ def test_preservation_second_garment_processing():
 
 
 # ============================================================================
+def test_lower_fidelity_clip_preserves_both_pants_legs():
+    """Lower-body fidelity clipping must not drop one disconnected pants leg."""
+    from app.services.tryon_v2.warp_engine import _build_lower_fidelity_clip_mask
+
+    h, w = 160, 100
+    layer_alpha = np.zeros((h, w), dtype=np.float32)
+    layer_alpha[38:145, 22:43] = 1.0
+    layer_alpha[38:145, 57:78] = 1.0
+    garment_layer_present = layer_alpha > 0.12
+    protected_by_mask = np.zeros((h, w), dtype=bool)
+    changed_garment = np.zeros((h, w), dtype=bool)
+    changed_garment[34:150, 18:82] = True
+
+    catvton_mask_np = np.zeros((h, w), dtype=np.float32)
+    catvton_mask_np[28:60, 20:80] = 1.0
+    catvton_mask_np[60:145, 30:70] = 1.0
+
+    clip = _build_lower_fidelity_clip_mask(
+        catvton_mask_np,
+        changed_garment,
+        garment_layer_present,
+        protected_by_mask,
+        layer_alpha=layer_alpha,
+        left_leg_box=(22, 38, 43, 145),
+        right_leg_box=(57, 38, 78, 145),
+    )
+
+    assert clip is not None
+    assert float(clip[75:130, 24:40].mean()) > 0.45
+    assert float(clip[75:130, 60:76].mean()) > 0.45
+    retained = float((clip > 0.08).sum()) / float(garment_layer_present.sum())
+    assert retained > 0.70
+
+
+def test_lower_texture_support_excludes_catvton_side_blocks():
+    """Lower overlay texture support must not expand to CatVTON's full rectangle."""
+    from app.services.tryon_v2.warp_engine import _build_lower_texture_support_mask
+
+    h, w = 160, 100
+    base_alpha = np.zeros((h, w), dtype=np.float32)
+    base_alpha[38:145, 24:43] = 1.0
+    base_alpha[38:145, 58:77] = 1.0
+    protected_by_mask = np.zeros((h, w), dtype=bool)
+
+    support = _build_lower_texture_support_mask(
+        base_alpha,
+        protected_by_mask,
+        min_alpha=0.16,
+        x_pad=5,
+        y_pad=6,
+    )
+
+    assert support[70:130, 28:39].mean() > 0.90
+    assert support[70:130, 62:73].mean() > 0.90
+    assert support[70:130, 4:16].mean() == 0.0
+    assert support[70:130, 84:96].mean() == 0.0
+
+
+# ============================================================================
 # Manual Test Runner for Preservation Tests
 # ============================================================================
 

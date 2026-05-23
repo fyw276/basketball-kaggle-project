@@ -371,10 +371,9 @@ class SCHPForSemanticSegmentation(nn.Module):
     @classmethod
     def from_pretrained(cls, model_name: str, **kwargs) -> "SCHPForSemanticSegmentation":
         """Load model and weights from a HuggingFace model ID or local path."""
-        from transformers import AutoConfig, AutoModel
+        from transformers import AutoConfig
 
-        from .configuration_schp import SCHPConfig
-        from .image_processing_schp import SCHPImageProcessor
+        from .configuration_schp import SCHPConfig  # noqa: F401
 
         config = AutoConfig.from_pretrained(model_name, trust_remote_code=True, **kwargs)
         model = cls(config)

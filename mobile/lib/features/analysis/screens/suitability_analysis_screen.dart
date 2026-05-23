@@ -4,9 +4,13 @@ import 'package:provider/provider.dart';
 import '../../../core/providers/auth_provider.dart';
 import '../../../core/services/feature_local_store.dart';
 import '../../../core/providers/theme_provider.dart';
+import '../../../core/utils/app_snackbar.dart';
+import '../../../core/utils/media_url.dart';
 import '../../../core/widgets/analysis_feature_layout.dart';
 import '../../../core/widgets/analysis_result_display.dart';
 import '../../../core/widgets/image_picker_section.dart';
+import '../../../core/widgets/platform_image.dart';
+import '../../../core/widgets/wardrobe_picker_sheet.dart';
 
 class SuitabilityAnalysisScreen extends StatefulWidget {
   const SuitabilityAnalysisScreen({super.key});
@@ -21,6 +25,8 @@ class _SuitabilityAnalysisScreenState extends State<SuitabilityAnalysisScreen> {
   Map<String, dynamic>? _result;
   bool _loading = false;
   String? _selectedScene;
+  String? _wardrobeGarmentId;
+  String? _wardrobeImageUrl;
   final _scenes = ['日常通勤', '正式场合', '休闲娱乐', '约会聚会', '运动健身', '旅行出游'];
 
   static const _cacheKey = 'suitability_analysis';
@@ -34,22 +40,30 @@ class _SuitabilityAnalysisScreenState extends State<SuitabilityAnalysisScreen> {
   }
 
   Future<void> _analyze() async {
-    if (_image == null) return;
+    if (_image == null && _wardrobeGarmentId == null) return;
     setState(() {
       _loading = true;
       _result = null;
     });
     final auth = context.read<AuthProvider>();
     try {
-      final raw = await auth.apiClient
-          .analyzeSuitabilityFromXFile(_image, scene: _selectedScene);
-      if (raw is Map<String, dynamic> && !raw.containsKey('error')) {
-        _result = _normalizeResultScene(raw);
-      } else {
-        _result = _demoResult();
+      final raw = await auth.apiClient.analyzeSuitability(
+        imageFile: _wardrobeGarmentId == null ? _image : null,
+        garmentId: _wardrobeGarmentId,
+        imageUrl: _wardrobeGarmentId == null ? null : _wardrobeImageUrl,
+        scene: _selectedScene,
+      );
+      if (!mounted) return;
+      if (raw.containsKey('error')) {
+        showAppSnackBar(context, '分析失败：${userFacingApiError(raw['error'])}');
+        setState(() => _loading = false);
+        return;
       }
-    } catch (_) {
-      _result = _demoResult();
+      _result = _normalizeResultScene(raw);
+    } catch (e) {
+      if (mounted) {
+        showAppSnackBar(context, '请求异常：${userFacingApiError(e)}');
+      }
     }
     if (mounted) {
       setState(() {
@@ -59,15 +73,6 @@ class _SuitabilityAnalysisScreenState extends State<SuitabilityAnalysisScreen> {
       if (r != null) FeatureLocalStore.saveJson(_cacheKey, r);
     }
   }
-
-  Map<String, dynamic> _demoResult() => {
-        'overall_score': 0.82,
-        'scene': _selectedScene ?? '日常通勤',
-        'scene_score': 0.88,
-        'body_shape_score': 0.78,
-        'style_score': 0.80,
-        'analysis': '这件衣服非常适合您的身材和气质。面料质感优良，版型合身，颜色与您的肤色相称。建议搭配简约配饰，突出整体层次感。',
-      };
 
   Map<String, dynamic> _normalizeResultScene(Map<String, dynamic> raw) {
     final normalized = Map<String, dynamic>.from(raw);
@@ -249,12 +254,98 @@ class _SuitabilityAnalysisScreenState extends State<SuitabilityAnalysisScreen> {
             const SizedBox(height: 8),
             ImagePickerSection(
               images: _image != null ? [_image!] : [],
-              onImagesChanged: (list) =>
-                  setState(() => _image = list.isEmpty ? null : list.first),
+              onImagesChanged: (list) => setState(() {
+                _image = list.isEmpty ? null : list.first;
+                if (list.isNotEmpty) {
+                  _wardrobeGarmentId = null;
+                  _wardrobeImageUrl = null;
+                }
+              }),
               maxImages: 1,
               hintText: '上传服装图片',
+              onWardrobeTap: () async {
+                final picked = await showWardrobePicker(context);
+                if (picked != null && picked.isNotEmpty) {
+                  setState(() {
+                    _image = null;
+                    _wardrobeGarmentId = picked.first.garmentId;
+                    _wardrobeImageUrl = picked.first.imageUrl;
+                  });
+                }
+              },
             ),
             const SizedBox(height: 10),
+            if (_wardrobeGarmentId != null && _wardrobeImageUrl != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Container(
+                  height: 100,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: palette.divider),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: PlatformImage(
+                          networkUrl: resolveGarmentImageUrl(
+                                  _wardrobeImageUrl,
+                                  context
+                                      .read<AuthProvider>()
+                                      .apiClient
+                                      .baseUrl) ??
+                              _wardrobeImageUrl!,
+                          fit: BoxFit.cover,
+                          placeholder: Center(
+                            child: Icon(Icons.checkroom,
+                                color: palette.primary, size: 32),
+                          ),
+                          errorWidget: Center(
+                            child: Icon(Icons.broken_image,
+                                color: palette.textBody, size: 32),
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        left: 8,
+                        bottom: 8,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.55),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Text(
+                            '已从衣橱选择',
+                            style: TextStyle(color: Colors.white, fontSize: 11),
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        top: 4,
+                        right: 4,
+                        child: GestureDetector(
+                          onTap: () => setState(() {
+                            _wardrobeGarmentId = null;
+                            _wardrobeImageUrl = null;
+                          }),
+                          child: Container(
+                            padding: const EdgeInsets.all(4),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.45),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(Icons.close,
+                                size: 16, color: Colors.white),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             if (_image != null)
               Container(
                 padding: const EdgeInsets.symmetric(
@@ -291,7 +382,10 @@ class _SuitabilityAnalysisScreenState extends State<SuitabilityAnalysisScreen> {
             SizedBox(
               height: 52,
               child: ElevatedButton.icon(
-                onPressed: (_image != null && !_loading) ? _analyze : null,
+                onPressed: ((_image != null || _wardrobeGarmentId != null) &&
+                        !_loading)
+                    ? _analyze
+                    : null,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: palette.primary,
                   foregroundColor: Colors.white,

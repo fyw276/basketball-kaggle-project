@@ -54,3 +54,27 @@ class TestMaskAreaRatio:
         img = Image.fromarray(arr)
         _, ratio = preprocess_garment(img, canvas_size=512)
         assert ratio > 0.12, f"Expected mask_area_ratio > 0.12, got {ratio:.3f}"
+
+    def test_transparent_rembg_pixels_are_composited_to_white(self, monkeypatch):
+        """rembg often leaves transparent background RGB as black; CatVTON must see white."""
+        import app.services.garment_preprocess as garment_preprocess
+
+        rgb = np.zeros((256, 256, 3), dtype=np.uint8)
+        rgb[48:208, 64:192] = (238, 236, 222)
+        alpha = np.zeros((256, 256), dtype=np.uint8)
+        alpha[48:208, 64:192] = 255
+
+        monkeypatch.setattr(garment_preprocess, "_get_rembg_session", lambda: object())
+        monkeypatch.setattr(
+            garment_preprocess,
+            "_rembg_remove",
+            lambda _image: (rgb.copy(), alpha.copy()),
+        )
+
+        out, ratio = garment_preprocess.preprocess_garment(
+            Image.new("RGB", (256, 256), "white"), canvas_size=128
+        )
+
+        assert ratio > 0.12
+        assert float((out.mean(axis=2) < 20).mean()) < 0.01
+        assert out[0, 0].mean() > 245

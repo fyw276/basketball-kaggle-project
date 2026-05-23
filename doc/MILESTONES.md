@@ -4,7 +4,7 @@
 - [x] 初始化文档体系
 - [x] Try-On v2 后端管线（方案 A + 扩展模式）
 - [x] CatVTON 本地引擎集成
-- [x] Flutter Try-On v2 UI 完整接入（6 种模式）
+- [x] Flutter Try-On v2 UI 完整接入（7 种模式）
 - [ ] 第一个核心功能
 
 ## 计划中

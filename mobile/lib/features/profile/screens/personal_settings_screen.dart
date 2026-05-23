@@ -33,7 +33,7 @@ class _PersonalSettingsScreenState extends State<PersonalSettingsScreen> {
 
   final _bodyTypes = ['偏瘦', '微胖', '梨形', '倒三角', '沙漏', '矩形'];
   final _skins = ['冷白', '黄皮', '小麦', '深色'];
-  final _budgets = ['经济实惠', '中等消费', '高端品质'];
+  final _budgets = ['经济', '中等', '高端'];
   final _styleAll = [
     '通勤',
     '学院',
@@ -294,6 +294,16 @@ class _PersonalSettingsScreenState extends State<PersonalSettingsScreen> {
   }
 
   Future<void> _save() async {
+    final missing = <String>[];
+    if (_bodyType == null || _bodyType!.trim().isEmpty) missing.add('体型');
+    if (_skinTone == null || _skinTone!.trim().isEmpty) missing.add('肤色');
+    if (_budget == null || _budget!.trim().isEmpty) missing.add('预算范围');
+    if (_styles.isEmpty) missing.add('风格偏好');
+    if (missing.isNotEmpty) {
+      showAppSnackBar(context, '请先选择：${missing.join('、')}');
+      return;
+    }
+
     setState(() => _saving = true);
     final auth = context.read<AuthProvider>();
     final theme = context.read<ThemeProvider>();
@@ -301,18 +311,22 @@ class _PersonalSettingsScreenState extends State<PersonalSettingsScreen> {
       'height': _height.round(),
       'body_type': _bodyType,
       'skin_tone': _skinTone,
-      'budget_range': _budget,
+      'budget_range': _normalizeBudgetRange(_budget),
       'style_preference': _styles,
       'avoid_body_parts': _concealParts,
       // 仅保存性别表达指数，不保存性别
       'gender_expression': theme.genderExpression,
     };
     try {
-      final cur = await auth.apiClient.getProfile();
-      if (cur is Map && cur.containsKey('error')) {
-        await auth.apiClient.createProfile(data);
-      } else {
-        await auth.apiClient.updateProfile(data);
+      var res = await auth.apiClient.updateProfile(data);
+      if (_isProfileMissingError(res['error'])) {
+        res = await auth.apiClient.createProfile(data);
+      }
+      if (_isProfileAlreadyExistsError(res['error'])) {
+        res = await auth.apiClient.updateProfile(data);
+      }
+      if (res['error'] != null) {
+        throw Exception(res['error'].toString());
       }
       if (mounted) {
         showAppSnackBar(
@@ -327,6 +341,32 @@ class _PersonalSettingsScreenState extends State<PersonalSettingsScreen> {
       }
     } finally {
       if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  bool _isProfileMissingError(Object? error) {
+    final s = error?.toString().toLowerCase() ?? '';
+    return s.contains('profile not found') ||
+        s.contains('user profile not found') ||
+        s.contains('status: 404');
+  }
+
+  bool _isProfileAlreadyExistsError(Object? error) {
+    final s = error?.toString().toLowerCase() ?? '';
+    return s.contains('profile already exists') ||
+        s.contains('user profile already exists');
+  }
+
+  String? _normalizeBudgetRange(String? value) {
+    switch (value) {
+      case '经济实惠':
+        return '经济';
+      case '中等消费':
+        return '中等';
+      case '高端品质':
+        return '高端';
+      default:
+        return value;
     }
   }
 

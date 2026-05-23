@@ -24,6 +24,7 @@ Usage:
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -102,16 +103,13 @@ def _tps_transform_point(
     d: np.ndarray,
 ) -> tuple[float, float]:
     """Apply TPS transformation to a single point."""
-    n = source_pts.shape[0]
-    # TPS part
     diffs = source_pts - np.array([x, y])
     r2 = (diffs**2).sum(axis=1)
     with np.errstate(divide="ignore", invalid="ignore"):
         U = r2 * np.log(r2 + 1e-10)
     tx = (w * U).sum()
-    ty = (w * U).sum()  # same U for y
+    ty = (w * U).sum()
 
-    # Affine part
     ax = d[0] + d[1] * x + d[2] * y
     ay = d[3] + d[4] * x + d[5] * y
 
@@ -149,7 +147,7 @@ def _tps_warp_image(
     Returns:
         Warped image as uint8 array.
     """
-    
+
     out_w, out_h = out_size
     src_h, src_w = src_img.shape[:2]
 
@@ -157,7 +155,7 @@ def _tps_warp_image(
     w, d = _compute_tps_coefficients(src_pts, dst_pts)
 
     # Build output grid
-    out_pts = _build_control_grid(out_w, out_h, _GRID_W, _GRID_H)
+    _out_pts = _build_control_grid(out_w, out_h, _GRID_W, _GRID_H)  # noqa: F841
 
     # Solve inverse: find where each output pixel came from in source
     # Use grid control points for inverse TPS
@@ -217,7 +215,7 @@ def _tps_warp_cv2(
     Falls back to pure NumPy if OpenCV version doesn't support it.
     """
     try:
-        
+
         src_pts_float = src_pts.astype(np.float32)
         dst_pts_float = dst_pts.astype(np.float32)
 
@@ -241,7 +239,7 @@ def _tps_warp_cv2(
             src_h, src_w = src_img.shape[:2]
 
             # Create destination coordinate grid
-            result = np.zeros((dst_h, dst_w, 3), dtype=np.uint8)
+            _result = np.zeros((dst_h, dst_w, 3), dtype=np.uint8)  # noqa: F841
 
             # Use remap for efficient warping
             # For now, fall back to simple affine + bilinear approach
@@ -294,8 +292,8 @@ class TPSWarpEngine:
             rs = keypoints.get("right_shoulder", (0.65, 0.18))
             lh = keypoints.get("left_hip", (0.38, 0.50))
             rh = keypoints.get("right_hip", (0.62, 0.50))
-            le = keypoints.get("left_elbow", (0.25, 0.30))
-            re = keypoints.get("right_elbow", (0.75, 0.30))
+            _le = keypoints.get("left_elbow", (0.25, 0.30))  # noqa: F841
+            _re = keypoints.get("right_elbow", (0.75, 0.30))  # noqa: F841
 
             # Build a regular grid warped to body keypoints
             # Left shoulder → right shoulder (top row)
@@ -326,8 +324,8 @@ class TPSWarpEngine:
             rh = keypoints.get("right_hip", (0.62, 0.50))
             la = keypoints.get("left_ankle", (0.40, 0.95))
             ra = keypoints.get("right_ankle", (0.60, 0.95))
-            lk = keypoints.get("left_knee", (0.39, 0.72))
-            rk = keypoints.get("right_knee", (0.61, 0.72))
+            _lk = keypoints.get("left_knee", (0.39, 0.72))  # noqa: F841
+            _rk = keypoints.get("right_knee", (0.61, 0.72))  # noqa: F841
 
             # Build grid from hip to ankle
             for row in range(self.grid_h):

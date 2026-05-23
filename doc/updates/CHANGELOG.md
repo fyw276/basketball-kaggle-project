@@ -1,5 +1,19 @@
 # 更新日志
 
+## 2026-05-24
+### 新增
+- Agent chat SSE 端点：`POST /api/v1/agent/chat-stream`，支持多轮工具调用、执行步骤流和最终回答流。
+- Agent 技能 API：`/api/v1/agent/skills` 支持列表、创建、从工具调用序列 capture、execute-preview。
+- 混合记忆检索：关键词 Jaccard + embedding cosine，embedding 不可用时自动回退关键词。
+- Prometheus 指标：`GET /metrics` 输出 dependency、try-on v2、agent run/tool/failure 指标。
+- Flutter Agent 页面、chunk-safe SSE parser、衣橱图片选择器。
+- Try-on v2 fidelity guard、mask target-ratio 扩展工具、CatVTON 后端调试阶段落盘。
+
+### 修复与同步
+- 修正文档中的虚拟试衣 v2 模式数量，当前为 7 种：`strict`、`balanced`、`replace`、`realistic`、`realistic_v2`、`professional`、`hybrid`。
+- 同步 README、backend README、mobile README、PROJECT_STATUS、DELIVERY_STATUS 与文档索引。
+- 记录 `ENABLE_RATE_LIMIT=true` 默认行为和 `RATE_LIMIT_TRYON_PER_MINUTE` 试衣独立限流。
+
 ## 2026-05-13
 ### 修复
 - **文档：虚拟试衣 v2 模式数量**：修正 README、VTON_INTEGRATION.md、SERVICE_MODULES_GUIDE.md、TRYON_TECH_BLUEPRINT_AB.md 中的模式数量从 6 种到 7 种（新增 `realistic_v2`）

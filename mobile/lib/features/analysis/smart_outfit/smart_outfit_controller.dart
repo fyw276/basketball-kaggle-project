@@ -485,6 +485,15 @@ class SmartOutfitController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 从衣橱直接设置参考图 URL，跳过上传步骤。
+  void setWardrobeReference(String url) {
+    _images.clear();
+    imageUrl = url;
+    outfits = [];
+    regenIndex = 0;
+    notifyListeners();
+  }
+
   Future<void> ensureUploaded(ApiClient api) async {
     if (imageUrl != null && imageUrl!.isNotEmpty) return;
     if (_images.isEmpty) {
@@ -509,7 +518,7 @@ class SmartOutfitController extends ChangeNotifier {
     required double? genderExpression,
     required bool regen,
   }) async {
-    if (_images.isEmpty) {
+    if (_images.isEmpty && (imageUrl == null || imageUrl!.isEmpty)) {
       return SmartOutfitGenerateResult.needImage();
     }
     if (!isAuthenticated) {

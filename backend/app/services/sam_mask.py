@@ -296,7 +296,7 @@ def sam_segment_with_hints(
     These hints help SAM produce better masks.
     """
     w, h = garment_image.size
-    center_x = w // 2
+    _center_x = w // 2  # noqa: F841
 
     if cloth_type in ("upper", "top"):
         # Upper garment: centered, occupies middle-to-upper portion of image

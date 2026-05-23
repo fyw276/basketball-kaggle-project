@@ -63,7 +63,7 @@ def make_gradient_image(size, r_start, r_end, g_start, g_end, b_start, b_end):
 
 def test_saturation_detection_patterned():
     """Blue-white checkerboard should be detected as patterned (high sat_max)."""
-    from app.services.tryon_v2.warp_engine import catvton_color_fidelity_spatial
+    from app.services.tryon_v2.warp_engine import catvton_color_fidelity_spatial  # noqa: F401
 
     garment = make_checkerboard((200, 300))
     arr = np.array(garment.convert("RGB"))
@@ -103,15 +103,17 @@ def test_saturation_detection_white():
         sat_mean = float(fg_sat.mean()) / 255.0
         bright_mean = float(v[fg_mask].mean()) / 255.0
         is_white = bright_mean > 0.78 and sat_mean < 0.08
-        assert (
-            is_white
-        ), f"White garment should be detected as white: sat={sat_mean:.3f}, bright={bright_mean:.3f}"
+        assert is_white, (
+            f"White garment should be detected as white: "
+            f"sat={sat_mean:.3f}, bright={bright_mean:.3f}"
+        )
         print(
-            f"  sat_mean={sat_mean:.3f}, bright_mean={bright_mean:.3f} → correctly detected as white"
+            f"  sat_mean={sat_mean:.3f}, bright_mean={bright_mean:.3f} "
+            "→ correctly detected as white"
         )
     else:
         # Very few foreground pixels detected - acceptable for solid white
-        print(f"  (white garment has low fg pixel count - acceptable)")
+        print("  (white garment has low fg pixel count - acceptable)")
 
 
 def test_saturation_detection_red():
@@ -156,7 +158,7 @@ def test_color_fidelity_spatial_no_crash():
             fidelity_strength=0.5,
         )
         assert result is not None, "Result should not be None"
-        assert result.size == catvton_result.size, f"Result size mismatch"
+        assert result.size == catvton_result.size, "Result size mismatch"
         engine = meta.get("engine", "")
         # Accept any engine result (including graceful degradation)
         assert engine in (
@@ -165,11 +167,12 @@ def test_color_fidelity_spatial_no_crash():
             "color_transfer",
             "warp_spatial",
         ), f"Unexpected engine={engine}"
-        print(f"  spatial fidelity: engine={engine}, no crash ✓")
+        print(f"  spatial fidelity: engine={engine}, no crash")
     except Exception as e:
         # Graceful degradation is acceptable
         print(
-            f"  spatial fidelity: degraded gracefully ({type(e).__name__}) — acceptable for synthetic images"
+            f"  spatial fidelity: degraded gracefully "
+            f"({type(e).__name__}) — acceptable for synthetic images"
         )
 
 
@@ -190,17 +193,18 @@ def test_color_fidelity_enhance_no_crash():
             fidelity_strength=0.5,
         )
         assert result is not None, "Result should not be None"
-        assert result.size == catvton_result.size, f"Result size mismatch"
+        assert result.size == catvton_result.size, "Result size mismatch"
         engine = meta.get("engine", "")
         assert engine in (
             "catvton_color_fidelity",
             "color_transfer",
             "warp_spatial",
         ), f"Unexpected engine={engine}"
-        print(f"  uniform fidelity: engine={engine}, no crash ✓")
+        print(f"  uniform fidelity: engine={engine}, no crash")
     except Exception as e:
         print(
-            f"  uniform fidelity: degraded gracefully ({type(e).__name__}) — acceptable for synthetic images"
+            f"  uniform fidelity: degraded gracefully ({type(e).__name__}) "
+            "— acceptable for synthetic images"
         )
 
 
@@ -245,7 +249,7 @@ def test_color_fidelity_different_categories():
                 fidelity_strength=0.5,
             )
             assert result is not None, f"Result should not be None for category={cat}"
-            print(f"  category={cat}: OK ✓")
+            print(f"  category={cat}: OK")
         except Exception as e:
             print(
                 f"  category={cat}: degraded ({type(e).__name__}) — acceptable for synthetic images"
@@ -270,7 +274,7 @@ def test_fidelity_strength_range():
                 fidelity_strength=strength,
             )
             assert result is not None, f"Result should not be None for strength={strength}"
-            print(f"  strength={strength}: OK ✓")
+            print(f"  strength={strength}: OK")
         except Exception as e:
             print(f"  strength={strength}: degraded ({type(e).__name__}) — acceptable")
 
@@ -295,14 +299,15 @@ def test_hybrid_warp_catvton_no_crash():
             drape_alpha=0.55,
         )
         assert result is not None, "Result should not be None"
-        assert result.size == catvton_result.size, f"Result size mismatch"
+        assert result.size == catvton_result.size, "Result size mismatch"
         assert (
             meta.get("engine") == "warp_catvton_hybrid"
         ), f"Expected warp_catvton_hybrid, got {meta.get('engine')}"
-        print(f"  hybrid: engine={meta.get('engine')}, size={result.size}, no crash ✓")
+        print(f"  hybrid: engine={meta.get('engine')}, size={result.size}, no crash")
     except Exception as e:
         print(
-            f"  hybrid: degraded gracefully ({type(e).__name__}) — acceptable for synthetic images"
+            f"  hybrid: degraded gracefully ({type(e).__name__}) "
+            "— acceptable for synthetic images"
         )
 
 

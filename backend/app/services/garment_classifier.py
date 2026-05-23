@@ -19,7 +19,9 @@ Usage:
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
+import torch
 from PIL import Image
 
 __all__ = ["classify_garment", "GarmentClassifier"]
@@ -54,7 +56,7 @@ class GarmentClassifier:
 
         try:
             import clip
-            
+
             self._clip_model, self._clip_preprocess = clip.load("ViT-B/32", device="cpu")
         except ImportError:
             self._clip_model = None
@@ -141,14 +143,14 @@ class GarmentClassifier:
         Skirts are often solid colors with visible hem.
         """
         try:
-            
+
             arr = np.array(image.convert("RGB"))
             h, w = arr.shape[:2]
 
             # Split into top/bottom halves
             mid_y = h // 2
-            top = arr[:mid_y]
-            bot = arr[mid_y:]
+            _top = arr[:mid_y]  # noqa: F841
+            _bot = arr[mid_y:]  # noqa: F841
 
             # Compute saturation for each half
             hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
@@ -163,7 +165,7 @@ class GarmentClassifier:
             # Check for strapless/halter patterns (dress indicator)
             # Top ~15% of image should be garment, not skin
             top_band = arr[: int(h * 0.12)]
-            top_band_sat = top_band.mean(axis=2).std()
+            _top_band_sat = top_band.mean(axis=2).std()  # noqa: F841
 
             # Dresses: similar color throughout (low top/bottom difference)
             sat_diff = abs(top_sat - bot_sat)
@@ -193,7 +195,7 @@ class GarmentClassifier:
         measures width at different heights.
         """
         try:
-            
+
             arr = np.array(image.convert("RGB"))
             h, w = arr.shape[:2]
 
@@ -220,7 +222,7 @@ class GarmentClassifier:
 
             # Normalize
             w_norm = np.array(w_vals) / max(w_vals[-1], 1)
-            y_norm = np.array(y_vals) / max(y_vals[-1], 1)
+            _y_norm = np.array(y_vals) / max(y_vals[-1], 1)  # noqa: F841
 
             # Check width gradient
             # Skirts: width increases toward bottom (A-line)
@@ -229,7 +231,7 @@ class GarmentClassifier:
 
             # Compute width change from top to bottom
             top_w = w_norm[0]
-            mid_w = w_norm[len(w_norm) // 2]
+            _mid_w = w_norm[len(w_norm) // 2]  # noqa: F841
             bot_w = w_norm[-1]
 
             if bot_w > top_w * 1.3:
@@ -253,7 +255,7 @@ class GarmentClassifier:
         """Classify using CLIP."""
         try:
             import clip
-            
+
             if self._clip_model is None:
                 return "unknown"
 
@@ -286,7 +288,7 @@ class GarmentClassifier:
     def _compute_fill_ratio(self, image: Image.Image) -> float:
         """Compute how much of the image is filled by the garment."""
         try:
-            
+
             arr = np.array(image.convert("RGB"))
             h, w = arr.shape[:2]
 

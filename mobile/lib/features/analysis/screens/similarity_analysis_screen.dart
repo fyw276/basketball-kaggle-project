@@ -10,6 +10,7 @@ import '../../../core/utils/media_url.dart';
 import '../../../core/widgets/analysis_feature_layout.dart';
 import '../../../core/widgets/image_picker_section.dart';
 import '../../../core/widgets/platform_image.dart';
+import '../../../core/widgets/wardrobe_picker_sheet.dart';
 
 /// 相似衣物检测：与后端 `/analysis/similarity` 字段对齐。
 class SimilarityAnalysisScreen extends StatefulWidget {
@@ -24,6 +25,10 @@ class _SimilarityAnalysisScreenState extends State<SimilarityAnalysisScreen> {
   List<XFile> _images = [];
   Map<String, dynamic>? _result;
   bool _loading = false;
+
+  /// 从衣橱选择时记录 garment_id / image_url（与 _images 互斥）。
+  String? _wardrobeGarmentId;
+  String? _wardrobeImageUrl;
 
   static const _cacheKey = 'similarity_analysis';
 
@@ -86,7 +91,7 @@ class _SimilarityAnalysisScreenState extends State<SimilarityAnalysisScreen> {
   }
 
   Future<void> _analyze() async {
-    if (_images.isEmpty) return;
+    if (_images.isEmpty && _wardrobeGarmentId == null) return;
     // Clear old cache to ensure fresh data
     await FeatureLocalStore.clear(_cacheKey);
     setState(() {
@@ -96,8 +101,11 @@ class _SimilarityAnalysisScreenState extends State<SimilarityAnalysisScreen> {
 
     final auth = context.read<AuthProvider>();
     try {
-      final raw =
-          await auth.apiClient.analyzeSimilarity(imageFile: _images.first);
+      final raw = await auth.apiClient.analyzeSimilarity(
+        imageFile: _wardrobeGarmentId == null ? _images.first : null,
+        garmentId: _wardrobeGarmentId,
+        imageUrl: _wardrobeGarmentId == null ? null : _wardrobeImageUrl,
+      );
       if (!mounted) return;
 
       if (raw.containsKey('error')) {
@@ -214,16 +222,127 @@ class _SimilarityAnalysisScreenState extends State<SimilarityAnalysisScreen> {
             const SizedBox(height: 16),
             ImagePickerSection(
               images: _images,
-              onImagesChanged: (list) => setState(() => _images = list),
+              onImagesChanged: (list) => setState(() {
+                _images = list;
+                // 用户手动上传图片时清除衣橱选择
+                if (list.isNotEmpty) {
+                  _wardrobeGarmentId = null;
+                  _wardrobeImageUrl = null;
+                }
+              }),
               maxImages: 1,
               hintText: '上传服装图片',
               allowMultiple: false,
+              onWardrobeTap: () async {
+                final picked = await showWardrobePicker(context);
+                if (picked != null && picked.isNotEmpty) {
+                  setState(() {
+                    _images = [];
+                    _wardrobeGarmentId = picked.first.garmentId;
+                    _wardrobeImageUrl = picked.first.imageUrl;
+                  });
+                }
+              },
             ),
+            if (_wardrobeGarmentId != null && _wardrobeImageUrl != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Container(
+                  height: 100,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: palette.divider),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: PlatformImage(
+                          networkUrl: resolveGarmentImageUrl(
+                                  _wardrobeImageUrl, apiBase) ??
+                              _wardrobeImageUrl!,
+                          fit: BoxFit.cover,
+                          placeholder: Center(
+                            child: Icon(Icons.checkroom,
+                                color: palette.primary, size: 32),
+                          ),
+                          errorWidget: Center(
+                            child: Icon(Icons.broken_image,
+                                color: palette.textBody, size: 32),
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        left: 8,
+                        bottom: 8,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.55),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Text(
+                            '已从衣橱选择',
+                            style: TextStyle(color: Colors.white, fontSize: 11),
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        top: 4,
+                        right: 4,
+                        child: GestureDetector(
+                          onTap: () => setState(() {
+                            _wardrobeGarmentId = null;
+                            _wardrobeImageUrl = null;
+                          }),
+                          child: Container(
+                            padding: const EdgeInsets.all(4),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.45),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(Icons.close,
+                                size: 16, color: Colors.white),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            else if (_wardrobeGarmentId != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Row(
+                  children: [
+                    Icon(Icons.checkroom,
+                        size: 16, color: Theme.of(context).colorScheme.primary),
+                    const SizedBox(width: 6),
+                    Text('已从衣橱选择',
+                        style: TextStyle(
+                            color: Theme.of(context).colorScheme.primary,
+                            fontSize: 13)),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () => setState(() {
+                        _wardrobeGarmentId = null;
+                        _wardrobeImageUrl = null;
+                      }),
+                      child: const Text('清除'),
+                    ),
+                  ],
+                ),
+              ),
             const SizedBox(height: 16),
             SizedBox(
               height: 52,
               child: ElevatedButton.icon(
-                onPressed: (_images.isNotEmpty && !_loading) ? _analyze : null,
+                onPressed:
+                    ((_images.isNotEmpty || _wardrobeGarmentId != null) &&
+                            !_loading)
+                        ? _analyze
+                        : null,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: palette.primary,
                   foregroundColor: Colors.white,

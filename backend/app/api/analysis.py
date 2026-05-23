@@ -4,18 +4,11 @@ Analysis API endpoints (similarity, recommendations, suitability)
 
 import io
 import json
+from pathlib import Path
 from typing import Dict, List, Optional
+from uuid import UUID
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    File,
-    Form,
-    HTTPException,
-    Query,
-    UploadFile,
-    status,
-)
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from PIL import Image
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -27,7 +20,7 @@ from app.ml.image_recognizer import ImageRecognizer, RecognitionResult
 from app.models.user import User
 from app.schemas.garment import ColorSchema
 from app.services.finetuned_infer_client import try_finetuned_infer
-from app.services.garment import get_garments_by_user
+from app.services.garment import get_garment_by_id, get_garments_by_user
 from app.services.similarity import SimilarityAnalyzer, SimilarityMatch
 from app.services.similarity_category import (
     detect_similarity_category,
@@ -70,9 +63,7 @@ def _merge_clip_like_results(results: List[dict]) -> dict:
     max_len = max(len(v) for v in vecs)
     padded = [v + [0.0] * (max_len - len(v)) for v in vecs]
     n0 = max_len
-    avg = [
-        sum(padded[i][j] for i in range(len(padded))) / len(padded) for j in range(n0)
-    ]
+    avg = [sum(padded[i][j] for i in range(len(padded))) / len(padded) for j in range(n0)]
     tag_seen = set()
     tags: List[str] = []
     for r in results:
@@ -158,8 +149,7 @@ def _find_similarity_matches_with_fallback(
             continue
 
         wardrobe_features = [
-            (garment.garment_id, np.array(garment.feature_vector))
-            for garment in candidate_garments
+            (garment.garment_id, np.array(garment.feature_vector)) for garment in candidate_garments
         ]
         similarity_matches = analyzer.find_similar_garments(
             target_feature=target_feature,
@@ -203,6 +193,73 @@ def _get_image_recognizer() -> ImageRecognizer:
     if _image_recognizer_instance is None:
         _image_recognizer_instance = ImageRecognizer()
     return _image_recognizer_instance
+
+
+async def _resolve_image_bytes(
+    *,
+    file: Optional[UploadFile],
+    garment_id: Optional[str],
+    image_url: Optional[str],
+    db: Session,
+    user_id: UUID,
+) -> bytes:
+    """从三种互斥来源之一加载图片字节：garment_id > image_url > file。"""
+    sources = sum(x is not None for x in [garment_id, image_url, file])
+    if sources == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请提供图片来源：garment_id、image_url 或 file 三选一",
+        )
+    if sources > 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="garment_id、image_url、file 三者互斥，只能传一个",
+        )
+
+    # 1) garment_id → 从数据库读取本地路径
+    if garment_id:
+        try:
+            gid = UUID(garment_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="garment_id 格式无效")
+        garment = get_garment_by_id(db, gid)
+        if not garment:
+            raise HTTPException(status_code=404, detail="衣物不存在")
+        if str(garment.user_id) != str(user_id):
+            raise HTTPException(status_code=403, detail="无权访问该衣物")
+        img_path = Path(garment.image_path) if garment.image_path else None
+        if not img_path or not img_path.is_file():
+            raise HTTPException(
+                status_code=400,
+                detail="衣物图片文件不存在，请重新上传",
+            )
+        return img_path.read_bytes()
+
+    # 2) image_url → 下载或本地读取
+    if image_url:
+        u = image_url.strip()
+        if not u:
+            raise HTTPException(status_code=400, detail="image_url 不能为空")
+        # 复用 smart_outfit_generator 的加载逻辑
+        from app.services.smart_outfit_generator import load_image_bytes
+
+        return await load_image_bytes(u)
+
+    # 3) file → 原有逻辑
+    assert file is not None
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    ct = (file.content_type or "").lower()
+    if not ct.startswith("image/"):
+        try:
+            Image.open(io.BytesIO(raw)).verify()
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="文件必须是图片（JPEG, PNG, WebP）",
+            )
+    return raw
 
 
 class SimilarGarmentInfo(BaseModel):
@@ -254,7 +311,9 @@ class SimilarityAnalysisResponse(BaseModel):
 
 @router.post("/similarity", response_model=SimilarityAnalysisResponse)
 async def analyze_similarity(
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
+    garment_id: Optional[str] = Form(None, description="衣橱衣物 ID（与 file/image_url 三选一）"),
+    image_url: Optional[str] = Form(None, description="图片 URL（与 file/garment_id 三选一）"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -268,18 +327,13 @@ async def analyze_similarity(
     4. Returns similarity matches and duplicate warning
     """
     try:
-        # Read image file
-        image_bytes = await file.read()
-
-        ct = (file.content_type or "").lower()
-        if not ct.startswith("image/"):
-            try:
-                Image.open(io.BytesIO(image_bytes)).verify()
-            except Exception:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="File must be an image (JPEG, PNG, WebP)",
-                )
+        image_bytes = await _resolve_image_bytes(
+            file=file,
+            garment_id=garment_id,
+            image_url=image_url,
+            db=db,
+            user_id=current_user.user_id,
+        )
 
         # Recognize image（单例，避免重复初始化模型）
         recognizer = _get_image_recognizer()
@@ -305,9 +359,7 @@ async def analyze_similarity(
         target_decision = detect_similarity_category(
             image_bytes=image_bytes,
             clip_category=recognition_result.category,
-            clip_confidence=float(
-                getattr(recognition_result, "category_confidence", 0.0) or 0.0
-            ),
+            clip_confidence=float(getattr(recognition_result, "category_confidence", 0.0) or 0.0),
         )
 
         target_group = target_decision.group
@@ -341,9 +393,7 @@ async def analyze_similarity(
                     # Try to derive from image_path
                     from app.services.garment import _derive_upload_url_from_path
 
-                    image_url = _derive_upload_url_from_path(
-                        garment.image_path, garment.user_id
-                    )
+                    image_url = _derive_upload_url_from_path(garment.image_path, garment.user_id)
                     logger.warning(
                         f"Garment {garment.garment_id} had empty image_url, derived: {image_url}"
                     )
@@ -372,9 +422,7 @@ async def analyze_similarity(
         budget_range = user_profile.budget_range if user_profile else None
 
         # Generate recommendation message
-        recommendation = analyzer.get_recommendation_message(
-            similarity_matches, budget_range
-        )
+        recommendation = analyzer.get_recommendation_message(similarity_matches, budget_range)
 
         return SimilarityAnalysisResponse(
             target_garment={
@@ -382,9 +430,7 @@ async def analyze_similarity(
                 "category_group": target_group,
                 "category_confidence": target_decision.confidence,
                 "main_color": recognition_result.main_color.model_dump(),
-                "secondary_colors": [
-                    c.model_dump() for c in recognition_result.secondary_colors
-                ],
+                "secondary_colors": [c.model_dump() for c in recognition_result.secondary_colors],
                 "style_tags": recognition_result.style_tags,
             },
             similar_garments=similar_garments_info,
@@ -463,6 +509,14 @@ async def recommend_outfits(
         None,
         description="多张图片（字段名 files，可重复；优先于 file）",
     ),
+    garment_ids: Optional[str] = Form(
+        None,
+        description="衣橱衣物 ID 列表，逗号分隔（与 file/files 二选一）",
+    ),
+    image_urls: Optional[str] = Form(
+        None,
+        description="图片 URL 列表，逗号分隔（与 file/files 二选一）",
+    ),
     num_outfits: int = 3,
     scene: Optional[str] = Form(
         default=None,
@@ -488,22 +542,6 @@ async def recommend_outfits(
     - 男性用户（gender == "男"）：默认仅召回 [male, neutral]，不应用 gender_compatibility
     - 男性用户（explore_cross_gender=True）：小比例混入 neutral_score>0.7 的女款
     """
-    upload_list: List[UploadFile] = []
-    if files:
-        upload_list = [f for f in files if f is not None]
-    if not upload_list and file is not None:
-        upload_list = [file]
-    if not upload_list:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="请至少上传一张图片（file 或 files）",
-        )
-    if len(upload_list) > MAX_OUTFIT_UPLOAD_IMAGES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"最多上传 {MAX_OUTFIT_UPLOAD_IMAGES} 张图片",
-        )
-
     # Validate num_outfits
     if num_outfits < 1 or num_outfits > 10:
         raise HTTPException(
@@ -514,14 +552,76 @@ async def recommend_outfits(
     try:
         all_bytes: List[bytes] = []
         filenames: List[str] = []
-        for uf in upload_list:
-            if not uf.content_type or not uf.content_type.startswith("image/"):
+
+        # 解析 garment_ids / image_urls
+        gid_list = [s.strip() for s in (garment_ids or "").split(",") if s.strip()]
+        url_list = [s.strip() for s in (image_urls or "").split(",") if s.strip()]
+
+        has_file_uploads = files or file
+        has_alt_source = gid_list or url_list
+
+        if has_alt_source and has_file_uploads:
+            raise HTTPException(
+                status_code=400,
+                detail="garment_ids/image_urls 与 file/files 互斥，只能传一种",
+            )
+
+        if gid_list:
+            if len(gid_list) > MAX_OUTFIT_UPLOAD_IMAGES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"最多选择 {MAX_OUTFIT_UPLOAD_IMAGES} 件衣物",
+                )
+            for gid_str in gid_list:
+                img_bytes = await _resolve_image_bytes(
+                    file=None,
+                    garment_id=gid_str,
+                    image_url=None,
+                    db=db,
+                    user_id=current_user.user_id,
+                )
+                all_bytes.append(img_bytes)
+                filenames.append(f"garment_{gid_str}.jpg")
+        elif url_list:
+            if len(url_list) > MAX_OUTFIT_UPLOAD_IMAGES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"最多选择 {MAX_OUTFIT_UPLOAD_IMAGES} 张图片",
+                )
+            for u in url_list:
+                img_bytes = await _resolve_image_bytes(
+                    file=None,
+                    garment_id=None,
+                    image_url=u,
+                    db=db,
+                    user_id=current_user.user_id,
+                )
+                all_bytes.append(img_bytes)
+                filenames.append("remote.jpg")
+        else:
+            upload_list: List[UploadFile] = []
+            if files:
+                upload_list = [f for f in files if f is not None]
+            if not upload_list and file is not None:
+                upload_list = [file]
+            if not upload_list:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="所有文件必须是图片（JPEG, PNG, WebP）",
+                    detail="请至少提供一张图片来源（file/files、garment_ids 或 image_urls）",
                 )
-            all_bytes.append(await uf.read())
-            filenames.append((uf.filename or "upload.jpg").strip() or "upload.jpg")
+            if len(upload_list) > MAX_OUTFIT_UPLOAD_IMAGES:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"最多上传 {MAX_OUTFIT_UPLOAD_IMAGES} 张图片",
+                )
+            for uf in upload_list:
+                if not uf.content_type or not uf.content_type.startswith("image/"):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="所有文件必须是图片（JPEG, PNG, WebP）",
+                    )
+                all_bytes.append(await uf.read())
+                filenames.append((uf.filename or "upload.jpg").strip() or "upload.jpg")
 
         # 每张图识别，再合并为一次推荐用的「虚拟目标」
         per_image: List[dict] = []
@@ -549,13 +649,9 @@ async def recommend_outfits(
 
         # Get user's profile for scene and body type inference
         user_profile = get_profile_by_user_id(db, current_user.user_id)
-        user_style_prefs = _coerce_str_list(
-            user_profile.style_preference if user_profile else []
-        )
+        user_style_prefs = _coerce_str_list(user_profile.style_preference if user_profile else [])
         user_body_type = user_profile.body_type if user_profile else None
-        avoid_body_parts = _coerce_str_list(
-            user_profile.avoid_body_parts if user_profile else []
-        )
+        avoid_body_parts = _coerce_str_list(user_profile.avoid_body_parts if user_profile else [])
         engine_scene = _map_ui_scene_to_engine(scene)
 
         # 无性别推荐系统（修正版）：从 profile 获取性别信息
@@ -564,9 +660,7 @@ async def recommend_outfits(
             getattr(user_profile, "gender_expression", None) if user_profile else None
         )
         explore_cross_gender = (
-            getattr(user_profile, "explore_cross_gender", False)
-            if user_profile
-            else False
+            getattr(user_profile, "explore_cross_gender", False) if user_profile else False
         )
 
         # API 传参优先；若未传参且用户为女性，使用 profile 中的值
@@ -613,9 +707,7 @@ async def recommend_outfits(
         elif feature_dim == 512:
             feature_vector = clip_features + [0.0] * 768
         else:
-            feature_vector = clip_features[:1280] + [0.0] * max(
-                0, 1280 - len(clip_features)
-            )
+            feature_vector = clip_features[:1280] + [0.0] * max(0, 1280 - len(clip_features))
 
         target_garment = Garment(
             garment_id=uuid4(),
@@ -692,20 +784,12 @@ async def recommend_outfits(
 class SuitabilityAnalysisResponse(BaseModel):
     """Suitability analysis response"""
 
-    garment: dict = Field(
-        ..., description="Garment recognition result (CLIP + color extraction)"
-    )
-    suitability_score: int = Field(
-        ..., ge=0, le=100, description="Overall suitability score"
-    )
+    garment: dict = Field(..., description="Garment recognition result (CLIP + color extraction)")
+    suitability_score: int = Field(..., ge=0, le=100, description="Overall suitability score")
     color_score: int = Field(..., ge=0, le=100, description="Color suitability score")
-    fit_score: int = Field(
-        ..., ge=0, le=100, description="Body fit suitability score (体型适配)"
-    )
+    fit_score: int = Field(..., ge=0, le=100, description="Body fit suitability score (体型适配)")
     style_score: int = Field(..., ge=0, le=100, description="Style suitability score")
-    explanation: Dict[str, str] = Field(
-        ..., description="Score explanations per dimension"
-    )
+    explanation: Dict[str, str] = Field(..., description="Score explanations per dimension")
     scene_match_reason: str = Field("", description="场景匹配原因说明")
     body_fit_reason: str = Field("", description="体型适配原因说明")
     style_coordination_reason: str = Field("", description="风格协调原因说明")
@@ -718,9 +802,7 @@ class SuitabilityAnalysisResponse(BaseModel):
     recommended_occasions: List[str] = Field(
         default_factory=list, description="Recommended occasions"
     )
-    suggestions: List[str] = Field(
-        default_factory=list, description="Improvement suggestions"
-    )
+    suggestions: List[str] = Field(default_factory=list, description="Improvement suggestions")
 
     class Config:
         json_schema_extra = {
@@ -752,7 +834,12 @@ class SuitabilityAnalysisResponse(BaseModel):
 
 @router.post("/suitability", response_model=SuitabilityAnalysisResponse)
 async def analyze_suitability(
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
+    garment_id: Optional[str] = Form(None, description="衣橱衣物 ID（与 file/image_url 三选一）"),
+    image_url: Optional[str] = Form(None, description="图片 URL（与 file/garment_id 三选一）"),
+    scene: Optional[str] = Form(
+        None, description="用户选择的场景（日常通勤/正式场合/休闲娱乐/约会聚会/运动健身/旅行出游）"
+    ),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -765,18 +852,16 @@ async def analyze_suitability(
     3. Calculates color, fit, and style suitability scores
     4. Returns overall score, explanations, and suggestions
     """
-    # Validate file type
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File must be an image (JPEG, PNG, WebP)",
+    try:
+        image_bytes = await _resolve_image_bytes(
+            file=file,
+            garment_id=garment_id,
+            image_url=image_url,
+            db=db,
+            user_id=current_user.user_id,
         )
 
-    try:
-        # Read image file
-        image_bytes = await file.read()
-
-        # Get user profile
+        # Get user profile (use defaults if not created yet)
         try:
             user_profile = get_profile_by_user_id(db, current_user.user_id)
         except Exception as e:
@@ -789,10 +874,32 @@ async def analyze_suitability(
             )
 
         if not user_profile:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User profile not found. Please create a profile first.",
+            # Use sensible defaults so the feature works without a profile
+            from datetime import datetime
+            from uuid import uuid4
+
+            from app.schemas.user_profile import UserProfileResponse
+
+            user_profile = UserProfileResponse(
+                profile_id=uuid4(),
+                user_id=current_user.user_id,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+                height=170,
+                body_type="矩形",
+                skin_tone="黄皮",
+                style_preference=["简约", "休闲"],
+                budget_range="中等",
+                avoid_body_parts=[],
             )
+
+        # Debug: trace what the scorer will receive
+        print(
+            f"[Suitability] scene={scene!r}, "
+            f"style_preference={user_profile.style_preference}, "
+            f"body_type={user_profile.body_type}, "
+            f"skin_tone={user_profile.skin_tone}"
+        )
 
         # Initialize suitability scorer (3D: 场景-体型-风格)
         try:
@@ -846,6 +953,7 @@ async def analyze_suitability(
                 garment_styles=clip_result["style_tags"],
                 garment_category=clip_result["category"],
                 user_profile=user_profile,
+                selected_scene=scene,
             )
         except Exception as e:
             import traceback
@@ -875,7 +983,9 @@ async def analyze_suitability(
                 return "缺少可用的风格标签，场景适配主要参考你的偏好与服装类别。"
             if key == "body":
                 if body_type and gfit and gcat:
-                    return f"{gcat}的{gfit}版型会影响整体比例，与{body_type}体型的重点修饰方向相关。"
+                    return (
+                        f"{gcat}的{gfit}版型会影响整体比例，与{body_type}体型的重点修饰方向相关。"
+                    )
                 if body_type:
                     return f"体型适配会结合你的体型（{body_type}）与衣物的版型/剪裁特征进行判断。"
                 return "体型信息不足，建议先在个人设置完善体型与希望修饰部位。"
@@ -883,9 +993,7 @@ async def analyze_suitability(
                 if pref_str and gst_str:
                     return f"服装风格标签（{gst_str}）与个人偏好（{pref_str}）共同决定风格协调度。"
                 if pref_str:
-                    return (
-                        f"风格协调度主要参考你的风格偏好（{pref_str}）与衣物风格特征。"
-                    )
+                    return f"风格协调度主要参考你的风格偏好（{pref_str}）与衣物风格特征。"
                 return "风格偏好信息不足，建议先在个人设置补充风格偏好。"
             return ""
 
@@ -896,10 +1004,7 @@ async def analyze_suitability(
         overall = float(suitability_result.suitability_score) / 100.0
         scene_score = float(getattr(suitability_result, "scene_score", 0) or 0) / 100.0
         body_score = (
-            float(
-                getattr(suitability_result, "body_score", suitability_result.fit_score)
-                or 0
-            )
+            float(getattr(suitability_result, "body_score", suitability_result.fit_score) or 0)
             / 100.0
         )
 

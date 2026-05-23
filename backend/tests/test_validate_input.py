@@ -27,7 +27,7 @@ def auth_headers_and_files(client):
     user_data = {
         "username": "validate_test_user",
         "email": "validate_test@example.com",
-        "password": "TestPass123!",
+        "password": "TestPass123!",  # pragma: allowlist secret
     }
     client.post("/api/v1/auth/register", json=user_data)
     login_resp = client.post(
@@ -240,7 +240,7 @@ class TestValidateInputBusinessLogic:
             assert "GARMENT_CLASSIFICATION_FAILED" in str(
                 body
             ), f"400 should have GARMENT_CLASSIFICATION_FAILED, got {body}"
-            print(f"  -> Correctly returned 400 for unclassified garment")
+            print("  -> Correctly returned 400 for unclassified garment")
 
 
 class TestValidateInputErrorDetails:
@@ -282,4 +282,4 @@ class TestValidateInputErrorDetails:
         if "body" in error_details:
             print(f"[422] body field present: {error_details['body'] is not None}")
         else:
-            print(f"[422] body field not in error.details (expected before fix)")
+            print("[422] body field not in error.details (expected before fix)")

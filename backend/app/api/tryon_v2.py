@@ -36,6 +36,7 @@ from app.services.tryon_v2.fidelity_guard import (
     extract_engine_decision_features,
     repair_raw_catvton_artifacts,
     score_input_anomaly,
+    should_force_lower_structured_pattern_recovery,
 )
 from app.services.tryon_v2.garment_struct import cutout_garment_rgba
 from app.services.tryon_v2.input_gate import evaluate_input_gate
@@ -438,10 +439,15 @@ async def tryon_v2_preprocess_batch(
 
 @router.post("/garment", response_model=TryOnV2Response)
 async def tryon_garment_v2(
-    garment_file: UploadFile = File(
-        ..., alias="garment_file", description="Garment product photo"
-    ),  # noqa: E501
+    garment_file: UploadFile | None = File(
+        None,
+        alias="garment_file",
+        description="Garment product photo (or use garment_id/garment_image_url)",
+    ),
     person_file: UploadFile = File(..., alias="person_file", description="Person full-body photo"),
+    garment_id: str | None = Form(
+        None, description="衣橱衣物 ID（与 garment_file/garment_image_url 三选一）"
+    ),
     garment_image_url: str | None = Form(
         None, description="Optional /uploads/... url of standardized garment image"
     ),
@@ -450,6 +456,9 @@ async def tryon_garment_v2(
     ),
     garment_file_2: UploadFile | None = File(
         None, alias="garment_file_2", description="Optional second garment for outfit"
+    ),
+    garment_id_2: str | None = Form(
+        None, description="衣橱第二件衣物 ID（与 garment_file_2 二选一）"
     ),
     garment_image_url_2: str | None = Form(
         None,
@@ -479,7 +488,9 @@ async def tryon_garment_v2(
     logger.info(f"[MODE-DEBUG] raw mode from frontend: '{mode}'")
     _ensure_tryon_v2_enabled()
 
-    if not garment_file.content_type or not garment_file.content_type.startswith("image/"):
+    if garment_file is not None and (
+        not garment_file.content_type or not garment_file.content_type.startswith("image/")
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="garment_file must be an image",
@@ -578,21 +589,87 @@ async def tryon_garment_v2(
 
     from PIL import Image
 
-    garment_bytes = await garment_file.read()
     person_bytes = await person_file.read()
-    garment2_bytes = await garment_file_2.read() if garment_file_2 is not None else b""
-
-    if len(garment_bytes) == 0 or len(person_bytes) == 0:
+    if len(person_bytes) == 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Uploaded files cannot be empty",
+            detail="person_file cannot be empty",
         )
-
-    garment_image = Image.open(BytesIO(garment_bytes)).convert("RGB")
     person_image = Image.open(BytesIO(person_bytes)).convert("RGB")
-    garment_image_2 = (
-        Image.open(BytesIO(garment2_bytes)).convert("RGB") if len(garment2_bytes) else None
-    )
+
+    # ── 加载衣物图片（三选一：garment_file / garment_id / garment_image_url）──
+    garment_image: Image.Image | None = None
+    garment_image_2: Image.Image | None = None
+    garment_image_source: str | None = None
+    garment_image_2_source: str | None = None
+
+    if garment_file is not None:
+        garment_bytes = await garment_file.read()
+        if len(garment_bytes) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="garment_file cannot be empty",
+            )
+        garment_image = Image.open(BytesIO(garment_bytes)).convert("RGB")
+        garment_image_source = "upload"
+    elif garment_id is not None:
+        from uuid import UUID as _UUID
+
+        from app.services.garment import get_garment_by_id
+
+        try:
+            gid = _UUID(garment_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="garment_id 格式无效")
+        g = get_garment_by_id(db, gid)
+        if not g:
+            raise HTTPException(status_code=404, detail="衣物不存在")
+        if str(g.user_id) != str(current_user.user_id):
+            raise HTTPException(status_code=403, detail="无权访问该衣物")
+        gpath = Path(g.image_path) if g.image_path else None
+        if not gpath or not gpath.is_file():
+            raise HTTPException(status_code=400, detail="衣物图片文件不存在，请重新上传")
+        garment_image = Image.open(gpath).convert("RGB")
+        garment_image_source = "wardrobe"
+        # 如果没有 garment_image_url，用 garment 的 image_url 作为标准化 URL
+        if not garment_image_url:
+            garment_image_url = g.image_url
+
+    if garment_file_2 is not None:
+        garment2_bytes = await garment_file_2.read()
+        garment_image_2 = (
+            Image.open(BytesIO(garment2_bytes)).convert("RGB") if len(garment2_bytes) else None
+        )
+        if garment_image_2 is not None:
+            garment_image_2_source = "upload"
+    elif garment_id_2 is not None:
+        from uuid import UUID as _UUID
+
+        from app.services.garment import get_garment_by_id
+
+        try:
+            gid2 = _UUID(garment_id_2)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="garment_id_2 格式无效")
+        g2 = get_garment_by_id(db, gid2)
+        if not g2:
+            raise HTTPException(status_code=404, detail="第二件衣物不存在")
+        if str(g2.user_id) != str(current_user.user_id):
+            raise HTTPException(status_code=403, detail="无权访问该衣物")
+        gpath2 = Path(g2.image_path) if g2.image_path else None
+        if not gpath2 or not gpath2.is_file():
+            raise HTTPException(status_code=400, detail="第二件衣物图片文件不存在")
+        garment_image_2 = Image.open(gpath2).convert("RGB")
+        garment_image_2_source = "wardrobe"
+        if not garment_image_url_2:
+            garment_image_url_2 = g2.image_url
+
+    # 至少需要一件衣物图片
+    if garment_image is None and garment_image_url is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请提供衣物图片：garment_file、garment_id 或 garment_image_url 三选一",
+        )
 
     def _load_uploads_url(url: str) -> Image.Image | None:
         u = (url or "").strip()
@@ -611,21 +688,35 @@ async def tryon_garment_v2(
         except Exception:
             return None
 
-    if garment_image_url:
+    if garment_image_url and garment_image is None:
         img = _load_uploads_url(garment_image_url)
         if img is not None:
             garment_image = img
+            garment_image_source = "url"
             pre_meta = {"standardized_image_url": garment_image_url}
         else:
             pre_meta = {}
     else:
-        pre_meta = {}
+        pre_meta = {"standardized_image_url": garment_image_url} if garment_image_url else {}
 
-    if garment_image_url_2:
+    if garment_image_url_2 and garment_image_2 is None:
         img2 = _load_uploads_url(garment_image_url_2)
         if img2 is not None:
             garment_image_2 = img2
+            garment_image_2_source = "url"
             pre_meta["standardized_image_url_2"] = garment_image_url_2
+    elif garment_image_url_2:
+        pre_meta["standardized_image_url_2"] = garment_image_url_2
+
+    pre_meta["garment_image_source"] = garment_image_source or "unknown"
+    if garment_image_2 is not None:
+        pre_meta["garment_image_2_source"] = garment_image_2_source or "unknown"
+
+    if garment_image is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="衣物图片无法读取，请重新上传或检查 garment_image_url",
+        )
 
     if check_tryon_garment_has_face(garment_image):
         raise HTTPException(
@@ -851,6 +942,7 @@ async def tryon_garment_v2(
                                 catvton_result=ai_img,
                                 garment_category=gc or "top",
                                 drape_alpha=0.55,
+                                debug_session_dir=debug_session_dir,
                             )
                             upstream["result_image"] = result_img
                             upstream["metadata"] = {
@@ -1339,10 +1431,19 @@ async def tryon_garment_v2(
         gc = (garment_category or "").strip()
 
         cloth_type = "upper"
-        if any(k in cat for k in ("bottom", "下装", "裤")):
+        if any(
+            k in cat for k in ("bottom", "下装", "裤", "裤装", "短裤", "pants", "长裤", "lower")
+        ):
             cloth_type = "lower"
-        elif any(k in cat for k in ("skirt", "裙", "连衣裙", "dress")):
+        elif any(k in cat for k in ("skirt", "裙", "连衣裙", "dress", "裙装")):
             cloth_type = "overall"
+
+        logger.info(
+            "[detail_fidelity] category_locked: garment_category=%r → cat=%r, cloth_type=%r",
+            garment_category,
+            cat,
+            cloth_type,
+        )
 
         # ── CatVTON 调用：最多重试 2 次（瞬时错误 / VRAM OOM / CUDA 抖动）───
         max_retries = 2
@@ -1434,6 +1535,8 @@ async def tryon_garment_v2(
                             catvton_color_fidelity_enhance,
                             catvton_color_fidelity_spatial,
                             catvton_lab_chroma_color_correct,
+                            catvton_lower_color_rescue,
+                            tryon_lower_structure_preserve,
                         )
 
                         arr_check = np.array(original_garment_image.convert("RGB"))
@@ -1531,6 +1634,14 @@ async def tryon_garment_v2(
                                 4,
                             ),
                         }
+                        protect_upper_raw_detail = (
+                            cloth_type == "upper"
+                            and raw_quality.decision == "color_only"
+                            and raw_quality.pattern_passed
+                            and raw_quality.source_pattern_score >= 0.55
+                            and raw_quality.raw_pattern_signal
+                            >= max(0.16, raw_quality.source_pattern_score * 0.55)
+                        )
                         sat_mean = features.sat_mean
                         sat_max = features.sat_max
                         bright_mean = features.bright_mean
@@ -1546,6 +1657,25 @@ async def tryon_garment_v2(
                             cutout_passed=(cutout_qc.passed or not preflight_qc_enabled),
                             input_anomaly_passed=(anomaly.passed or not preflight_qc_enabled),
                         )
+                        structured_lower_pattern_recovery = bool(
+                            any(k in (gc or "") for k in ("bottom", "下装"))
+                            and raw_quality.decision == "pattern_only"
+                            and raw_quality.source_pattern_score >= 0.78
+                            and raw_quality.raw_pattern_signal
+                            <= max(0.24, raw_quality.source_pattern_score * 0.32)
+                        )
+                        forced_lower_pattern_recovery = (
+                            should_force_lower_structured_pattern_recovery(
+                                garment_category=gc or "",
+                                raw_quality=raw_quality,
+                            )
+                        )
+                        if forced_lower_pattern_recovery:
+                            structured_lower_pattern_recovery = True
+                            raw_quality_meta["forced_lower_pattern_recovery"] = True
+                            raw_quality_meta["forced_lower_pattern_recovery_reason"] = (
+                                "strong_structured_lower_pattern_under_recovered"
+                            )
                         if preflight_qc_enabled and engine_decision == "skip":
                             is_white_garment = True
                             has_color = False
@@ -1553,17 +1683,25 @@ async def tryon_garment_v2(
                             sat_max = 0.0
 
                         color_threshold = 0.05  # 降低阈值：原 0.08 太严格
-                        if raw_quality.decision == "raw":
+                        if (
+                            raw_quality.decision == "raw" and not forced_lower_pattern_recovery
+                        ) or protect_upper_raw_detail:
                             logger.info(
-                                "Realistic mode: raw CatVTON quality passed; "
-                                "returning step-9 output directly (%s)",
+                                "Realistic mode: preserving raw CatVTON output; "
+                                "returning step-9 output directly (%s)%s",
                                 raw_quality.reason,
+                                " [upper_detail_protected]" if protect_upper_raw_detail else "",
                             )
                             upstream["metadata"] = {
                                 **(upstream.get("metadata") or {}),
                                 "color_fidelity_applied": False,
                                 "raw_quality_gate": raw_quality_meta,
-                                "postprocess_skip_reason": "raw_quality_passed",
+                                "postprocess_skip_reason": (
+                                    "upper_pattern_preserved_after_raw_gate"
+                                    if protect_upper_raw_detail
+                                    else "raw_quality_passed"
+                                ),
+                                "upper_detail_protected": protect_upper_raw_detail,
                             }
                             skip_catvton_safe_postprocess = True
                             skip_pattern_enhance = True
@@ -1574,7 +1712,12 @@ async def tryon_garment_v2(
                                 metadata={
                                     "stage": "after_color_fidelity",
                                     "color_fidelity_applied": False,
-                                    "reason": "raw_quality_passed",
+                                    "reason": (
+                                        "upper_pattern_preserved_after_raw_gate"
+                                        if protect_upper_raw_detail
+                                        else "raw_quality_passed"
+                                    ),
+                                    "upper_detail_protected": protect_upper_raw_detail,
                                     "raw_quality_gate": raw_quality_meta,
                                 },
                             )
@@ -1650,21 +1793,41 @@ async def tryon_garment_v2(
                                 },
                             )
                             color_fidelity_stage_saved = True
-                        elif raw_quality.decision == "pattern_only":
+                        elif raw_quality.decision == "strong_spatial" and any(
+                            k in (gc or "").strip().lower()
+                            for k in (
+                                "bottom",
+                                "下装",
+                                "裤",
+                                "裤装",
+                                "短裤",
+                                "pants",
+                                "长裤",
+                                "lower",
+                            )
+                        ):
                             logger.info(
-                                "Realistic mode: raw color is OK but motif is missing; "
-                                "applying localized motif recovery only"
+                                "Realistic mode: lower garment failed raw color/pattern; "
+                                "using structure-preserve pants warp instead of spatial repaint"
                             )
                             skip_catvton_safe_postprocess = True
                             skip_pattern_enhance = True
-                            result_img, cf_meta = catvton_color_fidelity_spatial(
-                                catvton_result=result_img,
-                                original_garment=original_garment_image,
+                            result_img, cf_meta = tryon_lower_structure_preserve(
                                 person_image=person_image,
-                                garment_category=gc or "top",
-                                fidelity_strength=min(fidelity_strength, 0.62),
+                                garment_image=original_garment_image,
+                                catvton_result=result_img,
+                                raw_mask_image=raw_mask_image,
+                                drape_alpha=0.22,
                                 debug_session_dir=debug_session_dir,
                             )
+                            if cf_meta.get("fallback_recommended") == "spatial":
+                                result_img, cf_meta = catvton_lower_color_rescue(
+                                    catvton_result=result_img,
+                                    original_garment=original_garment_image,
+                                    person_image=person_image,
+                                    fidelity_strength=min(fidelity_strength, 0.82),
+                                    debug_session_dir=debug_session_dir,
+                                )
                             pattern_injected = True
                             pattern_score = min(0.95, sat_mean + 0.3)
                             upstream["metadata"] = {
@@ -1672,7 +1835,7 @@ async def tryon_garment_v2(
                                 **cf_meta,
                                 "color_fidelity_applied": True,
                                 "raw_quality_gate": raw_quality_meta,
-                                "postprocess_skip_reason": "minimal_raw_gate_branch",
+                                "postprocess_skip_reason": "lower_structure_preserve_raw_gate",
                             }
                             save_debug_stage_image(
                                 debug_session_dir=debug_session_dir,
@@ -1684,6 +1847,86 @@ async def tryon_garment_v2(
                                     "engine": cf_meta.get("engine", "unknown"),
                                     "garment_region": cf_meta.get("garment_region"),
                                     "raw_quality_gate": raw_quality_meta,
+                                    "lower_warp_qc": cf_meta.get("lower_warp_qc"),
+                                    "lower_denim_like": cf_meta.get("lower_denim_like"),
+                                },
+                            )
+                            color_fidelity_stage_saved = True
+                        elif (
+                            raw_quality.decision == "pattern_only" or forced_lower_pattern_recovery
+                        ):
+                            logger.info(
+                                "Realistic mode: raw color is OK but motif is missing%s; "
+                                "applying localized motif recovery only",
+                                (
+                                    " [forced lower structured recovery]"
+                                    if forced_lower_pattern_recovery
+                                    else ""
+                                ),
+                            )
+                            skip_catvton_safe_postprocess = True
+                            skip_pattern_enhance = True
+                            if structured_lower_pattern_recovery:
+                                logger.info(
+                                    "Realistic mode: lower structured pattern is under-recovered; "
+                                    "using structure-preserve pants warp instead of "
+                                    "motif-only spatial recovery"
+                                )
+                                result_img, cf_meta = tryon_lower_structure_preserve(
+                                    person_image=person_image,
+                                    garment_image=original_garment_image,
+                                    catvton_result=result_img,
+                                    raw_mask_image=raw_mask_image,
+                                    drape_alpha=0.42,
+                                    debug_session_dir=debug_session_dir,
+                                )
+                                if cf_meta.get("fallback_recommended") == "spatial":
+                                    result_img, cf_meta = catvton_color_fidelity_spatial(
+                                        catvton_result=result_img,
+                                        original_garment=original_garment_image,
+                                        person_image=person_image,
+                                        garment_category=gc or "top",
+                                        fidelity_strength=min(fidelity_strength, 0.62),
+                                        debug_session_dir=debug_session_dir,
+                                    )
+                            else:
+                                result_img, cf_meta = catvton_color_fidelity_spatial(
+                                    catvton_result=result_img,
+                                    original_garment=original_garment_image,
+                                    person_image=person_image,
+                                    garment_category=gc or "top",
+                                    fidelity_strength=min(fidelity_strength, 0.62),
+                                    debug_session_dir=debug_session_dir,
+                                )
+                            pattern_injected = True
+                            pattern_score = min(0.95, sat_mean + 0.3)
+                            upstream["metadata"] = {
+                                **(upstream.get("metadata") or {}),
+                                **cf_meta,
+                                "color_fidelity_applied": True,
+                                "raw_quality_gate": raw_quality_meta,
+                                "structured_lower_pattern_recovery": (
+                                    structured_lower_pattern_recovery
+                                ),
+                                "postprocess_skip_reason": (
+                                    "lower_structure_preserve_pattern_gate"
+                                    if structured_lower_pattern_recovery
+                                    else "minimal_raw_gate_branch"
+                                ),
+                            }
+                            save_debug_stage_image(
+                                debug_session_dir=debug_session_dir,
+                                filename="12_after_color_fidelity.jpg",
+                                image=result_img,
+                                metadata={
+                                    "stage": "after_color_fidelity",
+                                    "pattern_score": round(pattern_score, 3),
+                                    "engine": cf_meta.get("engine", "unknown"),
+                                    "garment_region": cf_meta.get("garment_region"),
+                                    "raw_quality_gate": raw_quality_meta,
+                                    "structured_lower_pattern_recovery": (
+                                        structured_lower_pattern_recovery
+                                    ),
                                 },
                             )
                             color_fidelity_stage_saved = True
@@ -1989,9 +2232,11 @@ async def tryon_garment_v2(
         cat = (garment_category or "").strip().lower()
         gc = (garment_category or "").strip()
         cloth_type = "upper"
-        if any(k in cat for k in ("bottom", "下装", "裤")):
+        if any(
+            k in cat for k in ("bottom", "下装", "裤", "裤装", "短裤", "pants", "长裤", "lower")
+        ):
             cloth_type = "lower"
-        elif any(k in cat for k in ("skirt", "裙", "连衣裙", "dress")):
+        elif any(k in cat for k in ("skirt", "裙", "连衣裙", "dress", "裙装")):
             cloth_type = "overall"
 
         # ── CatVTON 调用：最多重试 2 次（瞬时错误 / VRAM OOM / CUDA 抖动）───
@@ -2277,9 +2522,11 @@ async def tryon_garment_v2(
         cat = (garment_category or "").strip().lower()
         gc = (garment_category or "").strip()
         cloth_type = "upper"
-        if any(k in cat for k in ("bottom", "下装", "裤")):
+        if any(
+            k in cat for k in ("bottom", "下装", "裤", "裤装", "短裤", "pants", "长裤", "lower")
+        ):
             cloth_type = "lower"
-        elif any(k in cat for k in ("skirt", "裙", "连衣裙", "dress")):
+        elif any(k in cat for k in ("skirt", "裙", "连衣裙", "dress", "裙装")):
             cloth_type = "overall"
 
         qc = QualityChecker(min_score=0.75)
@@ -2601,9 +2848,12 @@ async def tryon_garment_v2(
 
         try:
             cloth_type = "upper"
-            if any(k in gc.lower() for k in ("bottom", "下装", "裤")):
+            if any(
+                k in gc.lower()
+                for k in ("bottom", "下装", "裤", "裤装", "短裤", "pants", "长裤", "lower")
+            ):
                 cloth_type = "lower"
-            elif any(k in gc.lower() for k in ("skirt", "裙", "连衣裙", "dress")):
+            elif any(k in gc.lower() for k in ("skirt", "裙", "连衣裙", "dress", "裙装")):
                 cloth_type = "overall"
 
             logger.info(f"Hybrid mode: calling CatVTON cloth_type={cloth_type}")
@@ -2629,6 +2879,9 @@ async def tryon_garment_v2(
 
                 if debug_mode == "preprocess_only" and isinstance(upstream, dict):
                     upstream_meta = upstream.get("metadata") or {}
+                    upstream_debug_session_dir = upstream_meta.get("debug_session_dir")
+                    if upstream_debug_session_dir:
+                        debug_session_dir = upstream_debug_session_dir
                     record_tryon_v2_success(int((time.perf_counter() - started) * 1000))
                     return TryOnV2Response(
                         status="preprocess_only_success",
@@ -2699,6 +2952,16 @@ async def tryon_garment_v2(
                 and str(upstream.get("status") or "").lower() == "success"
                 and upstream.get("result_image") is not None
             ):
+                upstream_meta = upstream.get("metadata") or {}
+                upstream_debug_session_dir = upstream_meta.get("debug_session_dir")
+                if upstream_debug_session_dir:
+                    if upstream_debug_session_dir != debug_session_dir:
+                        logger.info(
+                            "[DEBUG] Using CatVTON subprocess debug directory for "
+                            "hybrid post-CatVTON stages: %s",
+                            upstream_debug_session_dir,
+                        )
+                    debug_session_dir = upstream_debug_session_dir
                 catvton_img = upstream.get("result_image")
 
                 # drape_alpha 根据饱和度自动调节：
@@ -2720,7 +2983,19 @@ async def tryon_garment_v2(
                         )
                     else:
                         sat_score = 0.0
-                    drape_alpha = 0.65 if sat_score < 0.4 else 0.45
+                    is_lower_hybrid = str(gc or "").strip().lower() in {
+                        "bottom",
+                        "lower",
+                        "pants",
+                        "trousers",
+                        "下装",
+                        "裤装",
+                        "裤子",
+                    }
+                    # Lower garments are currently grounded mostly by warp because
+                    # CatVTON often loses exact pants pattern/detail. Keep CatVTON
+                    # as local lighting only, otherwise the result reads pasted.
+                    drape_alpha = 0.45 if is_lower_hybrid else (0.65 if sat_score < 0.4 else 0.45)
                     logger.info(
                         f"Hybrid mode: saturation={sat_score:.2f}, drape_alpha={drape_alpha}"
                     )
@@ -2735,7 +3010,257 @@ async def tryon_garment_v2(
                     catvton_result=catvton_img,
                     garment_category=gc or "top",
                     drape_alpha=drape_alpha,
+                    debug_session_dir=debug_session_dir,
                 )
+                if hybrid_meta.get("engine") == "catvton" and bool(
+                    getattr(settings, "TRYON_V2_COLOR_FIDELITY_ENABLED", True)
+                ):
+                    try:
+                        from pathlib import Path
+
+                        from app.services.tryon_v2.warp_engine import (
+                            catvton_color_fidelity_enhance,
+                            catvton_color_fidelity_spatial,
+                            catvton_lab_chroma_color_correct,
+                            catvton_lower_color_rescue,
+                            tryon_lower_structure_preserve,
+                        )
+
+                        fidelity_strength = float(
+                            getattr(settings, "TRYON_V2_COLOR_FIDELITY_STRENGTH", 0.75) or 0.75
+                        )
+                        anomaly, cutout_qc, features = _build_fidelity_guard_context(
+                            original_garment_image
+                        )
+                        preflight_qc_enabled = bool(
+                            getattr(settings, "TRYON_V2_PREFLIGHT_QC_ENABLED", True)
+                        )
+                        engine_decision, engine_reason = decide_color_fidelity_engine(
+                            features=features,
+                            cutout_passed=(cutout_qc.passed or not preflight_qc_enabled),
+                            input_anomaly_passed=(anomaly.passed or not preflight_qc_enabled),
+                        )
+
+                        raw_mask_image = None
+                        if debug_session_dir:
+                            debug_path = Path(debug_session_dir)
+                            mask_candidates = [debug_path / "08_mask_resized.png"]
+                            if not debug_path.is_absolute():
+                                mask_candidates.extend(
+                                    [
+                                        Path.cwd() / debug_path / "08_mask_resized.png",
+                                        Path.cwd().parent / debug_path / "08_mask_resized.png",
+                                    ]
+                                )
+                            for mask_path in mask_candidates:
+                                if mask_path.exists():
+                                    raw_mask_image = Image.open(mask_path).convert("L")
+                                    break
+
+                        raw_quality = evaluate_raw_catvton_quality(
+                            raw_result=result_img,
+                            original_garment=original_garment_image,
+                            person_image=person_image,
+                            garment_category=gc or "top",
+                            features=features,
+                            raw_mask_image=raw_mask_image,
+                        )
+                        raw_quality_meta = {
+                            "decision": raw_quality.decision,
+                            "reason": raw_quality.reason,
+                            "color_passed": raw_quality.color_passed,
+                            "pattern_passed": raw_quality.pattern_passed,
+                            "artifact_passed": raw_quality.artifact_passed,
+                            "color_delta": round(raw_quality.color_delta, 3),
+                            "source_pattern_score": round(raw_quality.source_pattern_score, 4),
+                            "raw_pattern_signal": round(raw_quality.raw_pattern_signal, 4),
+                            "garment_coverage": round(raw_quality.garment_coverage, 4),
+                        }
+                        structured_lower_pattern_recovery = bool(
+                            any(
+                                k in (gc or "").strip().lower()
+                                for k in (
+                                    "bottom",
+                                    "下装",
+                                    "裤",
+                                    "裤装",
+                                    "短裤",
+                                    "pants",
+                                    "长裤",
+                                    "lower",
+                                )
+                            )
+                            and raw_quality.decision == "pattern_only"
+                            and raw_quality.source_pattern_score >= 0.78
+                            and raw_quality.raw_pattern_signal
+                            <= max(0.24, raw_quality.source_pattern_score * 0.32)
+                        )
+                        forced_lower_pattern_recovery = (
+                            should_force_lower_structured_pattern_recovery(
+                                garment_category=gc or "",
+                                raw_quality=raw_quality,
+                            )
+                        )
+                        if forced_lower_pattern_recovery:
+                            structured_lower_pattern_recovery = True
+                            raw_quality_meta["forced_lower_pattern_recovery"] = True
+                            raw_quality_meta["forced_lower_pattern_recovery_reason"] = (
+                                "strong_structured_lower_pattern_under_recovered"
+                            )
+                        force_lower_spatial = False
+
+                        cf_meta: dict[str, Any] = {}
+                        color_fidelity_applied = False
+                        if (
+                            raw_quality.decision == "raw"
+                            and not force_lower_spatial
+                            and not forced_lower_pattern_recovery
+                        ):
+                            logger.info(
+                                "Hybrid direct CatVTON: raw fidelity passed; skip CF (%s)",
+                                raw_quality.reason,
+                            )
+                        elif raw_quality.decision == "artifact_only" and not force_lower_spatial:
+                            result_img, cf_meta = repair_raw_catvton_artifacts(
+                                raw_result=result_img,
+                                person_image=person_image,
+                                garment_category=gc or "top",
+                                raw_mask_image=raw_mask_image,
+                            )
+                        elif raw_quality.decision == "strong_spatial" and any(
+                            k in (gc or "").strip().lower()
+                            for k in (
+                                "bottom",
+                                "下装",
+                                "裤",
+                                "裤装",
+                                "短裤",
+                                "pants",
+                                "长裤",
+                                "lower",
+                            )
+                        ):
+                            result_img, cf_meta = tryon_lower_structure_preserve(
+                                person_image=person_image,
+                                garment_image=original_garment_image,
+                                catvton_result=result_img,
+                                raw_mask_image=raw_mask_image,
+                                drape_alpha=0.22,
+                                debug_session_dir=debug_session_dir,
+                            )
+                            if cf_meta.get("fallback_recommended") == "spatial":
+                                result_img, cf_meta = catvton_lower_color_rescue(
+                                    catvton_result=result_img,
+                                    original_garment=original_garment_image,
+                                    person_image=person_image,
+                                    fidelity_strength=min(fidelity_strength, 0.82),
+                                    debug_session_dir=debug_session_dir,
+                                )
+                            color_fidelity_applied = True
+                        elif structured_lower_pattern_recovery:
+                            result_img, cf_meta = tryon_lower_structure_preserve(
+                                person_image=person_image,
+                                garment_image=original_garment_image,
+                                catvton_result=result_img,
+                                raw_mask_image=raw_mask_image,
+                                drape_alpha=0.42,
+                                debug_session_dir=debug_session_dir,
+                            )
+                            if cf_meta.get("fallback_recommended") == "spatial":
+                                result_img, cf_meta = catvton_color_fidelity_spatial(
+                                    catvton_result=result_img,
+                                    original_garment=original_garment_image,
+                                    person_image=person_image,
+                                    garment_category=gc or "top",
+                                    fidelity_strength=fidelity_strength,
+                                    debug_session_dir=debug_session_dir,
+                                )
+                            color_fidelity_applied = True
+                        elif (
+                            force_lower_spatial
+                            or engine_decision == "spatial"
+                            or raw_quality.decision in ("pattern_only", "strong_spatial")
+                        ):
+                            result_img, cf_meta = catvton_color_fidelity_spatial(
+                                catvton_result=result_img,
+                                original_garment=original_garment_image,
+                                person_image=person_image,
+                                garment_category=gc or "top",
+                                fidelity_strength=fidelity_strength,
+                                debug_session_dir=debug_session_dir,
+                            )
+                            color_fidelity_applied = True
+                        elif raw_quality.decision == "color_only":
+                            result_img, cf_meta = catvton_lab_chroma_color_correct(
+                                catvton_result=result_img,
+                                original_garment=original_garment_image,
+                                person_image=person_image,
+                                garment_category=gc or "top",
+                                raw_mask_image=raw_mask_image,
+                                fidelity_strength=fidelity_strength,
+                            )
+                            color_fidelity_applied = True
+                        elif not features.is_white_garment and (
+                            features.sat_mean > 0.05 or features.has_color
+                        ):
+                            result_img, cf_meta = catvton_color_fidelity_enhance(
+                                catvton_result=result_img,
+                                original_garment=original_garment_image,
+                                person_image=person_image,
+                                garment_category=gc or "top",
+                                fidelity_strength=fidelity_strength,
+                            )
+                            color_fidelity_applied = True
+
+                        hybrid_meta = {
+                            **hybrid_meta,
+                            **cf_meta,
+                            "color_fidelity_applied": color_fidelity_applied,
+                            "color_fidelity_mode": cf_meta.get("engine"),
+                            "raw_quality_gate": raw_quality_meta,
+                            "hybrid_lower_spatial_forced": force_lower_spatial,
+                            "structured_lower_pattern_recovery": structured_lower_pattern_recovery,
+                            "engine_decision": engine_decision,
+                            "engine_decision_reason": engine_reason,
+                        }
+                        save_debug_stage_image(
+                            debug_session_dir=debug_session_dir,
+                            filename="12_after_hybrid_color_fidelity.jpg",
+                            image=result_img,
+                            metadata={
+                                "stage": "after_hybrid_color_fidelity",
+                                "color_fidelity_applied": color_fidelity_applied,
+                                "engine": cf_meta.get("engine"),
+                                "force_lower_spatial": force_lower_spatial,
+                                "raw_quality_gate": raw_quality_meta,
+                                "structured_lower_pattern_recovery": (
+                                    structured_lower_pattern_recovery
+                                ),
+                                "garment_region": cf_meta.get("garment_region"),
+                                "lower_layer_gap_fill_ratio": cf_meta.get(
+                                    "lower_layer_gap_fill_ratio"
+                                ),
+                                "lower_color_transfer_ratio": cf_meta.get(
+                                    "lower_color_transfer_ratio"
+                                ),
+                                "lower_deterministic_overlay_ratio": cf_meta.get(
+                                    "lower_deterministic_overlay_ratio"
+                                ),
+                            },
+                        )
+                        logger.info(
+                            "Hybrid direct CatVTON: color fidelity applied=%s engine=%s "
+                            "raw_decision=%s force_lower_spatial=%s",
+                            color_fidelity_applied,
+                            cf_meta.get("engine"),
+                            raw_quality.decision,
+                            force_lower_spatial,
+                        )
+                    except Exception as cf_err:
+                        logger.warning(
+                            "Hybrid direct CatVTON color fidelity failed (continuing): %s",
+                            cf_err,
+                        )
 
                 result = {
                     "status": "success",
@@ -2911,6 +3436,15 @@ async def tryon_garment_v2(
                     "post_cf_artifacts": {
                         "blockiness_score": round(post_cf_artifacts.blockiness_score, 4),
                         "outlier_ratio": round(post_cf_artifacts.outlier_ratio, 4),
+                        "horizontal_hard_edge_score": round(
+                            post_cf_artifacts.horizontal_hard_edge_score, 4
+                        ),
+                        "luminance_mismatch_score": round(
+                            post_cf_artifacts.luminance_mismatch_score, 4
+                        ),
+                        "rectangular_overlay_score": round(
+                            post_cf_artifacts.rectangular_overlay_score, 4
+                        ),
                         "failed": post_cf_artifacts.failed,
                     },
                 },
@@ -2955,6 +3489,18 @@ async def tryon_garment_v2(
                         result_img.size, "bottom"
                     )
 
+                save_debug_stage_image(
+                    debug_session_dir=debug_session_dir,
+                    filename="16_before_safe_postprocess.jpg",
+                    image=result_img,
+                    metadata={
+                        "stage": "before_safe_postprocess",
+                        "mode": mode,
+                        "pipeline": str((result.get("metadata") or {}).get("pipeline") or "A"),
+                        "garment_region": garment_region,
+                        "postprocess_strength": postprocess_strength,
+                    },
+                )
                 result_img = enhance_tryon_result(
                     result=result_img,
                     person=person_image,
@@ -2969,6 +3515,18 @@ async def tryon_garment_v2(
                     "postprocess_applied": True,
                     "postprocess_strength": postprocess_strength,
                 }
+                save_debug_stage_image(
+                    debug_session_dir=debug_session_dir,
+                    filename="17_after_safe_postprocess.jpg",
+                    image=result_img,
+                    metadata={
+                        "stage": "after_safe_postprocess",
+                        "mode": mode,
+                        "pipeline": str((result.get("metadata") or {}).get("pipeline") or "A"),
+                        "garment_region": garment_region,
+                        "postprocess_strength": postprocess_strength,
+                    },
+                )
                 logger.info(
                     f"Post-processing applied (non-CatVTON): strength={postprocess_strength}"
                 )
@@ -3040,9 +3598,11 @@ async def tryon_pants_v2(
     return await tryon_garment_v2(
         garment_file=garment_file,
         person_file=person_file,
+        garment_id=None,
         garment_image_url=None,
         garment_category=garment_category,
         garment_file_2=None,
+        garment_id_2=None,
         garment_image_url_2=None,
         garment_category_2="bottom",
         prompt=prompt,
@@ -3056,24 +3616,33 @@ async def tryon_pants_v2(
 
 @router.post("/validate-input", response_model=TryOnV2ValidateResponse)
 async def tryon_v2_validate_input(
-    garment_file: UploadFile = File(
-        ..., alias="garment_file", description="Garment product photo"
-    ),  # noqa: E501
+    garment_file: UploadFile | None = File(
+        None,
+        alias="garment_file",
+        description="Garment product photo (or use garment_id/garment_image_url)",
+    ),
     person_file: UploadFile = File(..., alias="person_file", description="Person full-body photo"),
+    garment_id: str | None = Form(
+        None, description="衣橱衣物 ID（与 garment_file/garment_image_url 三选一）"
+    ),
     garment_image_url: str | None = Form(None),
     garment_category: str = Form(
         "auto", description="Expected category: top|bottom|skirt|outfit|auto"
     ),
     garment_file_2: UploadFile | None = File(None, alias="garment_file_2"),
+    garment_id_2: str | None = Form(None),
     garment_image_url_2: str | None = Form(None),
     garment_category_2: str = Form("bottom", description="Second garment category for outfit"),
     mode: str = Form("strict", description="strict|balanced"),
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     _ensure_tryon_v2_enabled()
     request_start = time.time()
 
-    if not garment_file.content_type or not garment_file.content_type.startswith("image/"):
+    if garment_file is not None and (
+        not garment_file.content_type or not garment_file.content_type.startswith("image/")
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="garment_file must be an image",
@@ -3108,20 +3677,75 @@ async def tryon_v2_validate_input(
 
     from PIL import Image
 
-    garment_bytes = await garment_file.read()
     person_bytes = await person_file.read()
-    garment2_bytes = await garment_file_2.read() if garment_file_2 is not None else b""
-    if len(garment_bytes) == 0 or len(person_bytes) == 0:
+    if len(person_bytes) == 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Uploaded files cannot be empty",
+            detail="person_file cannot be empty",
         )
-
-    garment_image = Image.open(BytesIO(garment_bytes)).convert("RGB")
     person_image = Image.open(BytesIO(person_bytes)).convert("RGB")
-    garment_image_2 = (
-        Image.open(BytesIO(garment2_bytes)).convert("RGB") if len(garment2_bytes) else None
-    )
+
+    # 加载衣物图片（三选一）
+    garment_image: Image.Image | None = None
+    garment_image_2: Image.Image | None = None
+
+    if garment_file is not None:
+        garment_bytes = await garment_file.read()
+        if len(garment_bytes) == 0:
+            raise HTTPException(status_code=400, detail="garment_file cannot be empty")
+        garment_image = Image.open(BytesIO(garment_bytes)).convert("RGB")
+    elif garment_id is not None:
+        from uuid import UUID as _UUID
+
+        from app.services.garment import get_garment_by_id
+
+        try:
+            gid = _UUID(garment_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="garment_id 格式无效")
+        g = get_garment_by_id(db, gid)
+        if not g:
+            raise HTTPException(status_code=404, detail="衣物不存在")
+        if str(g.user_id) != str(current_user.user_id):
+            raise HTTPException(status_code=403, detail="无权访问该衣物")
+        gpath = Path(g.image_path) if g.image_path else None
+        if not gpath or not gpath.is_file():
+            raise HTTPException(status_code=400, detail="衣物图片文件不存在")
+        garment_image = Image.open(gpath).convert("RGB")
+        if not garment_image_url:
+            garment_image_url = g.image_url
+
+    if garment_file_2 is not None:
+        garment2_bytes = await garment_file_2.read()
+        garment_image_2 = (
+            Image.open(BytesIO(garment2_bytes)).convert("RGB") if len(garment2_bytes) else None
+        )
+    elif garment_id_2 is not None:
+        from uuid import UUID as _UUID
+
+        from app.services.garment import get_garment_by_id
+
+        try:
+            gid2 = _UUID(garment_id_2)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="garment_id_2 格式无效")
+        g2 = get_garment_by_id(db, gid2)
+        if not g2:
+            raise HTTPException(status_code=404, detail="第二件衣物不存在")
+        if str(g2.user_id) != str(current_user.user_id):
+            raise HTTPException(status_code=403, detail="无权访问该衣物")
+        gpath2 = Path(g2.image_path) if g2.image_path else None
+        if not gpath2 or not gpath2.is_file():
+            raise HTTPException(status_code=400, detail="第二件衣物图片文件不存在")
+        garment_image_2 = Image.open(gpath2).convert("RGB")
+        if not garment_image_url_2:
+            garment_image_url_2 = g2.image_url
+
+    if garment_image is None and garment_image_url is None:
+        raise HTTPException(
+            status_code=400,
+            detail="请提供衣物图片：garment_file、garment_id 或 garment_image_url 三选一",
+        )
 
     def _load_uploads_url(url: str) -> Image.Image | None:
         u = (url or "").strip()

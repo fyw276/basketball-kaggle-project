@@ -282,6 +282,76 @@ def _looks_like_scarf_or_accessory_shape(rgba: Image.Image) -> bool:
     return (aspect >= 2.6 and fill <= 0.30) or (aspect >= 3.2 and fill <= 0.42)
 
 
+def _looks_like_pants_shape(rgba: Image.Image) -> bool:
+    """Detect pants from the cutout silhouette.
+
+    Product-photo classifiers often confuse light jeans on a white square canvas with
+    shoes/boots. The pants silhouette is more reliable: tall garment, visible left
+    and right leg mass, and a vertical center gap through the lower half.
+    """
+    im = rgba.convert("RGBA")
+    arr = np.asarray(im, dtype=np.uint8)
+    if arr.size == 0:
+        return False
+    rgb = arr[:, :, :3]
+    a = arr[:, :, 3]
+
+    alpha_mask = a > 10
+    gray = rgb.mean(axis=2)
+    chroma = rgb.max(axis=2) - rgb.min(axis=2)
+    # For pants detection, low-chroma gray shadow in the crotch gap should behave
+    # like background; otherwise light jeans become one solid rectangle. Keep dark
+    # low-chroma garments as foreground via the brightness branch.
+    color_mask = (chroma > 22) | (gray < 150)
+    if float(color_mask.mean()) > 0.08:
+        fg_mask = alpha_mask & color_mask
+    elif float(alpha_mask.mean()) > 0.98 and float(color_mask.mean()) > 0.02:
+        fg_mask = color_mask
+    else:
+        fg_mask = alpha_mask
+
+    ys, xs = np.where(fg_mask)
+    if xs.size < 100:
+        return False
+
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    mask = fg_mask[y0:y1, x0:x1]
+    bh, bw = mask.shape
+    if bw < 20 or bh < 40:
+        return False
+
+    aspect = bh / max(bw, 1)
+    fill = float(mask.mean())
+    if aspect < 1.25 or fill < 0.25 or fill > 0.94:
+        return False
+
+    left = mask[:, : bw // 2]
+    right = mask[:, bw // 2 :]
+    center = mask[:, int(bw * 0.43) : max(int(bw * 0.57), int(bw * 0.43) + 1)]
+
+    sampled = 0
+    split_rows = 0
+    for y in range(int(bh * 0.34), int(bh * 0.96), max(1, bh // 80)):
+        row = mask[y]
+        if float(row.mean()) < 0.12:
+            continue
+        sampled += 1
+        left_fg = float(left[y].mean()) if left.shape[1] else 0.0
+        right_fg = float(right[y].mean()) if right.shape[1] else 0.0
+        center_fg = float(center[y].mean()) if center.shape[1] else 1.0
+        if left_fg > 0.10 and right_fg > 0.10 and center_fg < 0.38:
+            split_rows += 1
+
+    if sampled < 8:
+        return False
+
+    split_ratio = split_rows / max(sampled, 1)
+    top_band = mask[: max(1, int(bh * 0.22))]
+    top_connected = float(top_band.mean()) > 0.18
+    return bool(split_ratio >= 0.28 and top_connected)
+
+
 def preprocess_garment_image(
     garment_image: Image.Image,
     *,
@@ -304,7 +374,6 @@ def preprocess_garment_image(
             01_original.jpg, 02_cutout.png, 03_aligned.jpg, 04_preview_white.jpg,
             05_standardized.jpg
     """
-    import hashlib
 
     debug_path: Path | None = None
     if debug_dir:
@@ -329,6 +398,13 @@ def preprocess_garment_image(
             logger.warning(f"[DEBUG] failed to save 01_original: {e}")
 
     cutout = cutout_garment_rgba(garment_image, cloth_type=cloth_type)
+    pants_shape = _looks_like_pants_shape(cutout.cropped)
+    if pants_shape and cloth_type != "lower":
+        logger.info(
+            "[AUTO-PREPROCESS] pants silhouette detected; overriding cloth_type %r -> 'lower'",
+            cloth_type,
+        )
+        cloth_type = "lower"
 
     # Debug: save cutout RGBA
     if debug_path:
@@ -396,8 +472,39 @@ def preprocess_garment_image(
                 f"[AUTO-PREPROCESS] Low-confidence accessory (conf={conf:.3f}) "
                 f"reclassified as 'bottom' based on aspect ratio ({aspect:.2f})"
             )
+    elif pants_shape and tryon_cat in {"top", "accessory", "unknown"}:
+        previous_tryon_cat = tryon_cat
+        tryon_cat = "bottom"
+        logger.info(
+            "[AUTO-PREPROCESS] pants silhouette overrides category %r "
+            "(raw=%r, conf=%.3f) -> 'bottom'",
+            previous_tryon_cat,
+            raw_cat,
+            conf,
+        )
     elif accessory_shape and tryon_cat in {"top", "unknown"}:
         tryon_cat = "accessory"
+    elif tryon_cat == "top" and conf < 0.15 and cloth_type == "lower":
+        tryon_cat = "bottom"
+        logger.info(
+            "[AUTO-PREPROCESS] Low-confidence top category "
+            "(conf=%.3f) reclassified as 'bottom' from cloth_type='lower'",
+            conf,
+        )
+    elif tryon_cat == "unknown" and conf < 0.15:
+        if cloth_type == "lower":
+            tryon_cat = "bottom"
+        elif cloth_type == "dress":
+            tryon_cat = "skirt"
+        else:
+            tryon_cat = "top"
+        logger.info(
+            "[AUTO-PREPROCESS] Low-confidence unknown category "
+            "(conf=%.3f) reclassified as %r from cloth_type=%r",
+            conf,
+            tryon_cat,
+            cloth_type,
+        )
 
     logger.info(
         f"[preprocess_garment_image] category={tryon_cat} confidence={conf:.3f} "
@@ -414,6 +521,7 @@ def preprocess_garment_image(
         metadata={
             "canvas": int(canvas),
             "accessory_shape": bool(accessory_shape),
+            "pants_shape": bool(pants_shape),
             "cloth_type_used": cloth_type,
             "alignment_applied": alignment_applied,
             "preview_white_generated": preview_white is not None,

@@ -2615,9 +2615,12 @@ def main():
             # 目标：将mask_area_ratio从0.06扩展到0.12
             # 在512x768上，这需要更激进的膨胀
             kernel = np.ones((5, 5), np.uint8)
-            mask_resized = cv2.dilate(mask_resized, kernel, iterations=3)
+            # Restore the upper-shirt edit area that matched the best saved
+            # result. The smaller 3-iteration mask leaves the neck/shoulder
+            # area under-edited, so CatVTON keeps the original gray undershirt.
+            mask_resized = cv2.dilate(mask_resized, kernel, iterations=9)
             logger.info(
-                f"[MASK-FIX] Applied expansion after resize: kernel=5x5, iterations=3"
+                f"[MASK-FIX] Applied expansion after resize: kernel=5x5, iterations=9"
             )
         else:
             # 不需要扩展：只做轻微膨胀覆盖边界

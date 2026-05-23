@@ -1,6 +1,6 @@
 # 智能穿搭助手 - Flutter 移动端
 
-更新时间：2026-05-01
+更新时间：2026-05-24
 
 这是智能穿搭助手的 Flutter 移动端应用。
 
@@ -20,6 +20,8 @@
 - ✅ 适合度分析（场景/体型/风格三维评分 + 每维原因说明）
 - ✅ 情绪穿搭（心情 → 配色/风格方向 + 衣橱匹配）
 - ✅ 虚拟试衣（v1 + v2 方案 A 双链路，支持“先预检再生成”）
+- ✅ AI Agent 对话（SSE 流式执行步骤 + 工具调用结果 + 最终回答）
+- ✅ 分析页衣橱选择器（从已有衣橱单品直接填充分析图片）
 - ✅ 体型感知（读取画像，一键生成 3 套体型专属穿搭）
 
 ## 技术栈
@@ -51,6 +53,7 @@ mobile/
 │       │       └── home_screen.dart
 │       ├── profile/                # 用户画像
 │       ├── wardrobe/               # 衣橱管理
+│       ├── agent/                  # Agent 流式对话与执行步骤
 │       └── analysis/               # 分析功能
 │           └── screens/
 │               ├── similarity_analysis_screen.dart
@@ -158,9 +161,16 @@ flutter test
 flutter test integration_test
 ```
 
+## 近期关键变更（2026-05-24）
+
+- 新增 Agent 对话页与 `/agent` 路由，消费 `/api/v1/agent/chat-stream` SSE 事件。
+- 新增 `SseParser`，正确处理跨 chunk 的 SSE 行边界，智能穿搭流与 Agent 流共用。
+- 分析页支持从衣橱选择图片，减少重复上传；v2 试衣调用继续自动从 `/api/v1` 基址切换到 `/api/v2`。
+- 虚拟试衣 v2 模式文档同步为 7 种：strict/balanced/replace/realistic/realistic_v2/professional/hybrid。
+
 ## 近期关键变更（2026-05-01）
 
-- 虚拟试衣 v2 多引擎多模式正式上线（strict/balanced/replace/realistic/professional），CatVTON 深度学习 + 百炼 + Warp 几何引擎全支持
+- 虚拟试衣 v2 多引擎多模式正式上线（strict/balanced/replace/realistic/realistic_v2/professional/hybrid），CatVTON 深度学习 + 百炼 + Warp 几何引擎全支持
 - CatVTON 后处理修复（尺寸不匹配 → `quick_enhance()` 快速路径）
 - 极限 VRAM 优化（8GB 可用）、白盒调试工具、实时日志
 

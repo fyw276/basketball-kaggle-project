@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Agent chat SSE endpoint** (`POST /api/v1/agent/chat-stream`): multi-round OpenAI-compatible tool loop with structured `step`, `skill_execution`, `tool_call`, `tool_result`, `answer`, `error`, and `done` events.
+- **Agent tool registry** (`backend/app/agent/tools/`): single source of truth for wardrobe, weather, outfit, mood, memory, collection, and try-on tools used by the LLM tool loop.
+- **Agent skills API** (`/api/v1/agent/skills`): list/create skills, capture skills from tool-call sequences, and preview keyword-triggered prompt injection.
+- **Hybrid memory search** (`memory_search.py`, `embedding_client.py`): keyword Jaccard + embedding cosine retrieval with keyword-only fallback.
+- **Prometheus metrics endpoint** (`GET /metrics`): exports dependency, try-on v2, and agent run/tool/failure metrics.
+- **Flutter Agent UI** (`mobile/lib/features/agent/`): streaming chat page with visible pipeline/tool progress.
+- **Chunk-safe SSE parser** (`mobile/lib/core/services/sse_parser.dart`): shared by smart-outfit streaming and Agent chat.
+- **Wardrobe picker sheet** (`mobile/lib/core/widgets/wardrobe_picker_sheet.dart`): analysis and try-on screens can reuse existing wardrobe images.
+- **`tryon_mask_utils.py`** (`backend/app/services/`): `expand_binary_mask_to_ratio()` — dilates a binary mask to a target area/width ratio with optional top guard, width cap, and max-area constraints. Used by CatVTON subprocess to produce properly-sized upper-body masks.
+- **`fidelity_guard.py`** (`backend/app/services/tryon_v2/`): fidelity engine decision guard module providing `extract_engine_decision_features()`, `decide_color_fidelity_engine()` (with hysteresis guard band at pattern_score 0.38-0.45), `evaluate_cutout_alpha_qc()`, `score_input_anomaly()` (mirror-ghost + JPEG artifact detection), `detect_post_cf_artifacts()`, and `estimate_pattern_enhance_strength()`.
+- **`test_tryon_fidelity_guard.py`** (`backend/tests/`): 8 unit tests covering the fidelity guard module (engine decision, QC gates, anomaly detection, artifact reporting, pattern strength estimation).
+- **Expanded `test_tryon_debug_pattern_region.py`**: 10 new/updated tests covering light cartoon print detection, CatVTON garment region expansion beyond pose torso, width guard enforcement, spatial fidelity (no sticker background, no motif upscaling, no dark-shadow rectangle, shape preservation, face never restored, upper mask torso-only), debug stage image/bytes save, and relative debug dir resolution.
+
+### Changed
+
+- **`tryon_debug_utils.py`**: Added `resolve_debug_session_dir()` for consistent project-root-relative path resolution; added `save_debug_stage_bytes()` for exact byte payload storage with sidecar metadata.
+- **`tryon_pattern_utils.py`**: `estimate_catvton_garment_region_from_change()` now enforces a width cap for upper-body garments (`max_top_w = min(62% canvas, max(210% pose_w, 38% canvas))`) to prevent overly wide garment regions from being accepted.
+- **`warp_engine.py`**: `catvton_color_fidelity_spatial()` now computes `fidelity_allowed` mask from person-vs-CatVTON pixel difference, excluding near-white-background and skin-like pixels from fidelity application; added `motif_gate` to restrict fidelity to only small-color-distinct regions (motif-only fidelity); removed layer restoration on face-protection alpha degradation (keeps protected layer instead).
+- **`catvton_runner.py`**: Replaced hard-coded dilation (kernel=5x5, iterations=3) with `expand_binary_mask_to_ratio(target_ratio=0.075, max_area_ratio=0.09, max_width_ratio=0.45, top_guard_y=22% height)` for upper-body masks.
+- **`tryon_v2.py`**: CatVTON subprocess `debug_session_dir` now propagates to post-CatVTON backend stages (color fidelity, postprocess); added `12_after_color_fidelity.jpg` debug stage image save; added `99_backend_final_returned.jpg` debug stage bytes save.
+- **Rate limiting**: `ENABLE_RATE_LIMIT` now defaults to true, and `RATE_LIMIT_TRYON_PER_MINUTE` applies independent limits to `/api/v1/tryon` and `/api/v2/tryon`.
+- **CatVTON reproducibility**: `CATVTON_SEED` controls subprocess seed; default fixed seed is `42`, `-1` requests random behavior.
+- **Hybrid mode default**: `TRYON_V2_HYBRID_WARP_OVERLAY_ENABLED=false` returns successful local CatVTON output directly; true restores legacy warp overlay behavior.
+- **Docs**: Added `docs/AGENT_AND_TRYON_FIDELITY_SYNC_2026-05-24.md` and synchronized README, backend README, mobile README, project status, delivery status, and doc index.
+
 ### Fixed
 
 - **Docs: try-on v2 mode count**: Fixed README, VTON_INTEGRATION.md, SERVICE_MODULES_GUIDE.md, TRYON_TECH_BLUEPRINT_AB.md to reflect **7 modes** (not 6), adding `realistic_v2` mode

@@ -2,6 +2,13 @@
 Pydantic schemas for request/response validation
 """
 
+from app.schemas.agent_skill import (
+    SkillCapture,
+    SkillCreate,
+    SkillExecutePreviewResponse,
+    SkillResponse,
+    SkillVersionResponse,
+)
 from app.schemas.garment import (
     VALID_CATEGORIES,
     VALID_FIT_TYPES,
@@ -25,6 +32,11 @@ from app.schemas.user_profile import (
 )
 
 __all__ = [
+    "SkillCapture",
+    "SkillCreate",
+    "SkillExecutePreviewResponse",
+    "SkillResponse",
+    "SkillVersionResponse",
     "UserCreate",
     "UserLogin",
     "UserResponse",

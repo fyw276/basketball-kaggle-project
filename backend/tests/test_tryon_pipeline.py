@@ -426,7 +426,7 @@ def test_apply_densepose_warp_returns_array():
 
 def test_quality_checker_in_realistic_v2_import():
     """Quality checker is properly importable from realistic_v2 context."""
-    from app.services.quality_checker import QualityChecker, TryOnQualityScores
+    from app.services.quality_checker import QualityChecker
 
     qc = QualityChecker(min_score=0.75)
     assert qc.min_score == 0.75
@@ -490,10 +490,8 @@ def test_preprocess_garment_rgba_cutout():
 
 def test_catvton_runner_fp16_default():
     """catvton_runner.py defaults to fp16 for low VRAM."""
-    import os
     import subprocess
     import sys
-    import tempfile
     from pathlib import Path
 
     runner_path = (
@@ -559,16 +557,6 @@ def test_catvton_config_defaults():
     try:
         # Use a fresh Settings() without loading .env to get defaults
         # Test field defaults directly via model fields (bypasses .env override)
-        import inspect
-
-        from pydantic_settings import BaseSettings
-
-        from app.core.config import Settings
-
-        sig = inspect.signature(Settings.__init__)
-
-        # The defaults are defined in the Field() definitions.
-        # Verify the class-level defaults are correct by checking the model fields.
         from app.core.config import Settings
 
         s = Settings.model_fields
@@ -599,7 +587,6 @@ def test_catvton_config_defaults():
 
 def test_api_modes_include_realistic_v2():
     """API accepts realistic_v2 as a valid mode."""
-    import sys
     from pathlib import Path
 
     backend_path = Path("D:/Users/omen/OneDrive/桌面/clothing-assistant/backend")
@@ -616,11 +603,11 @@ def test_api_modes_include_realistic_v2():
 
 def test_catvton_engine_client_has_realistic_v2_status():
     """catvton_engine_client.py supports realistic_v2 mode parameters."""
-    import sys
     from pathlib import Path
 
-    client_path = Path(
-        "D:/Users/omen/OneDrive/桌面/clothing-assistant/backend/app/services/tryon_v2/catvton_engine_client.py"
+    # Use a shorter relative path when possible
+    client_path = (
+        Path(__file__).parent.parent / "app" / "services" / "tryon_v2" / "catvton_engine_client.py"
     )
     if not client_path.exists():
         return

@@ -1,8 +1,21 @@
 # 智能穿搭助手 - 项目状态文档
 
-**最后更新**: 2026-05-08
-**项目版本**: v1.7.0
-**状态**: 生产级可用；六模式虚拟试衣 v2（strict/balanced/replace/realistic/professional/hybrid），后端服务已完成高度模块化拆分。
+**最后更新**: 2026-05-24
+**项目版本**: v1.8.0
+**状态**: 生产级可用；七模式虚拟试衣 v2（strict/balanced/replace/realistic/realistic_v2/professional/hybrid），Agent 对话工具循环与 Prometheus 指标已接入。
+
+---
+
+## 本次更新（2026-05-24）
+
+- **Agent 对话工具循环**: 新增 `/api/v1/agent/chat-stream` SSE 端点，支持多轮 OpenAI-compatible tool calling、工具执行步骤流、记忆预加载、技能匹配和运行落库。
+- **Agent 技能**: 新增 `/api/v1/agent/skills` 列表/创建、`capture`、`execute-preview`；技能可从成功工具调用序列生成提示词增量。
+- **混合记忆检索**: 记忆搜索支持关键词 Jaccard + embedding cosine；embedding 服务未配置时自动退化为关键词检索。
+- **观测性**: 新增 `/metrics` Prometheus 文本输出，覆盖 dependency、try-on v2、agent run/tool/failure 指标。
+- **虚拟试衣保真修复**: 新增 `fidelity_guard.py` 与 `tryon_mask_utils.py`；CatVTON 颜色保真按差异区域、背景/肤色排除、motif gate 和 lower-body clip mask 限制应用，减少黑块、贴纸感和图案放大。
+- **调试产物同步**: CatVTON debug session 贯穿后端颜色保真与最终返回阶段，新增 `12_after_color_fidelity.jpg`、`99_backend_final_returned.jpg`。
+- **Flutter 更新**: 新增 Agent 对话页、SSE parser、衣橱选择器，分析/试衣页面可复用衣橱图片。
+- **限流默认值**: `ENABLE_RATE_LIMIT` 默认开启，并新增 `RATE_LIMIT_TRYON_PER_MINUTE` 试衣接口独立限流。
 
 ---
 
@@ -17,7 +30,7 @@
 
 ## 上次更新（2026-05-01）
 
-- 重写 `README.md`：更新技术栈为 FashionCLIP（非 TensorFlow/MobileNetV2），更新虚拟试衣 v2 为四模式架构（strict/balanced/replace/realistic/professional），新增 tryon_v2 14 个模块说明，新增极限 VRAM 优化与白盒调试文档
+- 重写 `README.md`：更新技术栈为 FashionCLIP（非 TensorFlow/MobileNetV2），更新虚拟试衣 v2 为五模式架构（strict/balanced/replace/realistic/professional），新增 tryon_v2 14 个模块说明，新增极限 VRAM 优化与白盒调试文档
 
 ---
 
@@ -124,6 +137,7 @@
 | `warp_engine.py` | ✅ | Warp 几何引擎：上装/下装/裙装/套装多段贴合，阴影生成 |
 | `catvton_engine_client.py` | ✅ | CatVTON 本地引擎客户端（子进程调用） |
 | `catvton_client.py` | ✅ | CatVTON HTTP 远程推理客户端 |
+| `fidelity_guard.py` | ✅ | 颜色保真引擎策略门禁、输入异常检测、后处理伪影检测 |
 | `postprocess.py` | ✅ | 后处理：`quick_enhance()` + `enhance_tryon_result()` |
 | `qc.py` | ✅ | 质量评分：身份保真度 / 边缘伪影检测 |
 | `preprocess.py` | ✅ | 衣物预处理：自动品类检测 + 标准化 |
@@ -137,7 +151,7 @@
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/api/v2/tryon/garment` | POST | 多模式试衣（strict/balanced/replace/realistic/professional） |
+| `/api/v2/tryon/garment` | POST | 多模式试衣（strict/balanced/replace/realistic/realistic_v2/professional/hybrid） |
 | `/api/v2/tryon/validate-input` | POST | 输入门禁评估（不生成图片） |
 | `/api/v2/tryon/preprocess` | POST | 衣物预处理（自动品类检测） |
 | `/api/v2/tryon/preprocess-batch` | POST | 批量预处理 |
@@ -194,17 +208,25 @@
 #### 14. 意图路由 + 轻量记忆 RAG (100%)
 - `POST /api/v1/agent/intent` — 自然语言 → 建议 MCP 工具名
 - `POST/GET/DELETE /api/v1/memory/snippets` — 记忆片段写入/检索
+- 混合检索支持关键词 + embedding cosine，Agent 会自动预加载相关记忆
 
-#### 15. 生产就绪能力 (100%)
+#### 15. Agent 对话与技能 (100%)
+- `POST /api/v1/agent/chat-stream` — SSE 流式 Agent loop（step/tool_call/tool_result/answer/done）
+- `GET/POST /api/v1/agent/skills` — 用户技能列表与创建
+- `POST /api/v1/agent/skills/capture` — 从工具调用序列捕获技能
+- `POST /api/v1/agent/skills/{skill_id}/execute-preview` — 技能命中预览
+
+#### 16. 生产就绪能力 (100%)
 - `GET /health/ready` — 数据库探活就绪探针
-- 可选滑动窗口限流（`ENABLE_RATE_LIMIT`）
+- 默认开启滑动窗口限流（`ENABLE_RATE_LIMIT`），试衣接口可用 `RATE_LIMIT_TRYON_PER_MINUTE` 单独配置
 - JWT 弱密钥 CRITICAL 日志提示
 - 依赖可观测性：`GET /api/v1/analytics/dependency-observability`
+- Prometheus 指标：`GET /metrics`
 
-#### 16. CLI 工具 (100%)
+#### 17. CLI 工具 (100%)
 - `cli/outfit_cli.py`：认证/衣橱/分析/天气/智能穿搭/情绪/试衣/收藏
 
-#### 17. MCP 服务 (100%)
+#### 18. MCP 服务 (100%)
 - `mcp/server.py`：FastMCP 工具桥接后端 API
 
 ---
@@ -282,22 +304,23 @@
 clothing-assistant/
 ├── backend/
 │   ├── app/
-│   │   ├── api/                   # 20 个路由（含 tryon_v2）
+│   │   ├── api/                   # 路由模块（含 tryon_v2 / agent_chat / agent_skills）
+│   │   ├── agent/                 # Agent 工具注册表与工具实现
 │   │   ├── core/                  # 配置、错误处理、日志、HuggingFace 环境
 │   │   ├── db/                    # 数据库会话
 │   │   ├── ml/                    # 模型加载
 │   │   ├── models/                # ORM 模型
-│   │   ├── observability/          # 指标收集
+│   │   ├── observability/          # 指标收集与 Prometheus exporter
 │   │   ├── schemas/               # Pydantic schemas
 │   │   └── services/              # 50 个服务模块
-│   │       └── tryon_v2/          # 14 个 v2 管线模块
+│   │       └── tryon_v2/          # v2 管线模块（含 fidelity_guard）
 │   ├── scripts/                    # 诊断与测试脚本
 │   ├── tests/                     # pytest 套件
 │   └── uploads/                   # 上传图片
 ├── mobile/                         # Flutter 前端
 │   └── lib/
 │       ├── core/                  # API 客户端、主题、性别表达系统
-│       └── features/              # auth / home / profile / wardrobe / analysis
+│       └── features/              # auth / home / profile / wardrobe / analysis / agent
 ├── vton_inference_service/         # 独立最小 HTTP 推理服务
 ├── cli/                           # outfit_cli.py
 ├── mcp/                           # server.py（FastMCP）

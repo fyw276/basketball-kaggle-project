@@ -23,6 +23,19 @@ from app.services.user_profile import create_profile, get_profile_by_user_id, up
 
 router = APIRouter(prefix="/profile", tags=["User Profile"])
 
+BUDGET_RANGE_ALIASES = {
+    "经济实惠": "经济",
+    "中等消费": "中等",
+    "高端品质": "高端",
+}
+
+
+def normalize_profile_data(profile_data: UserProfileCreate | UserProfileUpdate):
+    """Normalize legacy/mobile display values before strict enum validation."""
+    budget_range = getattr(profile_data, "budget_range", None)
+    if budget_range in BUDGET_RANGE_ALIASES:
+        profile_data.budget_range = BUDGET_RANGE_ALIASES[budget_range]
+
 
 def validate_profile_data(profile_data: UserProfileCreate | UserProfileUpdate):
     """
@@ -34,6 +47,8 @@ def validate_profile_data(profile_data: UserProfileCreate | UserProfileUpdate):
     Raises:
         HTTPException: If validation fails
     """
+    normalize_profile_data(profile_data)
+
     # Validate gender
     if hasattr(profile_data, "gender") and profile_data.gender:
         if profile_data.gender not in VALID_GENDERS:
@@ -90,6 +105,12 @@ def validate_profile_data(profile_data: UserProfileCreate | UserProfileUpdate):
 
 
 @router.post("", response_model=UserProfileResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/",
+    response_model=UserProfileResponse,
+    status_code=status.HTTP_201_CREATED,
+    include_in_schema=False,
+)
 def create_user_profile(
     profile_in: UserProfileCreate,
     current_user: User = Depends(get_current_user),
@@ -127,6 +148,7 @@ def create_user_profile(
 
 
 @router.get("", response_model=UserProfileResponse)
+@router.get("/", response_model=UserProfileResponse, include_in_schema=False)
 def get_user_profile(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -155,6 +177,7 @@ def get_user_profile(
 
 
 @router.put("", response_model=UserProfileResponse)
+@router.put("/", response_model=UserProfileResponse, include_in_schema=False)
 def update_user_profile(
     profile_in: UserProfileUpdate,
     current_user: User = Depends(get_current_user),

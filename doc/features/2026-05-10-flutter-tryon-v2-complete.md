@@ -5,7 +5,9 @@
 
 ## 目的
 
-在 Flutter 前端补全 Try-On v2 所有 6 种模式（strict/stable/replace/realistic/professional/hybrid）的 UI 接入，并添加 `debug_mode` 参数到 API 客户端。
+在 Flutter 前端补全 Try-On v2 模式接入，并添加 `debug_mode` 参数到 API 客户端。当前后端模式集已同步为 7 种：`strict`、`balanced`、`replace`、`realistic`、`realistic_v2`、`professional`、`hybrid`。
+
+> **2026-05-24 文档同步**：早期文档把模式写成 6 种且包含旧别名 `stable`；当前以 `/api/v2/tryon/garment` 支持的 7 种模式为准。
 
 ## 实现方式
 

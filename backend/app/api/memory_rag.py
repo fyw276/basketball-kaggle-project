@@ -1,4 +1,8 @@
-"""Lightweight memory snippets: keyword RAG; embedding_json reserved for vectors."""
+"""Memory snippets: hybrid keyword + embedding search.
+
+Search combines keyword Jaccard (fallback) with embedding cosine similarity.
+Embeddings are generated on snippet creation and cached in embedding_json.
+"""
 
 import re
 from typing import List
@@ -13,6 +17,7 @@ from app.core.api_response import success_response
 from app.db.session import get_db
 from app.models.memory_snippet import MemorySnippet
 from app.models.user import User
+from app.services.memory_search import hybrid_search
 
 router = APIRouter(prefix="/memory", tags=["Memory"])
 
@@ -23,7 +28,7 @@ class SnippetCreate(BaseModel):
 
 
 def _tokenize(text: str) -> List[str]:
-    return [x for x in re.split(r"[\s\u3000,.;，。；]+", text.lower()) if len(x) >= 2]
+    return [x for x in re.split(r"[\s　,.;，。；]+", text.lower()) if len(x) >= 2]
 
 
 @router.post("/snippets")
@@ -37,6 +42,16 @@ async def create_snippet(
         title=body.title or None,
         content=body.content,
     )
+
+    # Generate embedding if client is available
+    from app.services.embedding_client import get_embedding_client
+
+    client = get_embedding_client()
+    if client:
+        embedding = await client.embed(body.content)
+        if embedding:
+            row.embedding_json = embedding
+
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -57,38 +72,23 @@ async def search_snippets(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """简单关键词重叠打分（Jaccard 近似）；后续可换 embedding + pgvector。"""
-    rows = (
-        db.query(MemorySnippet)
-        .filter(MemorySnippet.user_id == current_user.user_id)
-        .order_by(MemorySnippet.created_at.desc())
-        .limit(500)
-        .all()
-    )
-    q_tokens = set(_tokenize(q))
-    if not q_tokens:
-        return success_response({"query": q, "hits": []}, message="ok")
+    """Hybrid search: keyword Jaccard + embedding cosine similarity."""
+    from app.services.embedding_client import get_embedding_client
 
-    scored: List[tuple] = []
-    for r in rows:
-        blob = f"{r.title or ''} {r.content}"
-        tset = set(_tokenize(blob))
-        inter = len(q_tokens & tset)
-        union = len(q_tokens | tset) or 1
-        score = inter / union
-        if score > 0:
-            scored.append((score, r))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    hits = []
-    for score, r in scored[:top_k]:
-        hits.append(
-            {
-                "snippet_id": str(r.snippet_id),
-                "title": r.title,
-                "content": r.content[:2000],
-                "score": round(score, 4),
-            }
-        )
+    client = get_embedding_client()
+    query_embedding = None
+    if client:
+        query_embedding = await client.embed(q)
+
+    hits = hybrid_search(
+        q,
+        db,
+        current_user.user_id,
+        top_k=top_k,
+        keyword_weight=0.3,
+        embedding_weight=0.7,
+        query_embedding=query_embedding,
+    )
     return success_response({"query": q, "hits": hits}, message="ok")
 
 

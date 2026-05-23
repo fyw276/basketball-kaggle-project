@@ -12,6 +12,8 @@ Base = declarative_base()
 def import_models():
     """Import all models to register them with Base.metadata"""
     from app.models import (  # noqa: F401
+        agent_run,
+        agent_skill,
         feedback_event,
         garment,
         memory_snippet,

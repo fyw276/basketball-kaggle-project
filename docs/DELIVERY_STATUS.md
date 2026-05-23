@@ -2,6 +2,25 @@
 
 ## Date
 
+2026-05-24
+
+## Scope
+
+Documentation sync for the Agent chat/tool-loop work, CatVTON try-on fidelity fixes, Flutter SSE client updates, Prometheus metrics, and corrected try-on v2 mode count.
+
+## Completed
+
+1. Added [AGENT_AND_TRYON_FIDELITY_SYNC_2026-05-24.md](AGENT_AND_TRYON_FIDELITY_SYNC_2026-05-24.md).
+2. Updated README / backend README / mobile README / project status to document Agent chat, skills, hybrid memory, `/metrics`, and try-on-specific rate limits.
+3. Corrected stale try-on v2 mode wording to the current seven-mode set: `strict`, `balanced`, `replace`, `realistic`, `realistic_v2`, `professional`, `hybrid`.
+4. Documented new CatVTON fidelity guard, mask expansion helper, debug artifacts, hybrid overlay switch, and deterministic CatVTON seed.
+
+## Verification
+
+Pending in this commit flow: full pre-commit, commit-msg hook, and pre-push hooks must pass before push.
+
+## Date
+
 2026-04-14
 
 ## Scope

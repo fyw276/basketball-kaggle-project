@@ -5,9 +5,12 @@ import '../../../core/providers/auth_provider.dart';
 import '../../../core/providers/theme_provider.dart';
 import '../../../core/services/feature_local_store.dart';
 import '../../../core/utils/app_snackbar.dart';
+import '../../../core/utils/media_url.dart';
 import '../../../core/widgets/analysis_feature_layout.dart';
 import '../../../core/widgets/analysis_result_display.dart';
 import '../../../core/widgets/image_picker_section.dart';
+import '../../../core/widgets/platform_image.dart';
+import '../../../core/widgets/wardrobe_picker_sheet.dart';
 
 /// Outfit recommendation screen.
 class OutfitRecommendScreen extends StatefulWidget {
@@ -22,6 +25,12 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
   Map<String, dynamic>? _result;
   bool _isLoading = false;
   bool _saveBusy = false;
+
+  /// 从衣橱选择的衣物 ID 列表（与 _images 互斥）。
+  List<String> _wardrobeGarmentIds = [];
+
+  /// 从衣橱选择的衣物图片 URL 列表（与 _wardrobeGarmentIds 对应）。
+  List<String> _wardrobeImageUrls = [];
 
   /// 保存到收藏时选中的搭配（0-based，对应 `outfit_cards` 下标）
   int _selectedOutfitIndexForSave = 0;
@@ -44,7 +53,7 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
   ];
 
   Future<void> _analyze() async {
-    if (_images.isEmpty) {
+    if (_images.isEmpty && _wardrobeGarmentIds.isEmpty) {
       showAppSnackBar(context, '请先选择图片');
       return;
     }
@@ -60,8 +69,10 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
     if (!mounted) return;
 
     try {
-      final result = await authProvider.apiClient.recommendOutfitsFromXFiles(
-        List<dynamic>.from(_images),
+      final result = await authProvider.apiClient.recommendOutfits(
+        imageFiles:
+            _wardrobeGarmentIds.isEmpty ? List<dynamic>.from(_images) : null,
+        garmentIds: _wardrobeGarmentIds.isNotEmpty ? _wardrobeGarmentIds : null,
         numOutfits: 5,
         genderExpression: ge,
         scene: _selectedScene,
@@ -298,15 +309,95 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
                   _images.addAll(images);
                   _result = null;
                   _selectedOutfitIndexForSave = 0;
+                  if (images.isNotEmpty) {
+                    _wardrobeGarmentIds = [];
+                    _wardrobeImageUrls = [];
+                  }
                 });
                 FeatureLocalStore.clear(_cacheKey);
               },
               maxImages: 5,
               hintText: '可选多张（将合并识别后一起推荐）',
               allowMultiple: true,
+              onWardrobeTap: () async {
+                final picked =
+                    await showWardrobePicker(context, multiSelect: true);
+                if (picked != null && picked.isNotEmpty) {
+                  setState(() {
+                    _images.clear();
+                    _wardrobeGarmentIds =
+                        picked.map((r) => r.garmentId).toList();
+                    _wardrobeImageUrls =
+                        picked.map((r) => r.imageUrl ?? '').toList();
+                    _result = null;
+                    _selectedOutfitIndexForSave = 0;
+                  });
+                  FeatureLocalStore.clear(_cacheKey);
+                }
+              },
             ),
             const SizedBox(height: 10),
-            if (_images.isNotEmpty)
+            // 衣橱选择后显示预览图
+            if (_wardrobeGarmentIds.isNotEmpty && _wardrobeImageUrls.isNotEmpty)
+              SizedBox(
+                height: 100,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: _wardrobeImageUrls.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  itemBuilder: (_, i) {
+                    final raw = _wardrobeImageUrls[i];
+                    final resolved = resolveGarmentImageUrl(raw,
+                            context.read<AuthProvider>().apiClient.baseUrl) ??
+                        raw;
+                    return Container(
+                      width: 100,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: palette.divider),
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: Stack(
+                        children: [
+                          Positioned.fill(
+                            child: PlatformImage(
+                              networkUrl: resolved,
+                              fit: BoxFit.cover,
+                              placeholder: Center(
+                                child: Icon(Icons.checkroom,
+                                    color: palette.primary, size: 28),
+                              ),
+                              errorWidget: Center(
+                                child: Icon(Icons.broken_image,
+                                    color: palette.textBody, size: 28),
+                              ),
+                            ),
+                          ),
+                          if (i == 0)
+                            Positioned(
+                              left: 4,
+                              bottom: 4,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withValues(alpha: 0.55),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: const Text(
+                                  '衣橱',
+                                  style: TextStyle(
+                                      color: Colors.white, fontSize: 10),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            if (_images.isNotEmpty || _wardrobeGarmentIds.isNotEmpty)
               Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -323,7 +414,9 @@ class _OutfitRecommendScreenState extends State<OutfitRecommendScreen> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        '已选择 ${_images.length} 张图片，点击生成推荐结果即可查看搭配方案。',
+                        _wardrobeGarmentIds.isNotEmpty
+                            ? '已从衣橱选择 ${_wardrobeGarmentIds.length} 件衣物，点击生成推荐结果即可查看搭配方案。'
+                            : '已选择 ${_images.length} 张图片，点击生成推荐结果即可查看搭配方案。',
                         style: TextStyle(
                           fontSize: 12,
                           color: palette.textBody,

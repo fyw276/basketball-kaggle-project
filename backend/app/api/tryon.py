@@ -151,8 +151,18 @@ def _normalize_tryon_error(result: Dict[str, Any]) -> Tuple[int, str, str, bool]
 
 @router.post("/garment", response_model=TryOnResponse)
 async def try_on_garment(
-    garment_file: UploadFile = File(..., alias="garment_file", description="Garment product photo"),
+    garment_file: UploadFile | None = File(
+        None,
+        alias="garment_file",
+        description="Garment product photo (or use garment_id/image_url)",
+    ),
     person_file: UploadFile = File(..., alias="person_file", description="Person photo"),
+    garment_id: str | None = Form(
+        None, description="衣橱衣物 ID（与 garment_file/image_url 三选一）"
+    ),
+    image_url: str | None = Form(
+        None, description="衣物图片 URL（与 garment_file/garment_id 三选一）"
+    ),
     prompt: str = "",
     garment_category: str = Form(
         "",
@@ -183,7 +193,9 @@ async def try_on_garment(
     mode if GPU is unavailable.
     """
     # Validate garment file
-    if not garment_file.content_type or not garment_file.content_type.startswith("image/"):
+    if garment_file is not None and (
+        not garment_file.content_type or not garment_file.content_type.startswith("image/")
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="garment_file must be an image"
         )
@@ -223,20 +235,52 @@ async def try_on_garment(
 
         import hashlib
         from io import BytesIO
+        from pathlib import Path as _Path
 
         from PIL import Image
 
         # Load images
-        garment_bytes = await garment_file.read()
         person_bytes = await person_file.read()
-
-        if len(garment_bytes) == 0 or len(person_bytes) == 0:
+        if len(person_bytes) == 0:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded files cannot be empty"
+                status_code=status.HTTP_400_BAD_REQUEST, detail="person_file cannot be empty"
             )
-
-        garment_image = Image.open(BytesIO(garment_bytes)).convert("RGB")
         person_image = Image.open(BytesIO(person_bytes)).convert("RGB")
+
+        # 加载衣物图片（三选一：garment_file / garment_id / image_url）
+        if garment_file is not None:
+            garment_bytes = await garment_file.read()
+            if len(garment_bytes) == 0:
+                raise HTTPException(status_code=400, detail="garment_file cannot be empty")
+            garment_image = Image.open(BytesIO(garment_bytes)).convert("RGB")
+        elif garment_id is not None:
+            from uuid import UUID as _UUID
+
+            from app.services.garment import get_garment_by_id
+
+            try:
+                gid = _UUID(garment_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="garment_id 格式无效")
+            g = get_garment_by_id(db, gid)
+            if not g:
+                raise HTTPException(status_code=404, detail="衣物不存在")
+            if str(g.user_id) != str(current_user.user_id):
+                raise HTTPException(status_code=403, detail="无权访问该衣物")
+            gpath = _Path(g.image_path) if g.image_path else None
+            if not gpath or not gpath.is_file():
+                raise HTTPException(status_code=400, detail="衣物图片文件不存在")
+            garment_image = Image.open(gpath).convert("RGB")
+        elif image_url is not None:
+            from app.services.smart_outfit_generator import load_image_bytes
+
+            _bytes = await load_image_bytes(image_url)
+            garment_image = Image.open(BytesIO(_bytes)).convert("RGB")
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="请提供衣物图片：garment_file、garment_id 或 image_url 三选一",
+            )
 
         from app.services.bailian_tryon_client import call_bailian_tryon
         from app.services.virtual_tryon import (

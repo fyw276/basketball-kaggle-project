@@ -15,6 +15,9 @@ class TestUserProfileCreation:
     def test_create_profile_success(self, client: TestClient, auth_headers: dict):
         """Test creating a valid user profile"""
         profile_data = {
+            "gender": "女",
+            "gender_expression": 0.75,
+            "explore_cross_gender": False,
             "height": 170,
             "body_type": "偏瘦",
             "skin_tone": "冷白",
@@ -33,6 +36,8 @@ class TestUserProfileCreation:
         assert set(data["style_preference"]) == {"通勤", "简约"}
         assert data["budget_range"] == "中等"
         assert set(data["avoid_body_parts"]) == {"肩", "腰"}
+        assert data["gender"] == "女"
+        assert data["gender_expression"] == 0.75
         assert "profile_id" in data
         assert "user_id" in data
         assert "created_at" in data
@@ -185,6 +190,20 @@ class TestUserProfileValidation:
         response = client.post("/api/v1/profile", json=profile_data, headers=auth_headers)
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         assert "Invalid budget_range" in response.json()["error"]["message"]
+
+    def test_budget_display_label_is_normalized(self, client: TestClient, auth_headers: dict):
+        """Mobile display labels are accepted and stored as backend enum values."""
+        profile_data = {
+            "height": 170,
+            "body_type": "偏瘦",
+            "skin_tone": "冷白",
+            "style_preference": ["通勤"],
+            "budget_range": "中等消费",
+        }
+
+        response = client.post("/api/v1/profile", json=profile_data, headers=auth_headers)
+        assert response.status_code == status.HTTP_201_CREATED
+        assert unwrap_json(response)["budget_range"] == "中等"
 
     def test_invalid_avoid_body_parts(self, client: TestClient, auth_headers: dict):
         """Test invalid avoid body parts fails"""

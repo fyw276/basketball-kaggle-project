@@ -1,12 +1,14 @@
 """智能穿搭：天气 + 情绪 + 参考图，优先衣橱搭配。"""
 
 import io
+import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from PIL import Image
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from starlette.responses import StreamingResponse
 
 from app.api.dependencies import get_current_user
 from app.core.config import settings
@@ -231,3 +233,96 @@ async def post_generate_smart_outfit(
 
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"generate failed: {e}")
+
+
+@router.post("/generate-stream")
+async def post_generate_smart_outfit_stream(
+    body: SmartOutfitGenerateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """SSE 流式智能穿搭：每套搭配就绪后立即推送，前端可逐条渲染。
+
+    事件格式::
+
+        event: outfit
+        data: {"index": 0, "outfit": {...}}
+
+        event: done
+        data: {"total": 3}
+    """
+    if getattr(settings, "USAGE_QUOTA_ENABLED", False):
+        quota = consume_usage(
+            db,
+            current_user.user_id,
+            "smart_outfit_generate",
+            units=1,
+        )
+        if not quota.get("allowed"):
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    "message": "smart outfit quota exceeded",
+                    "error_code": "QUOTA_SMART_OUTFIT_EXCEEDED",
+                    "requires_upgrade": True,
+                    "remaining": quota.get("remaining", 0),
+                    "limit": quota.get("limit", 0),
+                },
+            )
+
+    addr = body.address or {}
+    place = (
+        addr.get("full_address") or addr.get("display_address") or body.location or body.city or ""
+    ).strip()
+
+    try:
+        result = await generate_smart_outfits(
+            db=db,
+            user_id=str(current_user.user_id),
+            image_url=body.image_url,
+            city=place,
+            weather=body.weather or "晴",
+            temperature=float(body.temperature),
+            mood=body.mood or "",
+            count=min(body.count, 5),
+            regeneration_index=body.regeneration_index,
+            gender_expression=body.gender_expression,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "参考图在服务器上找不到（若刚迁移过上传目录，请把旧 backend/uploads 合并到新 UPLOAD_DIR，"
+                "或重新上传参考图后再试）。"
+                f" 原始错误: {e}"
+            ),
+        )
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"generate failed: {e}")
+
+    outfits = result.get("outfits", [])
+    meta = {k: v for k, v in result.items() if k != "outfits"}
+
+    async def event_stream():
+        for idx, outfit in enumerate(outfits):
+            payload = json.dumps(
+                {"index": idx, "outfit": outfit, "meta": meta},
+                ensure_ascii=False,
+            )
+            yield f"event: outfit\ndata: {payload}\n\n"
+        done_payload = json.dumps({"total": len(outfits)}, ensure_ascii=False)
+        yield f"event: done\ndata: {done_payload}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

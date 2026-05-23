@@ -16,13 +16,22 @@ from sqlalchemy.orm import sessionmaker
 os.environ.setdefault("USE_TORCH", "1")
 os.environ.setdefault("USE_TF", "0")
 os.environ.setdefault("APP_LOG_ENQUEUE", "0")
+os.environ.setdefault("ENABLE_RATE_LIMIT", "false")
 
 from app.db.base import Base  # noqa: E402
 from app.db.session import get_db  # noqa: E402
 from app.main import app  # noqa: E402
 
 # Import all models to register them with Base.metadata
-from app.models import garment, outfit_collection, user, user_profile  # noqa: F401,E402
+from app.models import (  # noqa: F401,E402
+    agent_run,
+    agent_skill,
+    garment,
+    memory_snippet,
+    outfit_collection,
+    user,
+    user_profile,
+)
 from tests.api_json import unwrap_json  # noqa: E402
 
 # Use a temp file for test DB so Windows doesn't lock it between runs

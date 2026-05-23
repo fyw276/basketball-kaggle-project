@@ -13,6 +13,7 @@ import '../../../core/widgets/analysis_feature_layout.dart';
 import '../../../core/widgets/analysis_result_display.dart'
     show extractOutfitGarmentIds;
 import '../../../core/widgets/image_picker_section.dart';
+import '../../../core/widgets/wardrobe_picker_sheet.dart';
 import '../../../core/widgets/platform_image.dart';
 import '../smart_outfit/smart_outfit_cache.dart';
 import '../smart_outfit/smart_outfit_controller.dart';
@@ -153,7 +154,8 @@ class _SmartOutfitPageState extends State<_SmartOutfitPage> {
     if (ctrl.oneTapBusy || ctrl.generating) return;
     ctrl.setOneTapBusy(true);
     try {
-      if (ctrl.images.isEmpty) {
+      if (ctrl.images.isEmpty &&
+          (ctrl.imageUrl == null || ctrl.imageUrl!.isEmpty)) {
         final picked = await _pickSingleImageWithSource();
         if (picked == null) {
           if (mounted) showAppSnackBar(context, '已取消选择图片');
@@ -377,6 +379,32 @@ class _SmartOutfitPageState extends State<_SmartOutfitPage> {
                       maxImages: 1,
                       hintText: '上传 1 张主参考衣物图',
                       allowMultiple: false,
+                      selectedImageUrl: ctrl.imageUrl,
+                      selectedImageLabel: '已从衣橱选择',
+                      onSelectedImageRemoved: () {
+                        context
+                            .read<SmartOutfitController>()
+                            .replaceReferenceImages([]);
+                        setState(() => _didJumpToInitialIndex = false);
+                      },
+                      onWardrobeTap: () async {
+                        final auth = context.read<AuthProvider>();
+                        final smartOutfit =
+                            context.read<SmartOutfitController>();
+                        final picked = await showWardrobePicker(context);
+                        if (!mounted) return;
+                        if (picked != null && picked.isNotEmpty) {
+                          final url = picked.first.imageUrl;
+                          if (url != null && url.isNotEmpty) {
+                            final resolved = resolveGarmentImageUrl(
+                                url, auth.apiClient.baseUrl);
+                            if (resolved != null) {
+                              smartOutfit.setWardrobeReference(resolved);
+                              setState(() => _didJumpToInitialIndex = false);
+                            }
+                          }
+                        }
+                      },
                     ),
                     const SizedBox(height: 20),
                     Text(
@@ -564,7 +592,8 @@ class _SmartOutfitPageState extends State<_SmartOutfitPage> {
                     const SizedBox(height: 14),
                     SmartOutfitSummaryCard(
                       palette: palette,
-                      hasImage: ctrl.images.isNotEmpty,
+                      hasImage: ctrl.images.isNotEmpty ||
+                          (ctrl.imageUrl != null && ctrl.imageUrl!.isNotEmpty),
                       weatherLoading: ctrl.weatherLoading,
                       weatherFallback: ctrl.weatherFallback,
                       addressParts: ctrl.addressParts,

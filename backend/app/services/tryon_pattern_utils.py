@@ -143,9 +143,23 @@ def estimate_catvton_garment_region_from_change(
 
     pad_x = max(3, int((x1 - x0) * 0.04))
     pad_y = max(3, int((y1 - y0) * 0.03))
+    out_x0 = max(0, x0 - pad_x)
+    out_x1 = min(w, x1 + pad_x)
+    out_y0 = max(0, y0 - pad_y)
+    out_y1 = min(h, y1 + pad_y)
+
+    if not any(k in cat for k in ("bottom", "pants", "lower", "skirt", "dress")):
+        pose_w = max(1, x1_pose - x0_pose)
+        max_top_w = min(int(w * 0.62), max(int(pose_w * 2.1), int(w * 0.38)))
+        if out_x1 - out_x0 > max_top_w:
+            center = int(round(pose_cx))
+            out_x0 = max(1, center - max_top_w // 2)
+            out_x1 = min(w - 1, out_x0 + max_top_w)
+            out_x0 = max(1, out_x1 - max_top_w)
+
     return (
-        max(0, x0 - pad_x),
-        max(0, y0 - pad_y),
-        min(w, x1 + pad_x),
-        min(h, y1 + pad_y),
+        out_x0,
+        out_y0,
+        out_x1,
+        out_y1,
     )

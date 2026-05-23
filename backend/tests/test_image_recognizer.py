@@ -5,13 +5,12 @@ Key requirement: ImageRecognizer must be initialized ONCE and reused
 across all requests. It must NOT be reloaded on each request.
 """
 
-import gc
-import importlib
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
+import numpy as np  # noqa: F401
+from PIL import Image  # noqa: F401
 
-from app.ml import image_recognizer
+from app.ml import image_recognizer  # noqa: F401
 
 
 class TestImageRecognizerSingleton:
@@ -44,7 +43,8 @@ class TestImageRecognizerSingleton:
                 )
 
                 print(
-                    f"Singleton test passed: all calls return the same instance id={id(recognizer1)}"
+                    f"Singleton test passed: "
+                    f"all calls return the same instance id={id(recognizer1)}"
                 )
         finally:
             # Restore original state

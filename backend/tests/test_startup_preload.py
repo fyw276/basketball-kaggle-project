@@ -8,8 +8,6 @@ This prevents the first HTTP request from blocking while loading models.
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from app.ml import image_recognizer
 
 
@@ -54,7 +52,7 @@ class TestStartupPreload:
                     "main.py lifespan startup should call get_recognizer() to avoid "
                     "first-request blocking."
                 )
-                print(f"Startup preload test passed: get_recognizer() was called")
+                print("Startup preload test passed: get_recognizer() was called")
 
                 assert image_recognizer._recognizer_instance is not None
                 assert image_recognizer._recognizer_instance is result
