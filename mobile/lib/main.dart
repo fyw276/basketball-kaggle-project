@@ -7,6 +7,7 @@ import 'core/providers/auth_provider.dart';
 import 'core/providers/theme_provider.dart';
 import 'core/services/api_base_resolver.dart';
 import 'core/services/api_client.dart';
+import 'core/services/feature_local_store.dart';
 import 'features/auth/screens/auth_screen.dart';
 import 'features/shell/app_shell_screen.dart';
 import 'features/home/screens/app_home_screen.dart';
@@ -16,6 +17,7 @@ import 'features/analysis/screens/similarity_screen.dart';
 import 'features/analysis/screens/suitability_screen.dart';
 import 'features/profile/screens/style_settings_screen.dart';
 import 'features/agent/screens/agent_chat_screen.dart';
+import 'features/onboarding/onboarding_screen.dart';
 
 void main() {
   ErrorWidget.builder = (FlutterErrorDetails details) {
@@ -86,13 +88,16 @@ class _AppRouterHostState extends State<_AppRouterHost> {
     _router ??= GoRouter(
       initialLocation: '/auth',
       refreshListenable: auth,
-      redirect: (context, state) {
-        // Use the same auth instance captured above; avoid re-creating router
-        // on every auth notify (can cause white screens on web).
+      redirect: (context, state) async {
         final isLoggedIn = auth.isAuthenticated;
         final isAuthRoute = state.matchedLocation == '/auth';
+        final isOnboardingRoute = state.matchedLocation == '/onboarding';
         if (!isLoggedIn && !isAuthRoute) return '/auth';
-        if (isLoggedIn && isAuthRoute) return '/shell';
+        if (isLoggedIn && isAuthRoute) {
+          final done = await FeatureLocalStore.isOnboardingCompleted();
+          if (!done && !isOnboardingRoute) return '/onboarding';
+          return '/shell';
+        }
         return null;
       },
       routes: [
@@ -104,6 +109,10 @@ class _AppRouterHostState extends State<_AppRouterHost> {
         GoRoute(
           path: '/auth',
           builder: (context, state) => const AuthScreen(),
+        ),
+        GoRoute(
+          path: '/onboarding',
+          builder: (context, state) => const OnboardingScreen(),
         ),
         GoRoute(
           path: '/shell',

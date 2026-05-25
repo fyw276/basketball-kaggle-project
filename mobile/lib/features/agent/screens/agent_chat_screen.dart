@@ -2,9 +2,29 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/providers/auth_provider.dart';
+import '../../../core/providers/theme_provider.dart';
 import '../../../core/services/api_client.dart';
 import '../models/agent_step.dart';
 import '../widgets/agent_pipeline_widget.dart';
+
+/// 示例问题列表
+const _exampleQuestions = [
+  '我有这件上衣，帮我推荐裤子',
+  '明天要开会怎么穿？',
+  '这件裙子适合我的肤色吗？',
+];
+
+/// 工具名 → 友好描述映射
+const _friendlyToolNames = {
+  'get_wardrobe_items': '正在查看你的衣橱…',
+  'search_weather': '正在查询天气…',
+  'get_user_profile': '正在读取你的偏好…',
+  'analyze_similarity': '正在分析相似度…',
+  'analyze_suitability': '正在分析适合度…',
+  'recommend_outfits': '正在推荐搭配方案…',
+  'virtual_tryon': '正在生成试衣效果…',
+  'mood_recommend': '正在分析心情穿搭…',
+};
 
 /// Agent chat screen: send a message, see the pipeline execute, get the answer.
 class AgentChatScreen extends StatelessWidget {
@@ -46,6 +66,14 @@ class _AgentChatController extends ChangeNotifier {
 
   void init(ApiClient api) {
     _api = api;
+    if (messages.isEmpty) {
+      messages.add(_ChatMessage(
+        role: 'assistant',
+        content:
+            '你好！我是你的 AI 穿搭助手。你可以从「衣橱」上传衣服照片，然后问我推荐搭配、分析适合度，或者告诉我你想穿的场合，我来帮你挑选。',
+      ));
+      notifyListeners();
+    }
   }
 
   Future<void> send() async {
@@ -123,15 +151,17 @@ class _AgentChatController extends ChangeNotifier {
       case 'tool_call':
         final toolName = raw['tool_name'] as String? ?? '';
         final stepId = raw['step_id'] as int? ?? currentSteps.length;
+        final friendlyLabel = _friendlyToolNames[toolName] ?? '调用 $toolName';
         final existing = currentSteps.where((s) => s.stepId == stepId).toList();
         if (existing.isNotEmpty) {
           existing.first
             ..toolName = toolName
+            ..label = friendlyLabel
             ..status = 'running';
         } else {
           currentSteps.add(AgentStep(
             stepId: stepId,
-            label: '调用 $toolName',
+            label: friendlyLabel,
             toolName: toolName,
             status: 'running',
           ));
@@ -198,13 +228,13 @@ class _AgentChatPageState extends State<_AgentChatPage> {
   @override
   Widget build(BuildContext context) {
     final ctrl = context.watch<_AgentChatController>();
+    final palette = context.watch<ThemeProvider>().palette;
     final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(title: const Text('AI 穿搭助手')),
       body: Column(
         children: [
-          // Message list
           Expanded(
             child: ListView.builder(
               padding: const EdgeInsets.all(16),
@@ -213,13 +243,78 @@ class _AgentChatPageState extends State<_AgentChatPage> {
                 if (index < ctrl.messages.length) {
                   return _buildMessage(ctrl.messages[index], theme);
                 }
-                // Running indicator
                 return _buildRunningPipeline(ctrl, theme);
               },
             ),
           ),
-          // Input bar
-          _buildInputBar(ctrl, theme),
+          // 示例问题（仅在无消息时显示）
+          if (ctrl.messages.isEmpty && !ctrl.isRunning)
+            _buildWelcomeSection(palette, ctrl, theme),
+          // 输入框
+          _buildInputBar(ctrl, theme, palette),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWelcomeSection(
+    dynamic palette,
+    _AgentChatController ctrl,
+    ThemeData theme,
+  ) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.auto_awesome, color: palette.primary, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                '你可以这样问我',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: palette.textBody,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: _exampleQuestions.map((q) {
+              return InkWell(
+                onTap: () {
+                  ctrl.inputCtrl.text = q;
+                  ctrl.send();
+                },
+                borderRadius: BorderRadius.circular(20),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: palette.primary.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: palette.primary.withValues(alpha: 0.2),
+                    ),
+                  ),
+                  child: Text(
+                    q,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: palette.primary,
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
         ],
       ),
     );
@@ -281,7 +376,8 @@ class _AgentChatPageState extends State<_AgentChatPage> {
     );
   }
 
-  Widget _buildInputBar(_AgentChatController ctrl, ThemeData theme) {
+  Widget _buildInputBar(
+      _AgentChatController ctrl, ThemeData theme, dynamic palette) {
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
       decoration: BoxDecoration(
@@ -316,7 +412,11 @@ class _AgentChatPageState extends State<_AgentChatPage> {
                     height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : const Icon(Icons.send),
+                : Icon(Icons.send, color: palette.onPrimary),
+            style: IconButton.styleFrom(
+              backgroundColor:
+                  ctrl.isRunning ? theme.disabledColor : palette.primary,
+            ),
           ),
         ],
       ),

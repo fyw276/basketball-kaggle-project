@@ -56,4 +56,24 @@ class FeatureLocalStore {
       return null;
     }
   }
+
+  static const String _onboardingKey = 'onboarding_completed_v1';
+
+  /// 检查用户是否已完成首次引导流程。
+  static Future<bool> isOnboardingCompleted() async {
+    final p = await SharedPreferences.getInstance();
+    return p.getBool(_onboardingKey) ?? false;
+  }
+
+  /// 标记用户已完成首次引导流程。
+  static Future<void> markOnboardingCompleted() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setBool(_onboardingKey, true);
+  }
+
+  /// 重置引导状态（用于测试）。
+  static Future<void> resetOnboarding() async {
+    final p = await SharedPreferences.getInstance();
+    await p.remove(_onboardingKey);
+  }
 }
