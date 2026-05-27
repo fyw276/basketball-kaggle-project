@@ -128,6 +128,46 @@ def get_garments_by_user(
     return query.order_by(Garment.created_at.desc()).offset(skip).limit(limit).all()
 
 
+def infer_part_role_from_category(category: str) -> str:
+    """Map wardrobe categories to look part roles."""
+    normalized = (category or "").strip().lower()
+    if not normalized:
+        return "unknown"
+
+    role_keywords = {
+        "top": [
+            "top",
+            "shirt",
+            "blouse",
+            "jacket",
+            "coat",
+            "sweater",
+            "上衣",
+            "内搭",
+            "外套",
+            "上装",
+        ],
+        "bottom": ["bottom", "pants", "trousers", "skirt", "shorts", "裤", "裙", "下装"],
+        "shoes": ["shoe", "sneaker", "boot", "heel", "鞋"],
+        "bag": ["bag", "handbag", "tote", "包"],
+        "accessory": ["accessory", "jewelry", "hat", "scarf", "配饰", "饰品", "帽", "围巾"],
+    }
+    for role, keywords in role_keywords.items():
+        if any(keyword in normalized for keyword in keywords):
+            return role
+    return "unknown"
+
+
+def filter_garments_for_part_role(garments: list[Garment], part_role: str) -> list[Garment]:
+    """Return garments whose category maps to the requested look role."""
+    role = (part_role or "").strip().lower()
+    if not role or role == "unknown":
+        return []
+    return [
+        g for g in garments if infer_part_role_from_category(getattr(g, "category", "")) == role
+    ]
+
+
 def count_garments_by_user(db: Session, user_id: UUID, category: Optional[str] = None) -> int:
     """Count garments for a user"""
     query = db.query(Garment).filter(Garment.user_id == user_id)
