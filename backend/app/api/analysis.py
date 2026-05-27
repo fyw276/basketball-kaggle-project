@@ -21,6 +21,14 @@ from app.models.user import User
 from app.schemas.garment import ColorSchema
 from app.services.finetuned_infer_client import try_finetuned_infer
 from app.services.garment import get_garment_by_id, get_garments_by_user
+from app.services.look_complement import LookComplementService
+from app.services.look_parsers import (
+    HeuristicLookParser,
+    HumanLookParser,
+    HybridLookParser,
+    OmniLookParser,
+)
+from app.services.look_similarity import LookSimilarityService
 from app.services.similarity import SimilarityAnalyzer, SimilarityMatch
 from app.services.similarity_category import (
     detect_similarity_category,
@@ -31,6 +39,9 @@ from app.services.user_profile import get_profile_by_user_id
 
 logger = setup_logging()
 router = APIRouter(prefix="/analysis", tags=["Analysis"])
+
+_LOOK_SOURCE_TYPES = {"photo", "screenshot", "auto"}
+_LOOK_PARSER_STRATEGIES = {"auto", "heuristic", "human", "omni"}
 
 
 def _coerce_str_list(val) -> List[str]:
@@ -497,6 +508,219 @@ class OutfitRecommendationResponse(BaseModel):
                 "gender_expression_used": 0.5,
             }
         }
+
+
+class LookMatchedGarmentInfo(BaseModel):
+    garment_id: UUID
+    name: Optional[str] = None
+    category: str
+    image_url: str
+    similarity_score: float
+    match_reason: Optional[str] = None
+
+
+class LookPartMatchInfo(BaseModel):
+    part_role: str
+    detected_category: str
+    bbox: list[int] = Field(default_factory=list)
+    style_tags: list[str] = Field(default_factory=list)
+    main_color: Optional[dict] = None
+    similarity: float = 0.0
+    matched_garments: list[LookMatchedGarmentInfo] = Field(default_factory=list)
+
+
+class LookSummaryInfo(BaseModel):
+    dominant_style_tags: list[str] = Field(default_factory=list)
+    dominant_colors: list[str] = Field(default_factory=list)
+    scene: Optional[str] = None
+
+
+class LookSimilarityResponse(BaseModel):
+    source_type: str
+    overall_similarity: float
+    coverage_score: float
+    style_consistency: float
+    color_harmony: float
+    missing_categories: list[str] = Field(default_factory=list)
+    look_summary: LookSummaryInfo
+    parts: list[LookPartMatchInfo] = Field(default_factory=list)
+    recommended_tryon_candidates: list[dict] = Field(default_factory=list)
+
+
+class LookParseResponse(BaseModel):
+    source_type: str
+    blocks: list[dict] = Field(default_factory=list)
+    parts: list[dict] = Field(default_factory=list)
+
+
+class LookComplementResponse(BaseModel):
+    missing_categories: list[str] = Field(default_factory=list)
+    recommendations: list[dict] = Field(default_factory=list)
+
+
+def _serialize_look_parse_result(parsed) -> dict:
+    return {
+        "source_type": parsed.source_type,
+        "blocks": [
+            {
+                "block_id": block.block_id,
+                "block_type": block.block_type,
+                "bbox": block.bbox,
+                "confidence": block.confidence,
+            }
+            for block in parsed.blocks
+        ],
+        "parts": [
+            {
+                "part_role": part.part_role,
+                "bbox": part.bbox,
+                "category": part.category,
+                "style_tags": part.style_tags or [],
+                "main_color": part.main_color,
+                "feature_vector": part.feature_vector or [],
+            }
+            for part in parsed.parts
+        ],
+    }
+
+
+def _normalize_look_source_type(source_type: str) -> str:
+    normalized = (source_type or "auto").strip().lower()
+    if normalized not in _LOOK_SOURCE_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid source_type")
+    return normalized
+
+
+def _build_look_parser(parser_strategy: str):
+    strategy = (parser_strategy or "auto").strip().lower()
+    if strategy not in _LOOK_PARSER_STRATEGIES:
+        raise HTTPException(status_code=400, detail="Invalid parser_strategy")
+    if strategy == "heuristic":
+        return HeuristicLookParser()
+    if strategy == "human":
+        return HumanLookParser()
+    if strategy == "omni":
+        return OmniLookParser()
+    return HybridLookParser()
+
+
+@router.post("/look-similarity", response_model=LookSimilarityResponse)
+async def analyze_look_similarity(
+    file: Optional[UploadFile] = File(None),
+    garment_id: Optional[str] = Form(None),
+    image_url: Optional[str] = Form(None),
+    source_type: str = Form("auto"),
+    parser_strategy: str = Form("auto"),
+    scene_hint: Optional[str] = Form(None),
+    include_tryon_candidates: bool = Form(True),
+    include_accessories: bool = Form(True),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        image_bytes = await _resolve_image_bytes(
+            file=file,
+            garment_id=garment_id,
+            image_url=image_url,
+            db=db,
+            user_id=current_user.user_id,
+        )
+        wardrobe_garments = get_garments_by_user(db, current_user.user_id)
+        source_type = _normalize_look_source_type(source_type)
+        parser = _build_look_parser(parser_strategy)
+        service = LookSimilarityService(parser=parser)
+        return service.analyze_look(
+            image_bytes=image_bytes,
+            wardrobe_garments=wardrobe_garments,
+            source_type=source_type,
+            scene_hint=scene_hint,
+            include_tryon_candidates=include_tryon_candidates,
+            include_accessories=include_accessories,
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Look analysis failed: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Look analysis failed: {str(e)}")
+
+
+@router.post("/look-parse", response_model=LookParseResponse)
+async def parse_look(
+    file: Optional[UploadFile] = File(None),
+    garment_id: Optional[str] = Form(None),
+    image_url: Optional[str] = Form(None),
+    source_type: str = Form("auto"),
+    parser_strategy: str = Form("auto"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        image_bytes = await _resolve_image_bytes(
+            file=file,
+            garment_id=garment_id,
+            image_url=image_url,
+            db=db,
+            user_id=current_user.user_id,
+        )
+        source_type = _normalize_look_source_type(source_type)
+        parsed = _build_look_parser(parser_strategy).parse(image_bytes, source_type=source_type)
+        return _serialize_look_parse_result(parsed)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Look parse failed: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Look parse failed: {str(e)}")
+
+
+@router.post("/look-complement", response_model=LookComplementResponse)
+async def recommend_look_complement(
+    file: Optional[UploadFile] = File(None),
+    garment_id: Optional[str] = Form(None),
+    image_url: Optional[str] = Form(None),
+    source_type: str = Form("auto"),
+    parser_strategy: str = Form("auto"),
+    scene_hint: Optional[str] = Form(None),
+    include_accessories: bool = Form(True),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        image_bytes = await _resolve_image_bytes(
+            file=file,
+            garment_id=garment_id,
+            image_url=image_url,
+            db=db,
+            user_id=current_user.user_id,
+        )
+        wardrobe_garments = get_garments_by_user(db, current_user.user_id)
+        source_type = _normalize_look_source_type(source_type)
+        parser = _build_look_parser(parser_strategy)
+        similarity = LookSimilarityService(parser=parser).analyze_look(
+            image_bytes=image_bytes,
+            wardrobe_garments=wardrobe_garments,
+            source_type=source_type,
+            scene_hint=scene_hint,
+            include_tryon_candidates=False,
+            include_accessories=include_accessories,
+        )
+        recommendations = LookComplementService().recommend_missing_items(
+            similarity["parts"],
+            wardrobe_garments,
+            scene_hint=scene_hint,
+            include_accessories=include_accessories,
+        )
+        return {
+            "missing_categories": similarity["missing_categories"],
+            "recommendations": recommendations,
+        }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Look complement failed: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Look complement failed: {str(e)}")
 
 
 @router.post("/outfits", response_model=OutfitRecommendationResponse)

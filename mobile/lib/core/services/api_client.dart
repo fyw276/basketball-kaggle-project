@@ -609,6 +609,129 @@ class ApiClient {
   Future<Map<String, dynamic>> analyzeSimilarityFromXFile(dynamic imageFile) =>
       analyzeSimilarity(imageFile: imageFile);
 
+  Future<Map<String, dynamic>> analyzeLookSimilarityFromXFile(
+    dynamic imageFile, {
+    String sourceType = 'photo',
+    String parserStrategy = 'auto',
+    String? sceneHint,
+    bool includeTryonCandidates = true,
+    bool includeAccessories = true,
+  }) async {
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/analysis/look-similarity'),
+      );
+      request.headers.addAll(_authHeaders);
+
+      final part = await _multipartImage('file', imageFile);
+      if (part == null) return {'error': 'Unsupported image type'};
+      request.files.add(part);
+      request.fields['source_type'] = sourceType;
+      request.fields['parser_strategy'] = parserStrategy;
+      request.fields['include_tryon_candidates'] =
+          includeTryonCandidates.toString();
+      request.fields['include_accessories'] = includeAccessories.toString();
+      if (sceneHint != null && sceneHint.trim().isNotEmpty) {
+        request.fields['scene_hint'] = sceneHint.trim();
+      }
+
+      final streamedResponse =
+          await request.send().timeout(const Duration(seconds: 180));
+      final response = await http.Response.fromStream(streamedResponse);
+      if (response.statusCode == 200) {
+        final decoded = json.decode(response.body);
+        final unwrapped = unwrapApiResponseEnvelope(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
+      }
+      final err = parseFastApiErrorBody(response.body);
+      return {
+        'error':
+            err ?? 'Look analysis failed with status: ${response.statusCode}'
+      };
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
+  Future<Map<String, dynamic>> parseLookFromXFile(
+    dynamic imageFile, {
+    String sourceType = 'photo',
+    String parserStrategy = 'auto',
+  }) async {
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/analysis/look-parse'),
+      );
+      request.headers.addAll(_authHeaders);
+
+      final part = await _multipartImage('file', imageFile);
+      if (part == null) return {'error': 'Unsupported image type'};
+      request.files.add(part);
+      request.fields['source_type'] = sourceType;
+      request.fields['parser_strategy'] = parserStrategy;
+
+      final streamedResponse =
+          await request.send().timeout(const Duration(seconds: 120));
+      final response = await http.Response.fromStream(streamedResponse);
+      if (response.statusCode == 200) {
+        final decoded = json.decode(response.body);
+        final unwrapped = unwrapApiResponseEnvelope(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
+      }
+      final err = parseFastApiErrorBody(response.body);
+      return {
+        'error': err ?? 'Look parse failed with status: ${response.statusCode}'
+      };
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
+  Future<Map<String, dynamic>> recommendLookComplementFromXFile(
+    dynamic imageFile, {
+    String sourceType = 'photo',
+    String parserStrategy = 'auto',
+    String? sceneHint,
+  }) async {
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/analysis/look-complement'),
+      );
+      request.headers.addAll(_authHeaders);
+
+      final part = await _multipartImage('file', imageFile);
+      if (part == null) return {'error': 'Unsupported image type'};
+      request.files.add(part);
+      request.fields['source_type'] = sourceType;
+      request.fields['parser_strategy'] = parserStrategy;
+      if (sceneHint != null && sceneHint.trim().isNotEmpty) {
+        request.fields['scene_hint'] = sceneHint.trim();
+      }
+
+      final streamedResponse =
+          await request.send().timeout(const Duration(seconds: 180));
+      final response = await http.Response.fromStream(streamedResponse);
+      if (response.statusCode == 200) {
+        final decoded = json.decode(response.body);
+        final unwrapped = unwrapApiResponseEnvelope(decoded);
+        if (unwrapped is Map) return Map<String, dynamic>.from(unwrapped);
+        return {'data': unwrapped};
+      }
+      final err = parseFastApiErrorBody(response.body);
+      return {
+        'error':
+            err ?? 'Look complement failed with status: ${response.statusCode}'
+      };
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
   // ─── 分析：穿搭推荐 ─────────────────────────────────────────────
   // 后端路由: POST /analysis/outfits
   // 后端字段: file=单图（兼容）或 files=多图（字段名 files，可重复）, num_outfits, gender_expression?, scene?
