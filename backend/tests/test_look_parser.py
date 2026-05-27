@@ -5,7 +5,12 @@ import numpy as np
 from PIL import Image
 
 from app.services.look_parser import LookParser
-from app.services.look_parsers import HeuristicLookParser, HumanLookParser, HybridLookParser
+from app.services.look_parsers import (
+    HeuristicLookParser,
+    HumanLookParser,
+    HybridLookParser,
+    OmniLookParser,
+)
 
 
 def _image_bytes(width=320, height=480):
@@ -142,3 +147,50 @@ def test_human_parser_uses_parsing_map_for_garment_parts():
     roles = {part.part_role for part in result.parts}
 
     assert {"full-look", "top", "bottom", "dress", "outerwear"}.issubset(roles)
+
+
+def test_omni_parser_adapter_returns_supported_blocks_and_parts():
+    def adapter(image_bytes):
+        return {
+            "blocks": [
+                {
+                    "id": "look",
+                    "type": "person_look",
+                    "bbox": [10, 20, 100, 220],
+                    "confidence": 0.9,
+                },
+                {
+                    "id": "card",
+                    "type": "product_card",
+                    "bbox": [120, 20, 220, 180],
+                    "confidence": 0.8,
+                },
+                {
+                    "id": "garment",
+                    "type": "garment_image",
+                    "bbox": [130, 40, 200, 160],
+                    "confidence": 0.85,
+                },
+                {
+                    "id": "ignored",
+                    "type": "text",
+                    "bbox": [0, 0, 10, 10],
+                },
+            ]
+        }
+
+    result = OmniLookParser(adapter=adapter).parse_screenshot(_image_bytes(width=240, height=320))
+    block_types = {block.block_type for block in result.blocks}
+    roles = {part.part_role for part in result.parts}
+
+    assert result.source_type == "screenshot"
+    assert block_types == {"person_look", "product_card", "garment_image"}
+    assert {"full-look", "product-card", "garment-image"}.issubset(roles)
+
+
+def test_omni_parser_unavailable_falls_back_to_heuristic():
+    result = OmniLookParser().parse_screenshot(_image_bytes())
+    roles = {part.part_role for part in result.parts}
+
+    assert result.source_type == "screenshot"
+    assert {"full-look", "top", "bottom"}.issubset(roles)

@@ -29,6 +29,10 @@ class LookParseResult:
     parts: list[LookPart]
 
 
+class ParserUnavailable(RuntimeError):
+    pass
+
+
 class BaseLookParser(ABC):
     def parse(self, image_bytes: bytes, source_type: str = "photo") -> LookParseResult:
         if source_type == "screenshot":

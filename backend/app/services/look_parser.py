@@ -7,6 +7,7 @@ from app.services.look_parsers import (
     LookParseResult,
     LookPart,
     OmniLookParser,
+    ParserUnavailable,
 )
 
 LookParser = HybridLookParser
@@ -21,4 +22,5 @@ __all__ = [
     "LookParser",
     "LookPart",
     "OmniLookParser",
+    "ParserUnavailable",
 ]
