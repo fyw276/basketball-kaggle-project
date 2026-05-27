@@ -4,7 +4,7 @@ from app.services.look_parsers.human_parser import HumanLookParser
 from app.services.look_parsers.hybrid_parser import HybridLookParser
 from app.services.look_parsers.omni_parser import OmniLookParser
 
-LookParser = HeuristicLookParser
+LookParser = HybridLookParser
 
 __all__ = [
     "BaseLookParser",

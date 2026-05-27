@@ -9,7 +9,7 @@ from app.services.look_parsers import (
     OmniLookParser,
 )
 
-LookParser = HeuristicLookParser
+LookParser = HybridLookParser
 
 __all__ = [
     "BaseLookParser",

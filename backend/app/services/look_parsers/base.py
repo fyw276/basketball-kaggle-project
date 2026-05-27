@@ -33,6 +33,11 @@ class BaseLookParser(ABC):
     def parse(self, image_bytes: bytes, source_type: str = "photo") -> LookParseResult:
         if source_type == "screenshot":
             return self.parse_screenshot(image_bytes)
+        if source_type == "auto":
+            return self.parse_auto(image_bytes)
+        return self.parse_photo(image_bytes)
+
+    def parse_auto(self, image_bytes: bytes) -> LookParseResult:
         return self.parse_photo(image_bytes)
 
     @abstractmethod
