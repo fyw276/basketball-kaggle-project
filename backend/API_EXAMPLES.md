@@ -568,7 +568,7 @@ curl -X POST "http://127.0.0.1:8010/api/v1/wardrobe/split-outfit" \
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/api/v1/smart-outfit/weather` | GET | 查询参数：`latitude`、`longitude` |
-| `/api/v1/smart-outfit/weather-by-city` | GET | 查询参数：`name`（城市名，如 `上海`） |
+| `/api/v1/smart-outfit/weather-by-city?name=上海` | GET | 查询参数：`name`（城市名，推荐）；`city` 仅为旧客户端兼容参数 |
 | `/api/v1/smart-outfit/upload-reference` | POST | `multipart/form-data`，字段 `file`：参考衣物图 |
 | `/api/v1/smart-outfit/generate` | POST | JSON 体，见下方 |
 
@@ -729,6 +729,8 @@ curl -G "http://127.0.0.1:8010/api/v1/smart-outfit/weather-by-city" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   --data-urlencode "name=上海"
 ```
+
+推荐使用 `name` 参数；后端仍兼容旧客户端的 `city=上海`。
 
 ### 上传参考图 `POST /api/v1/smart-outfit/upload-reference`
 

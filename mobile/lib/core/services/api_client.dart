@@ -157,7 +157,7 @@ class ApiClient {
     }
   }
 
-  Future<dynamic> getList(String path) async {
+  Future<dynamic> getList(String path, {bool throwOnError = false}) async {
     lastGetListError = null;
     try {
       final response = await http.get(
@@ -175,9 +175,17 @@ class ApiClient {
       }
       lastGetListError = parseFastApiErrorBody(response.body) ??
           'Request failed with status: ${response.statusCode}';
+      if (throwOnError) {
+        throw ApiClientException(lastGetListError!);
+      }
       return [];
+    } on ApiClientException {
+      rethrow;
     } catch (e) {
       lastGetListError = e.toString();
+      if (throwOnError) {
+        throw ApiClientException(lastGetListError!);
+      }
       return [];
     }
   }
@@ -480,7 +488,8 @@ class ApiClient {
     if (style != null) params.add('style=$style');
     final query = '?${params.join('&')}';
 
-    final raw = await getList('/wardrobe/simple/garments$query');
+    final raw =
+        await getList('/wardrobe/simple/garments$query', throwOnError: true);
 
     if (raw is Map) {
       final items = raw['items'];
@@ -1749,4 +1758,13 @@ class ApiClient {
       client.close();
     }
   }
+}
+
+class ApiClientException implements Exception {
+  final String message;
+
+  const ApiClientException(this.message);
+
+  @override
+  String toString() => message;
 }

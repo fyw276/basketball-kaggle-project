@@ -39,6 +39,7 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
   bool _editMode = false;
   bool _repairingImages = false;
   String _lastRepairSummary = '';
+  String? _loadError;
 
   /// 仅展示「疑似坏链」单品（空 URL 或非本服务 /uploads/ 路径）。
   bool _onlySuspectBroken = false;
@@ -58,12 +59,16 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
   }
 
   Future<void> _refresh() async {
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
     final auth = context.read<AuthProvider>();
     try {
       _items = await auth.apiClient.getGarments();
-    } catch (_) {
+    } catch (e) {
       _items = [];
+      _loadError = userFacingApiError(e);
     }
     if (mounted) setState(() => _loading = false);
   }
@@ -776,7 +781,7 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
       } else {
         showAppSnackBar(
           context,
-          '未能写入衣橱（服务端未返回 garment_id）。请热重载/更新应用后重试；若仍失败请查看后端日志。',
+          '保存失败，请更新应用或稍后重试。',
         );
       }
     } catch (e) {
@@ -1037,57 +1042,98 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                           ? Center(
                               child: CircularProgressIndicator(
                                   color: palette.primary))
-                          : filtered.isEmpty
+                          : _loadError != null
                               ? Center(
                                   child: Column(
                                     mainAxisAlignment: MainAxisAlignment.center,
                                     children: [
-                                      Icon(Icons.checkroom_outlined,
+                                      Icon(Icons.error_outline,
                                           size: 52, color: palette.textBody),
                                       const SizedBox(height: 12),
                                       Text(
-                                        _items.isEmpty
-                                            ? '衣橱还是空的，点击右下角添加或整套上传'
-                                            : _onlySuspectBroken
-                                                ? (_suspectBrokenCount == 0
-                                                    ? '未发现可疑坏链（空图链或非 /uploads/ 路径）'
-                                                    : '当前分类下没有可疑坏链，试试「全部」')
-                                                : '未找到相关衣物，换个关键词试试',
-                                        textAlign: TextAlign.center,
+                                        '加载失败',
                                         style: TextStyle(
+                                          color: palette.textTitle,
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 24),
+                                        child: Text(
+                                          _loadError!,
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(
                                             color: palette.textBody,
-                                            fontSize: 14),
+                                            fontSize: 13,
+                                            height: 1.35,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 14),
+                                      FilledButton.icon(
+                                        onPressed: _refresh,
+                                        icon: const Icon(Icons.refresh),
+                                        label: const Text('重试'),
                                       ),
                                     ],
                                   ),
                                 )
-                              : GridView.builder(
-                                  padding: const EdgeInsets.all(12),
-                                  gridDelegate:
-                                      const SliverGridDelegateWithFixedCrossAxisCount(
-                                    crossAxisCount: 4,
-                                    mainAxisSpacing: 8,
-                                    crossAxisSpacing: 8,
-                                    childAspectRatio: 1,
-                                  ),
-                                  itemCount: filtered.length,
-                                  itemBuilder: (ctx, i) {
-                                    final g = filtered[i];
-                                    final id = _gid(g);
-                                    return _GarmentCard(
-                                      key: ValueKey('wardrobe_$id'),
-                                      g: g,
-                                      palette: palette,
-                                      apiBase: auth.apiClient.baseUrl,
-                                      editMode: _editMode,
-                                      onDragStarted: () =>
-                                          setState(() => _editMode = true),
-                                      onDragEnd: () =>
-                                          setState(() => _editMode = false),
-                                      onDelete: _delete,
-                                    );
-                                  },
-                                ),
+                              : filtered.isEmpty
+                                  ? Center(
+                                      child: Column(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        children: [
+                                          Icon(Icons.checkroom_outlined,
+                                              size: 52,
+                                              color: palette.textBody),
+                                          const SizedBox(height: 12),
+                                          Text(
+                                            _items.isEmpty
+                                                ? '衣橱还是空的，点击右下角添加或整套上传'
+                                                : _onlySuspectBroken
+                                                    ? (_suspectBrokenCount == 0
+                                                        ? '未发现可疑坏链（空图链或非 /uploads/ 路径）'
+                                                        : '当前分类下没有可疑坏链，试试「全部」')
+                                                    : '未找到相关衣物，换个关键词试试',
+                                            textAlign: TextAlign.center,
+                                            style: TextStyle(
+                                                color: palette.textBody,
+                                                fontSize: 14),
+                                          ),
+                                        ],
+                                      ),
+                                    )
+                                  : GridView.builder(
+                                      padding: const EdgeInsets.all(12),
+                                      gridDelegate:
+                                          const SliverGridDelegateWithFixedCrossAxisCount(
+                                        crossAxisCount: 4,
+                                        mainAxisSpacing: 8,
+                                        crossAxisSpacing: 8,
+                                        childAspectRatio: 1,
+                                      ),
+                                      itemCount: filtered.length,
+                                      itemBuilder: (ctx, i) {
+                                        final g = filtered[i];
+                                        final id = _gid(g);
+                                        return _GarmentCard(
+                                          key: ValueKey('wardrobe_$id'),
+                                          g: g,
+                                          palette: palette,
+                                          apiBase: auth.apiClient.baseUrl,
+                                          editMode: _editMode,
+                                          onDragStarted: () =>
+                                              setState(() => _editMode = true),
+                                          onDragEnd: () =>
+                                              setState(() => _editMode = false),
+                                          onDelete: _delete,
+                                        );
+                                      },
+                                    ),
                       if (_editMode)
                         Positioned(
                           bottom: 0,

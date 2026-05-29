@@ -94,12 +94,16 @@ async def get_weather_context(
 
 @router.get("/weather-by-city")
 async def get_weather_by_city(
-    name: str = Query(..., description="城市名，如 上海"),
+    name: Optional[str] = Query(None, description="城市名，如 上海；推荐参数"),
+    city: Optional[str] = Query(None, description="兼容旧参数；新调用请使用 name"),
     current_user: User = Depends(get_current_user),
 ):
     """按城市名查询天气（用于手动切换城市）。"""
     try:
-        res = await fetch_weather_by_city_name(name)
+        city_name = (name or city or "").strip()
+        if not city_name:
+            raise HTTPException(status_code=422, detail="name is required")
+        res = await fetch_weather_by_city_name(city_name)
         if not res:
             record_dependency_outcome("weather", "failure")
             raise HTTPException(status_code=404, detail="未找到该地区天气，请重试或换个地名")

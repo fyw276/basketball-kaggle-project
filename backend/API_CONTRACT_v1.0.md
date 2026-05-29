@@ -345,9 +345,9 @@
 - **查询参数**: `latitude`, `longitude`
 
 ##### 5.3.2 天气（城市名）
-- **端点**: `GET /api/v1/smart-outfit/weather-by-city`
+- **端点**: `GET /api/v1/smart-outfit/weather-by-city?name=上海`
 - **认证**: 必需
-- **查询参数**: `name`（城市名）
+- **查询参数**: `name`（城市名，推荐）；`city` 仅为旧客户端兼容参数
 
 ##### 5.3.3 上传参考图
 - **端点**: `POST /api/v1/smart-outfit/upload-reference`

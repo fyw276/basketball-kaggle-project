@@ -5,7 +5,7 @@
 ## 功能概览
 
 - **参考图**：上传 → `POST /smart-outfit/upload-reference` → 得到 `image_url`。
-- **天气与地址**：GPS 经纬度 → `GET /smart-outfit/weather`；或手动选城 → `GET /smart-outfit/weather-by-city`。展示字段使用服务端逆地理/天气，**不在 UI 展示裸经纬度**。
+- **天气与地址**：GPS 经纬度 → `GET /smart-outfit/weather`；或手动选城 → `GET /smart-outfit/weather-by-city?name=上海`。城市天气推荐使用 `name` 参数，后端兼容旧的 `city` 参数。展示字段使用服务端逆地理/天气，**不在 UI 展示裸经纬度**。
 - **生成**：`POST /smart-outfit/generate`，JSON 含 `image_url`、`location`、`city`、`weather`、`temperature`、`mood`、`count`、`regeneration_index`、可选 `gender_expression`。
 - **结果**：`PageView` 展示多套方案；Web 上支持鼠标横向拖拽翻页；布局随窗口宽度/高度自适应。
 

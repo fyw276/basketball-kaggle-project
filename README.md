@@ -243,6 +243,15 @@ python -m mcp.server  # 需要先设置 OUTFIT_API_BASE_URL / OUTFIT_API_TOKEN
 | `GET` | `/api/v2/tryon/capabilities` | 能力开关、默认模式、支持品类 |
 | `GET` | `/api/v2/tryon/model-status` | CatVTON 等引擎就绪状态诊断 |
 
+## 分析与天气 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/v1/analysis/similarity` | 单品图片与衣橱做重复购买相似度匹配 |
+| `POST` | `/api/v1/analysis/look-similarity` | 整身 Look 拆分为部件，返回衣橱匹配、缺失品类和试衣候选 |
+| `GET` | `/api/v1/smart-outfit/weather` | 经纬度天气上下文，包含 `weather_source` 与真实 `fallback` 标记 |
+| `GET` | `/api/v1/smart-outfit/weather-by-city?name=上海` | 城市天气上下文；推荐查询参数为 `name`，后端兼容旧参数 `city` |
+
 ## Agent 与观测 API
 
 | 方法 | 路径 | 说明 |
