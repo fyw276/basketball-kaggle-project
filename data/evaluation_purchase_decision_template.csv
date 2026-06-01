@@ -1,0 +1,2 @@
+case_id,image_name,user_profile,scene,budget,human_decision,system_decision,correct,elapsed_ms,reason
+case_001,shirt_a.jpg,casual_student,campus,200,recommend,recommend,1,1800,basic item with high reuse value

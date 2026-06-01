@@ -1,0 +1,2 @@
+run_id,recognition_ms,similarity_ms,purchase_decision_ms,end_to_end_ms,notes
+run_001,820,430,1800,3050,example row

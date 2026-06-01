@@ -1,0 +1,2 @@
+image_name,true_category,pred_category,category_correct,true_color,pred_color,color_correct,true_style,pred_style,style_correct,elapsed_ms,notes
+sample_001.jpg,shirt,shirt,1,blue,blue,1,casual,casual,1,820,example row

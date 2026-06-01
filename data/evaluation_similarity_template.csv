@@ -1,0 +1,2 @@
+pair_id,query_image,wardrobe_image,human_label,similarity_score,system_label,correct,notes
+pair_001,shirt_a.jpg,shirt_b.jpg,duplicate,0.84,duplicate,1,example row
