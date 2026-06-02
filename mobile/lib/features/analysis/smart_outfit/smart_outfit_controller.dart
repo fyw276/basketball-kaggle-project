@@ -87,6 +87,10 @@ class SmartOutfitController extends ChangeNotifier {
   List<XFile> get images => _images;
 
   String? imageUrl;
+  String? referenceCategory;
+  String? referenceColorName;
+  Map<String, dynamic> referenceRecognition = const {};
+  bool referenceUploading = false;
   List<Map<String, dynamic>> outfits = [];
   int regenIndex = 0;
   bool generating = false;
@@ -480,18 +484,51 @@ class SmartOutfitController extends ChangeNotifier {
     _images.clear();
     _images.addAll(next);
     imageUrl = null;
+    referenceCategory = null;
+    referenceColorName = null;
+    referenceRecognition = const {};
     outfits = [];
     regenIndex = 0;
     notifyListeners();
   }
 
   /// 从衣橱直接设置参考图 URL，跳过上传步骤。
-  void setWardrobeReference(String url) {
+  void setWardrobeReference(String url, {String? category}) {
     _images.clear();
     imageUrl = url;
+    referenceCategory = category;
+    referenceColorName = null;
+    referenceRecognition = {
+      if (category != null && category.isNotEmpty) 'category': category,
+      'category_source': 'wardrobe',
+    };
     outfits = [];
     regenIndex = 0;
     notifyListeners();
+  }
+
+  void setReferenceCategory(String value) {
+    referenceCategory = value.trim().isEmpty ? null : value.trim();
+    notifyListeners();
+  }
+
+  void setReferenceColorName(String value) {
+    referenceColorName = value.trim().isEmpty ? null : value.trim();
+    notifyListeners();
+  }
+
+  void _applyReferenceUploadResult(Map<String, dynamic> r) {
+    final category = r['category']?.toString().trim();
+    final mainColor = r['main_color'];
+    final colorName =
+        mainColor is Map ? mainColor['name']?.toString().trim() : null;
+    referenceRecognition = Map<String, dynamic>.from(r);
+    if (category != null && category.isNotEmpty) {
+      referenceCategory = category;
+    }
+    if (colorName != null && colorName.isNotEmpty) {
+      referenceColorName = colorName;
+    }
   }
 
   Future<void> ensureUploaded(ApiClient api) async {
@@ -508,7 +545,20 @@ class SmartOutfitController extends ChangeNotifier {
       throw Exception('无 image_url');
     }
     imageUrl = url;
+    _applyReferenceUploadResult(r);
     notifyListeners();
+  }
+
+  Future<void> prepareReferenceRecognition(ApiClient api) async {
+    if (_images.isEmpty || (imageUrl != null && imageUrl!.isNotEmpty)) return;
+    referenceUploading = true;
+    notifyListeners();
+    try {
+      await ensureUploaded(api);
+    } finally {
+      referenceUploading = false;
+      notifyListeners();
+    }
   }
 
   Future<SmartOutfitGenerateResult> generateSmartOutfit({
@@ -547,6 +597,8 @@ class SmartOutfitController extends ChangeNotifier {
         count: 3,
         regenerationIndex: regenIndex,
         genderExpression: genderExpression,
+        referenceCategory: referenceCategory,
+        referenceColorName: referenceColorName,
       );
       if (r['error'] != null) {
         final err = r['error'];

@@ -362,6 +362,7 @@ class OutfitRecommender3D:
         user_gender_expression: Optional[float] = None,  # 仅对女性生效
         explore_cross_gender: bool = False,  # 仅对男性生效
         feedback_rerank: Optional["FeedbackRerankContext"] = None,
+        fixed_reference_category: Optional[str] = None,
     ) -> List[OutfitCard]:
         """
         Generate outfit recommendations for a target garment (体型+场景感知 + 无性别推荐)
@@ -398,6 +399,9 @@ class OutfitRecommender3D:
                 tags = []
             if raw_target_cat and raw_target_cat not in tags:
                 target_garment.style_tags = [raw_target_cat] + list(tags)
+        fixed_slot_cat = normalize_category_for_outfit_templates(
+            fixed_reference_category or target_garment.category
+        )
 
         # Step 0: 无性别推荐系统 - 性别区分召回（修正版）
         filtered_wardrobe = self._filter_by_gender(
@@ -444,6 +448,8 @@ class OutfitRecommender3D:
             weight = template["weight"]
 
             if target_garment.category not in cats:
+                continue
+            if self._template_conflicts_with_fixed_reference(cats, fixed_slot_cat):
                 continue
 
             combos = self._generate_for_template(
@@ -734,7 +740,28 @@ class OutfitRecommender3D:
             combinations = combinations[:30]
 
         # Always include target
-        return [combo for combo in combinations if target in combo]
+        return [
+            combo
+            for combo in combinations
+            if target in combo and not self._has_conflicting_bottoms(combo)
+        ]
+
+    @staticmethod
+    def _template_conflicts_with_fixed_reference(
+        categories: List[str],
+        fixed_reference_category: str,
+    ) -> bool:
+        cats = set(categories)
+        if fixed_reference_category == "裤子" and "裙子" in cats:
+            return True
+        if fixed_reference_category == "裙子" and "裤子" in cats:
+            return True
+        return False
+
+    @staticmethod
+    def _has_conflicting_bottoms(garments: List[Garment]) -> bool:
+        cats = {getattr(g, "category", None) for g in garments}
+        return "裤子" in cats and "裙子" in cats
 
     # ─── 4D Scoring ─────────────────────────────────────────────────────────────
 

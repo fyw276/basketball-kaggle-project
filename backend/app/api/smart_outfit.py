@@ -19,7 +19,11 @@ from app.observability.dependency_metrics import (
     record_weather_exception,
     record_weather_success_payload,
 )
-from app.services.smart_outfit_generator import generate_smart_outfits, upload_reference_image
+from app.services.smart_outfit_generator import (
+    build_reference_recognition_summary,
+    generate_smart_outfits,
+    upload_reference_image,
+)
 from app.services.subscription_billing import consume_usage
 from app.services.weather_service import fetch_weather_by_city_name, fetch_weather_lat_lon
 
@@ -41,6 +45,8 @@ class SmartOutfitGenerateRequest(BaseModel):
     gender_expression: Optional[float] = Field(
         None, ge=0.0, le=1.0, description="可选，覆盖画像中的性别表达指数（女）"
     )
+    reference_category: Optional[str] = Field(None, description="用户确认的参考图品类")
+    reference_color_name: Optional[str] = Field(None, description="用户确认的参考图主色")
 
 
 class SmartOutfitGenerateResponse(BaseModel):
@@ -52,6 +58,8 @@ class SmartOutfitGenerateResponse(BaseModel):
     mood: str = ""
     message: str = "ok"
     weather_fallback: bool = False
+    reference_recognition: Dict[str, Any] = Field(default_factory=dict)
+    reference_low_confidence: bool = False
 
 
 @router.get("/weather")
@@ -156,7 +164,20 @@ async def post_upload_reference(
             raise HTTPException(status_code=400, detail="请上传图片文件")
     name = (file.filename or "ref.jpg").strip() or "ref.jpg"
     url = await upload_reference_image(str(current_user.user_id), raw, name)
-    return {"image_url": url}
+    try:
+        recognition = build_reference_recognition_summary(raw)
+    except Exception:
+        recognition = {}
+    return {
+        "image_url": url,
+        "category": recognition.get("category", ""),
+        "recognized_category": recognition.get("recognized_category", ""),
+        "category_confidence": recognition.get("category_confidence", 0.0),
+        "reference_low_confidence": recognition.get("reference_low_confidence", False),
+        "main_color": recognition.get("main_color", {}),
+        "color_confidence": recognition.get("color_confidence"),
+        "style_tags": recognition.get("style_tags", []),
+    }
 
 
 @router.post("/generate", response_model=SmartOutfitGenerateResponse)
@@ -208,6 +229,8 @@ async def post_generate_smart_outfit(
             count=min(body.count, 5),
             regeneration_index=body.regeneration_index,
             gender_expression=body.gender_expression,
+            reference_category=body.reference_category,
+            reference_color_name=body.reference_color_name,
         )
         return SmartOutfitGenerateResponse(
             **out,
@@ -291,6 +314,8 @@ async def post_generate_smart_outfit_stream(
             count=min(body.count, 5),
             regeneration_index=body.regeneration_index,
             gender_expression=body.gender_expression,
+            reference_category=body.reference_category,
+            reference_color_name=body.reference_color_name,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

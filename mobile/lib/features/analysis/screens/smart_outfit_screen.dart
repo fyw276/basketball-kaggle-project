@@ -202,6 +202,108 @@ class _SmartOutfitPageState extends State<_SmartOutfitPage> {
     return picker.pickImage(source: source);
   }
 
+  Future<void> _prepareReferenceRecognition() async {
+    final auth = context.read<AuthProvider>();
+    final ctrl = context.read<SmartOutfitController>();
+    if (!auth.isAuthenticated) return;
+    try {
+      await ctrl.prepareReferenceRecognition(auth.apiClient);
+    } catch (e) {
+      if (!mounted) return;
+      showAppSnackBar(context, '参考图识别失败：${userFacingApiError(e)}');
+    }
+  }
+
+  Widget _buildReferenceConfirmation(
+    SmartOutfitController ctrl,
+    dynamic palette,
+  ) {
+    final hasReference = ctrl.images.isNotEmpty ||
+        (ctrl.imageUrl != null && ctrl.imageUrl!.isNotEmpty);
+    if (!hasReference) return const SizedBox.shrink();
+
+    const categories = ['上衣', '裤子', '裙子', '外套', '鞋', '包'];
+    const colors = ['白', '黑', '粉', '蓝', '灰', '棕', '米色', '红', '绿'];
+    final recognition = ctrl.referenceRecognition;
+    final confidence = recognition['category_confidence'];
+    final confidenceText =
+        confidence is num ? ' ${(confidence * 100).toStringAsFixed(0)}%' : '';
+    final lowConfidence = recognition['reference_low_confidence'] == true;
+
+    return Card(
+      elevation: 1,
+      color: palette.cardBg,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: BorderSide(color: palette.divider),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.fact_check_outlined,
+                    color: palette.primary, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    ctrl.referenceUploading ? '正在识别参考图…' : '确认参考图',
+                    style: TextStyle(
+                      color: palette.textTitle,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                if (confidenceText.isNotEmpty)
+                  Text(
+                    confidenceText,
+                    style: TextStyle(fontSize: 12, color: palette.textBody),
+                  ),
+              ],
+            ),
+            if (lowConfidence) ...[
+              const SizedBox(height: 6),
+              Text(
+                '识别置信度偏低，请确认品类后再生成。',
+                style: TextStyle(fontSize: 12, color: palette.textBody),
+              ),
+            ],
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: categories
+                  .map(
+                    (cat) => ChoiceChip(
+                      label: Text(cat),
+                      selected: ctrl.referenceCategory == cat,
+                      onSelected: (_) => ctrl.setReferenceCategory(cat),
+                    ),
+                  )
+                  .toList(),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: colors
+                  .map(
+                    (color) => ChoiceChip(
+                      label: Text(color),
+                      selected: ctrl.referenceColorName == color,
+                      onSelected: (_) => ctrl.setReferenceColorName(color),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _maybeJumpToInitialIndex() {
     final outfits = context.read<SmartOutfitController>().outfits;
     if (_didJumpToInitialIndex) return;
@@ -334,7 +436,7 @@ class _SmartOutfitPageState extends State<_SmartOutfitPage> {
                             ),
                           ),
                           const SizedBox(height: 10),
-                          Wrap(
+                          const Wrap(
                             spacing: 8,
                             runSpacing: 8,
                             children: [
@@ -375,6 +477,9 @@ class _SmartOutfitPageState extends State<_SmartOutfitPage> {
                             .read<SmartOutfitController>()
                             .replaceReferenceImages(list);
                         setState(() => _didJumpToInitialIndex = false);
+                        if (list.isNotEmpty) {
+                          _prepareReferenceRecognition();
+                        }
                       },
                       maxImages: 1,
                       hintText: '上传 1 张主参考衣物图',
@@ -399,13 +504,18 @@ class _SmartOutfitPageState extends State<_SmartOutfitPage> {
                             final resolved = resolveGarmentImageUrl(
                                 url, auth.apiClient.baseUrl);
                             if (resolved != null) {
-                              smartOutfit.setWardrobeReference(resolved);
+                              smartOutfit.setWardrobeReference(
+                                resolved,
+                                category: picked.first.category,
+                              );
                               setState(() => _didJumpToInitialIndex = false);
                             }
                           }
                         }
                       },
                     ),
+                    const SizedBox(height: 10),
+                    _buildReferenceConfirmation(ctrl, palette),
                     const SizedBox(height: 20),
                     Text(
                       '定位与天气',

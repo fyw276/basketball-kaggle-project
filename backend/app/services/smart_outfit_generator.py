@@ -23,7 +23,10 @@ from app.observability.dependency_metrics import (
 from app.schemas.garment import ColorSchema
 from app.services.garment import get_garments_by_user
 from app.services.llm_cache import get_llm_cache
-from app.services.outfit_recommender_3d import OutfitRecommender3D
+from app.services.outfit_recommender_3d import (
+    OutfitRecommender3D,
+    normalize_category_for_outfit_templates,
+)
 from app.services.prompt_guard import guard_wrap
 from app.services.smart_outfit_rerank import rerank_outfit_cards
 from app.services.storage import StorageService
@@ -474,6 +477,66 @@ def _shuffle_wardrobe(wardrobe: List[Garment], seed: int) -> List[Garment]:
 
 # Below this share: UI omits color label and shows a photo-first hint (see smart outfit screen).
 LOW_MAIN_COLOR_CONFIDENCE = 0.35
+LOW_REFERENCE_CATEGORY_CONFIDENCE = 0.35
+REFERENCE_CATEGORIES = {"上衣", "裤子", "裙子", "外套", "鞋", "包"}
+
+
+def _normalize_reference_category(raw: Optional[str]) -> Optional[str]:
+    raw_clean = (raw or "").strip()
+    if not raw_clean:
+        return None
+    cat = normalize_category_for_outfit_templates(raw_clean)
+    return cat if cat in REFERENCE_CATEGORIES else None
+
+
+def _with_reference_color_name(color: ColorSchema, name: Optional[str]) -> ColorSchema:
+    clean = (name or "").strip()
+    if not clean:
+        return color
+    data = color.model_dump()
+    data["name"] = clean
+    data["confidence"] = 1.0
+    return ColorSchema(**data)
+
+
+def build_reference_recognition_summary(
+    image_bytes: bytes,
+    *,
+    reference_category: Optional[str] = None,
+    reference_color_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    recognition = _recognize_reference_image_nonblocking(image_bytes)
+    colors = ColorExtractor(n_colors=3).extract_colors(image_bytes)
+    main_color = (
+        colors[0]
+        if colors
+        else ColorSchema(
+            name="灰",
+            rgb=(128, 128, 128),
+            hsv=(0.0, 0.0, 50.0),
+            hex_code="#808080",
+            confidence=0.2,
+        )
+    )
+    main_color = _with_reference_color_name(main_color, reference_color_name)
+    recognized_category = _normalize_reference_category(recognition.get("category")) or "上衣"
+    category_confidence = float(recognition.get("category_confidence") or 0.0)
+    confirmed_category = _normalize_reference_category(reference_category)
+    low_confidence = category_confidence < LOW_REFERENCE_CATEGORY_CONFIDENCE
+    final_category = confirmed_category or ("上衣" if low_confidence else recognized_category)
+    return {
+        "category": final_category,
+        "recognized_category": recognized_category,
+        "category_confidence": category_confidence,
+        "reference_low_confidence": bool(low_confidence and not confirmed_category),
+        "category_source": "user" if confirmed_category else "auto",
+        "main_color": main_color.model_dump(),
+        "color_confidence": main_color.confidence,
+        "style_tags": recognition.get("style_tags") or [],
+        "fit_type": recognition.get("fit_type"),
+        "feature_vector": recognition.get("feature_vector") or [],
+        "secondary_colors": [c.model_dump() for c in colors[1:]] if len(colors) > 1 else [],
+    }
 
 
 def _card_to_response_dict(
@@ -593,6 +656,8 @@ async def generate_smart_outfits(
     count: int,
     regeneration_index: int,
     gender_expression: Optional[float],
+    reference_category: Optional[str] = None,
+    reference_color_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     生成智能穿搭结果字典：outfits, city, weather, temperature, mood, weather_fallback 等。
@@ -612,10 +677,13 @@ async def generate_smart_outfits(
         loop.run_in_executor(None, lambda: get_garments_by_user(db, UUID(str(user_id)), limit=500)),
     )
 
-    # Phase 2: 并行图片识别 + 颜色提取（CPU 任务，依赖 image_bytes）
-    clip_result, colors = await asyncio.gather(
-        loop.run_in_executor(None, _recognize_reference_image_nonblocking, image_bytes),
-        loop.run_in_executor(None, ColorExtractor(n_colors=3).extract_colors, image_bytes),
+    reference_info = await loop.run_in_executor(
+        None,
+        lambda: build_reference_recognition_summary(
+            image_bytes,
+            reference_category=reference_category,
+            reference_color_name=reference_color_name,
+        ),
     )
 
     user_style_prefs = _coerce_str_list(user_profile.style_preference if user_profile else [])
@@ -635,14 +703,10 @@ async def generate_smart_outfits(
     seed = hash(image_url) % (2**31) + int(regeneration_index) * 1009
     wardrobe_ordered = _shuffle_wardrobe(wardrobe, seed)
 
-    main_color = (
-        colors[0]
-        if colors
-        else ColorSchema(name="灰", rgb=(128, 128, 128), hsv=(0.0, 0.0, 50.0), hex_code="#808080")
-    )
-    secondary_colors = colors[1:] if len(colors) > 1 else []
+    main_color = ColorSchema(**reference_info["main_color"])
+    secondary_colors = [ColorSchema(**c) for c in (reference_info.get("secondary_colors") or [])]
 
-    clip_features = clip_result["feature_vector"]
+    clip_features = reference_info["feature_vector"]
     fdim = len(clip_features)
     if fdim == 768:
         feature_vector = clip_features + [0.0] * 512
@@ -654,11 +718,11 @@ async def generate_smart_outfits(
     target = Garment(
         garment_id=uuid4(),
         user_id=UUID(str(user_id)),
-        category=clip_result["category"],
+        category=reference_info["category"],
         main_color=main_color.model_dump(),
         secondary_colors=[c.model_dump() for c in secondary_colors],
-        style_tags=clip_result["style_tags"],
-        fit_type=clip_result.get("fit_type"),
+        style_tags=reference_info["style_tags"],
+        fit_type=reference_info.get("fit_type"),
         image_path="",
         image_url=image_url,
         feature_vector=feature_vector,
@@ -685,6 +749,7 @@ async def generate_smart_outfits(
         user_gender=user_gender,
         user_gender_expression=final_ge,
         explore_cross_gender=explore_cross,
+        fixed_reference_category=reference_info["category"],
     )
 
     cards_dicts = [c.model_dump() for c in cards]
@@ -722,11 +787,11 @@ async def generate_smart_outfits(
         logger.warning(
             "No outfit cards generated from wardrobe (uid=%s, target_category=%s, wardrobe=%s)",
             user_id,
-            clip_result.get("category"),
+            reference_info.get("category"),
             len(wardrobe_ordered),
         )
         outfits_resp = _fallback_virtual_outfits(
-            clip_result=clip_result,
+            clip_result=reference_info,
             weather_note=weather_note,
             count=count,
             seed=seed,
@@ -739,6 +804,17 @@ async def generate_smart_outfits(
         "temperature": temperature,
         "mood": mood,
         "weather_fallback": False,
+        "reference_recognition": {
+            "category": reference_info.get("category"),
+            "recognized_category": reference_info.get("recognized_category"),
+            "category_confidence": reference_info.get("category_confidence"),
+            "reference_low_confidence": reference_info.get("reference_low_confidence", False),
+            "category_source": reference_info.get("category_source"),
+            "main_color": reference_info.get("main_color"),
+            "color_confidence": reference_info.get("color_confidence"),
+            "style_tags": reference_info.get("style_tags") or [],
+        },
+        "reference_low_confidence": reference_info.get("reference_low_confidence", False),
         "message": "ok",
     }
 

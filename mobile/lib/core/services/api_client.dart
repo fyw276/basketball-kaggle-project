@@ -1510,6 +1510,8 @@ class ApiClient {
     int count = 3,
     int regenerationIndex = 0,
     double? genderExpression,
+    String? referenceCategory,
+    String? referenceColorName,
   }) async {
     final loc = location.trim();
     final moodNorm = _normalizeSmartOutfitMood(mood);
@@ -1526,6 +1528,12 @@ class ApiClient {
     };
     if (genderExpression != null) {
       body['gender_expression'] = genderExpression;
+    }
+    if (referenceCategory != null && referenceCategory.trim().isNotEmpty) {
+      body['reference_category'] = referenceCategory.trim();
+    }
+    if (referenceColorName != null && referenceColorName.trim().isNotEmpty) {
+      body['reference_color_name'] = referenceColorName.trim();
     }
     final genUri = Uri.parse(
       '${baseUrl.replaceAll(RegExp(r'/$'), '')}/smart-outfit/generate',
@@ -1580,6 +1588,8 @@ class ApiClient {
     int count = 3,
     int regenerationIndex = 0,
     double? genderExpression,
+    String? referenceCategory,
+    String? referenceColorName,
     void Function(int index, Map<String, dynamic> outfit)? onOutfit,
   }) async {
     final loc = location.trim();
@@ -1597,6 +1607,12 @@ class ApiClient {
     };
     if (genderExpression != null) {
       body['gender_expression'] = genderExpression;
+    }
+    if (referenceCategory != null && referenceCategory.trim().isNotEmpty) {
+      body['reference_category'] = referenceCategory.trim();
+    }
+    if (referenceColorName != null && referenceColorName.trim().isNotEmpty) {
+      body['reference_color_name'] = referenceColorName.trim();
     }
     final genUri = Uri.parse(
       '${baseUrl.replaceAll(RegExp(r'/$'), '')}/smart-outfit/generate-stream',
