@@ -96,6 +96,7 @@ class SmartOutfitController extends ChangeNotifier {
   String? imageUrl;
   String? referenceCategory;
   String? referenceColorName;
+  String referenceSource = '';
   Map<String, dynamic> referenceRecognition = const {};
   bool referenceUploading = false;
   List<Map<String, dynamic>> outfits = [];
@@ -497,6 +498,7 @@ class SmartOutfitController extends ChangeNotifier {
     imageUrl = null;
     referenceCategory = null;
     referenceColorName = null;
+    referenceSource = '';
     referenceRecognition = const {};
     outfits = [];
     regenIndex = 0;
@@ -509,6 +511,7 @@ class SmartOutfitController extends ChangeNotifier {
     imageUrl = url;
     referenceCategory = category;
     referenceColorName = null;
+    referenceSource = 'wardrobe';
     referenceRecognition = {
       if (category != null && category.isNotEmpty) 'category': category,
       'category_source': 'wardrobe',
@@ -561,6 +564,7 @@ class SmartOutfitController extends ChangeNotifier {
       throw Exception('无 image_url');
     }
     imageUrl = url;
+    referenceSource = 'upload';
     _applyReferenceUploadResult(r);
     _images.clear();
     notifyListeners();

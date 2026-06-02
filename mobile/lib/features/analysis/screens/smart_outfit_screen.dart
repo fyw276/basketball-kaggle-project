@@ -385,6 +385,7 @@ class _SmartOutfitPageState extends State<_SmartOutfitPage> {
     final palette = context.watch<ThemeProvider>().palette;
     final ctrl = context.watch<SmartOutfitController>();
     final apiBase = context.read<AuthProvider>().apiClient.baseUrl;
+    final referencePreviewUrl = resolveGarmentImageUrl(ctrl.imageUrl, apiBase);
 
     return AnalysisFeatureLayout(
       title: '智能穿搭',
@@ -491,8 +492,10 @@ class _SmartOutfitPageState extends State<_SmartOutfitPage> {
                       maxImages: 1,
                       hintText: '上传 1 张主参考衣物图',
                       allowMultiple: false,
-                      selectedImageUrl: ctrl.imageUrl,
-                      selectedImageLabel: '已从衣橱选择',
+                      selectedImageUrl: referencePreviewUrl,
+                      selectedImageLabel: ctrl.referenceSource == 'wardrobe'
+                          ? '已从衣橱选择'
+                          : '已上传参考图',
                       onSelectedImageRemoved: () {
                         context
                             .read<SmartOutfitController>()
