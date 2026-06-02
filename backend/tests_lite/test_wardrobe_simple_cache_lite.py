@@ -44,6 +44,37 @@ def test_as_recognition_dict_from_object():
     assert out["fit_type"] == "regular"
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("upper", "上衣"),
+        ("top", "上衣"),
+        ("lower", "裤子"),
+        ("bottom", "裤子"),
+        ("pants", "裤子"),
+        ("dress", "裙子"),
+        ("skirt", "裙子"),
+        ("连衣裙", "裙子"),
+    ],
+)
+def test_normalize_auto_category_maps_classifier_fallbacks(raw, expected):
+    assert mod._normalize_auto_category(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["裤子", "裙子", "lower", "dress", "连衣裙"])
+def test_low_confidence_fallback_keeps_known_categories(raw):
+    assert mod._should_use_low_confidence_fallback(raw, manual_category_selected=False) is False
+
+
+def test_low_confidence_fallback_skips_manual_category_override():
+    assert mod._should_use_low_confidence_fallback("", manual_category_selected=True) is False
+
+
+@pytest.mark.parametrize("raw", ["", "unknown", "not-a-category"])
+def test_low_confidence_fallback_only_for_unknown_auto_categories(raw):
+    assert mod._should_use_low_confidence_fallback(raw, manual_category_selected=False) is True
+
+
 def test_recognize_with_cache_hit(monkeypatch):
     cached = {
         "category": "上衣",

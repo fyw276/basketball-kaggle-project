@@ -58,6 +58,13 @@ _AUTO_FINE_TO_BASE_CATEGORY = {
     "连衣裙": "裙子",
     "汉服": "裙子",
     "国风": "裙子",
+    "upper": "上衣",
+    "top": "上衣",
+    "lower": "裤子",
+    "bottom": "裤子",
+    "pants": "裤子",
+    "dress": "裙子",
+    "skirt": "裙子",
 }
 
 
@@ -65,12 +72,28 @@ def _normalize_auto_category(raw: str) -> str:
     s = (raw or "").strip()
     if not s:
         return "上衣"
-    s = _AUTO_FINE_TO_BASE_CATEGORY.get(s, s)
+    s = _AUTO_FINE_TO_BASE_CATEGORY.get(s, _AUTO_FINE_TO_BASE_CATEGORY.get(s.lower(), s))
     if s in _SIDEBAR_TO_BACKEND_CATEGORY:
         s = _SIDEBAR_TO_BACKEND_CATEGORY[s]
     if s not in VALID_CATEGORIES:
         return "上衣"
     return s
+
+
+def _is_known_auto_category(raw: str) -> bool:
+    s = (raw or "").strip()
+    if not s:
+        return False
+    s = _AUTO_FINE_TO_BASE_CATEGORY.get(s, _AUTO_FINE_TO_BASE_CATEGORY.get(s.lower(), s))
+    if s in _SIDEBAR_TO_BACKEND_CATEGORY:
+        s = _SIDEBAR_TO_BACKEND_CATEGORY[s]
+    return s in VALID_CATEGORIES
+
+
+def _should_use_low_confidence_fallback(raw_category: str, manual_category_selected: bool) -> bool:
+    if manual_category_selected:
+        return False
+    return not _is_known_auto_category(raw_category)
 
 
 def _normalize_category_for_update(raw: str) -> str:
@@ -204,6 +227,7 @@ async def upload_garment_simple(
         recognized_category = str(recognition_result.get("category") or "").strip()
         category_confidence = float(recognition_result.get("category_confidence") or 0.0)
         category_for_save = _normalize_auto_category(recognized_category)
+        manual_category_selected = False
 
         # 前端可显式传 category（手动选择或先前识别结果），优先使用并做统一规范化。
         if category is not None and category.strip():
@@ -214,9 +238,12 @@ async def upload_garment_simple(
                     detail=f"Invalid category. Must be one of: {', '.join(VALID_CATEGORIES)}",
                 )
             category_for_save = manual_category
+            manual_category_selected = True
 
         # CLIP 不可用或置信度过低时，用 MobileNet 六大类兜底，保证侧栏分类可用。
-        if category_confidence < 0.15:
+        if category_confidence < 0.15 and _should_use_low_confidence_fallback(
+            recognized_category, manual_category_selected
+        ):
             try:
                 from app.ml.category_classifier import CategoryClassifier
 
@@ -364,6 +391,7 @@ async def upload_garments_batch_simple(
             recognized_category = str(recognition_result.get("category") or "").strip()
             category_confidence = float(recognition_result.get("category_confidence") or 0.0)
             category_for_save = _normalize_auto_category(recognized_category)
+            manual_category_selected = False
 
             if category is not None and category.strip():
                 manual_category = _normalize_category_for_update(category.strip())
@@ -373,8 +401,11 @@ async def upload_garments_batch_simple(
                         detail=(f"Invalid category. Must be one of: {', '.join(VALID_CATEGORIES)}"),
                     )
                 category_for_save = manual_category
+                manual_category_selected = True
 
-            if category_confidence < 0.15:
+            if category_confidence < 0.15 and _should_use_low_confidence_fallback(
+                recognized_category, manual_category_selected
+            ):
                 try:
                     from app.ml.category_classifier import CategoryClassifier
 
