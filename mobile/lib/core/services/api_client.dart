@@ -618,8 +618,10 @@ class ApiClient {
   Future<Map<String, dynamic>> analyzeSimilarityFromXFile(dynamic imageFile) =>
       analyzeSimilarity(imageFile: imageFile);
 
-  Future<Map<String, dynamic>> analyzeLookSimilarityFromXFile(
-    dynamic imageFile, {
+  Future<Map<String, dynamic>> analyzeLookSimilarity({
+    dynamic imageFile,
+    String? garmentId,
+    String? imageUrl,
     String sourceType = 'photo',
     String parserStrategy = 'auto',
     String? sceneHint,
@@ -633,9 +635,18 @@ class ApiClient {
       );
       request.headers.addAll(_authHeaders);
 
-      final part = await _multipartImage('file', imageFile);
-      if (part == null) return {'error': 'Unsupported image type'};
-      request.files.add(part);
+      if (garmentId != null && garmentId.isNotEmpty) {
+        request.fields['garment_id'] = garmentId;
+      } else if (imageUrl != null && imageUrl.isNotEmpty) {
+        request.fields['image_url'] = imageUrl;
+      } else if (imageFile != null) {
+        final part = await _multipartImage('file', imageFile);
+        if (part == null) return {'error': 'Unsupported image type'};
+        request.files.add(part);
+      } else {
+        return {'error': 'No image provided'};
+      }
+
       request.fields['source_type'] = sourceType;
       request.fields['parser_strategy'] = parserStrategy;
       request.fields['include_tryon_candidates'] =
@@ -663,6 +674,23 @@ class ApiClient {
       return {'error': e.toString()};
     }
   }
+
+  Future<Map<String, dynamic>> analyzeLookSimilarityFromXFile(
+    dynamic imageFile, {
+    String sourceType = 'photo',
+    String parserStrategy = 'auto',
+    String? sceneHint,
+    bool includeTryonCandidates = true,
+    bool includeAccessories = true,
+  }) =>
+      analyzeLookSimilarity(
+        imageFile: imageFile,
+        sourceType: sourceType,
+        parserStrategy: parserStrategy,
+        sceneHint: sceneHint,
+        includeTryonCandidates: includeTryonCandidates,
+        includeAccessories: includeAccessories,
+      );
 
   Future<Map<String, dynamic>> parseLookFromXFile(
     dynamic imageFile, {
@@ -700,8 +728,10 @@ class ApiClient {
     }
   }
 
-  Future<Map<String, dynamic>> recommendLookComplementFromXFile(
-    dynamic imageFile, {
+  Future<Map<String, dynamic>> recommendLookComplement({
+    dynamic imageFile,
+    String? garmentId,
+    String? imageUrl,
     String sourceType = 'photo',
     String parserStrategy = 'auto',
     String? sceneHint,
@@ -713,9 +743,18 @@ class ApiClient {
       );
       request.headers.addAll(_authHeaders);
 
-      final part = await _multipartImage('file', imageFile);
-      if (part == null) return {'error': 'Unsupported image type'};
-      request.files.add(part);
+      if (garmentId != null && garmentId.isNotEmpty) {
+        request.fields['garment_id'] = garmentId;
+      } else if (imageUrl != null && imageUrl.isNotEmpty) {
+        request.fields['image_url'] = imageUrl;
+      } else if (imageFile != null) {
+        final part = await _multipartImage('file', imageFile);
+        if (part == null) return {'error': 'Unsupported image type'};
+        request.files.add(part);
+      } else {
+        return {'error': 'No image provided'};
+      }
+
       request.fields['source_type'] = sourceType;
       request.fields['parser_strategy'] = parserStrategy;
       if (sceneHint != null && sceneHint.trim().isNotEmpty) {
@@ -740,6 +779,19 @@ class ApiClient {
       return {'error': e.toString()};
     }
   }
+
+  Future<Map<String, dynamic>> recommendLookComplementFromXFile(
+    dynamic imageFile, {
+    String sourceType = 'photo',
+    String parserStrategy = 'auto',
+    String? sceneHint,
+  }) =>
+      recommendLookComplement(
+        imageFile: imageFile,
+        sourceType: sourceType,
+        parserStrategy: parserStrategy,
+        sceneHint: sceneHint,
+      );
 
   // ─── 分析：穿搭推荐 ─────────────────────────────────────────────
   // 后端路由: POST /analysis/outfits

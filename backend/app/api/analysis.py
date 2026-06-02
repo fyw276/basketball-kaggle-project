@@ -537,6 +537,8 @@ class LookSummaryInfo(BaseModel):
 
 class LookSimilarityResponse(BaseModel):
     source_type: str
+    parser_strategy_used: str = "hybrid"
+    matched_parts_count: int = 0
     overall_similarity: float
     coverage_score: float
     style_consistency: float
@@ -604,6 +606,16 @@ def _build_look_parser(parser_strategy: str):
     return HybridLookParser()
 
 
+def _look_parser_strategy_used(parser) -> str:
+    if isinstance(parser, HeuristicLookParser):
+        return "heuristic"
+    if isinstance(parser, HumanLookParser):
+        return "human"
+    if isinstance(parser, OmniLookParser):
+        return "omni"
+    return "hybrid"
+
+
 @router.post("/look-similarity", response_model=LookSimilarityResponse)
 async def analyze_look_similarity(
     file: Optional[UploadFile] = File(None),
@@ -629,7 +641,7 @@ async def analyze_look_similarity(
         source_type = _normalize_look_source_type(source_type)
         parser = _build_look_parser(parser_strategy)
         service = LookSimilarityService(parser=parser)
-        return service.analyze_look(
+        result = service.analyze_look(
             image_bytes=image_bytes,
             wardrobe_garments=wardrobe_garments,
             source_type=source_type,
@@ -637,6 +649,11 @@ async def analyze_look_similarity(
             include_tryon_candidates=include_tryon_candidates,
             include_accessories=include_accessories,
         )
+        result["parser_strategy_used"] = _look_parser_strategy_used(parser)
+        result["matched_parts_count"] = sum(
+            1 for part in result.get("parts", []) if part.get("matched_garments")
+        )
+        return result
     except HTTPException:
         raise
     except ValueError as e:

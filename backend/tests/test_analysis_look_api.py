@@ -78,6 +78,8 @@ def test_look_similarity_returns_expected_shape(client, auth_headers, monkeypatc
 
     assert response.status_code == 200
     assert data["source_type"] == "photo"
+    assert data["parser_strategy_used"] == "hybrid"
+    assert data["matched_parts_count"] == 0
     assert "overall_similarity" in data
     assert data["parts"][0]["part_role"] == "top"
 

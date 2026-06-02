@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../../../core/providers/theme_provider.dart';
 import '../../analysis/screens/outfit_recommend_screen.dart';
 import '../../analysis/screens/smart_outfit_screen.dart';
+import '../../analysis/screens/similarity_screen.dart';
 import '../../analysis/screens/similarity_analysis_screen.dart';
 import '../../analysis/screens/suitability_analysis_screen.dart';
 import '../../analysis/screens/body_shape_insight_screen.dart';
@@ -34,6 +35,18 @@ class OutfitHubScreen extends StatelessWidget {
             title: '智能穿搭',
             subtitle: '参考图 + 自动天气与可选心情，一次生成 3 套衣橱搭配',
             onTap: () => _pushPage(context, const SmartOutfitScreen()),
+          ),
+          _HubTile(
+            icon: Icons.travel_explore_outlined,
+            title: '灵感穿搭',
+            subtitle: '整身参考图/衣橱图 → 场景 → 分部匹配 → 缺失建议 → 试衣 → 保存反馈',
+            onTap: () => _pushPage(
+              context,
+              const SimilarityScreen(
+                startInLookMode: true,
+                inspirationLoop: true,
+              ),
+            ),
           ),
           _HubTile(
             icon: Icons.view_day_outlined,
