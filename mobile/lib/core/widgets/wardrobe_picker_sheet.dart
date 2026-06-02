@@ -10,11 +10,13 @@ class WardrobePickResult {
   final String garmentId;
   final String? imageUrl;
   final String? category;
+  final String? mainColorName;
 
   const WardrobePickResult({
     required this.garmentId,
     this.imageUrl,
     this.category,
+    this.mainColorName,
   });
 }
 
@@ -123,6 +125,7 @@ class _WardrobePickerSheetState extends State<WardrobePickerSheet> {
         garmentId: gid,
         imageUrl: g['image_url']?.toString(),
         category: g['category']?.toString(),
+        mainColorName: _mainColorName(g),
       );
       Navigator.pop(context, [result]);
     }
@@ -135,9 +138,20 @@ class _WardrobePickerSheetState extends State<WardrobePickerSheet> {
               garmentId: _garmentId(g),
               imageUrl: g['image_url']?.toString(),
               category: g['category']?.toString(),
+              mainColorName: _mainColorName(g),
             ))
         .toList();
     Navigator.pop(context, results);
+  }
+
+  String? _mainColorName(Map<String, dynamic> g) {
+    final mainColor = g['main_color'];
+    if (mainColor is Map && mainColor['name'] != null) {
+      final name = mainColor['name'].toString().trim();
+      if (name.isNotEmpty) return name;
+    }
+    final color = g['color']?.toString().trim();
+    return color != null && color.isNotEmpty ? color : null;
   }
 
   @override

@@ -447,7 +447,7 @@ class OutfitRecommender3D:
             cats = template["categories"]
             weight = template["weight"]
 
-            if target_garment.category not in cats:
+            if not self._template_can_anchor_reference(cats, fixed_slot_cat):
                 continue
             if self._template_conflicts_with_fixed_reference(cats, fixed_slot_cat):
                 continue
@@ -747,11 +747,24 @@ class OutfitRecommender3D:
         ]
 
     @staticmethod
+    def _template_can_anchor_reference(
+        categories: List[str],
+        fixed_reference_category: str,
+    ) -> bool:
+        cats = set(categories)
+        has_body = "上衣" in cats and bool(cats & {"裤子", "裙子"})
+        if fixed_reference_category in {"鞋", "包"}:
+            return has_body
+        return fixed_reference_category in cats
+
+    @staticmethod
     def _template_conflicts_with_fixed_reference(
         categories: List[str],
         fixed_reference_category: str,
     ) -> bool:
         cats = set(categories)
+        if "裤子" in cats and "裙子" in cats:
+            return True
         if fixed_reference_category == "裤子" and "裙子" in cats:
             return True
         if fixed_reference_category == "裙子" and "裤子" in cats:

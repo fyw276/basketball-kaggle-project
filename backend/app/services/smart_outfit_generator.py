@@ -477,7 +477,8 @@ def _shuffle_wardrobe(wardrobe: List[Garment], seed: int) -> List[Garment]:
 
 # Below this share: UI omits color label and shows a photo-first hint (see smart outfit screen).
 LOW_MAIN_COLOR_CONFIDENCE = 0.35
-LOW_REFERENCE_CATEGORY_CONFIDENCE = 0.35
+AUTO_REFERENCE_CATEGORY_CONFIDENCE = 0.70
+MANUAL_REFERENCE_CATEGORY_CONFIDENCE = 0.35
 REFERENCE_CATEGORIES = {"上衣", "裤子", "裙子", "外套", "鞋", "包"}
 
 
@@ -505,7 +506,17 @@ def build_reference_recognition_summary(
     reference_category: Optional[str] = None,
     reference_color_name: Optional[str] = None,
 ) -> Dict[str, Any]:
-    recognition = _recognize_reference_image_nonblocking(image_bytes)
+    confirmed_category = _normalize_reference_category(reference_category)
+    if confirmed_category:
+        recognition = {
+            "category": confirmed_category,
+            "category_confidence": 1.0,
+            "style_tags": [],
+            "fit_type": None,
+            "feature_vector": [],
+        }
+    else:
+        recognition = _recognize_reference_image_nonblocking(image_bytes)
     colors = ColorExtractor(n_colors=3).extract_colors(image_bytes)
     main_color = (
         colors[0]
@@ -521,14 +532,26 @@ def build_reference_recognition_summary(
     main_color = _with_reference_color_name(main_color, reference_color_name)
     recognized_category = _normalize_reference_category(recognition.get("category")) or "上衣"
     category_confidence = float(recognition.get("category_confidence") or 0.0)
-    confirmed_category = _normalize_reference_category(reference_category)
-    low_confidence = category_confidence < LOW_REFERENCE_CATEGORY_CONFIDENCE
-    final_category = confirmed_category or ("上衣" if low_confidence else recognized_category)
+    low_confidence = category_confidence < AUTO_REFERENCE_CATEGORY_CONFIDENCE
+    requires_manual_confirmation = low_confidence and not confirmed_category
+    final_category = confirmed_category or (
+        recognized_category if category_confidence >= AUTO_REFERENCE_CATEGORY_CONFIDENCE else None
+    )
     return {
         "category": final_category,
         "recognized_category": recognized_category,
         "category_confidence": category_confidence,
         "reference_low_confidence": bool(low_confidence and not confirmed_category),
+        "requires_manual_confirmation": bool(requires_manual_confirmation),
+        "confidence_band": (
+            "auto"
+            if category_confidence >= AUTO_REFERENCE_CATEGORY_CONFIDENCE
+            else (
+                "suggest"
+                if category_confidence >= MANUAL_REFERENCE_CATEGORY_CONFIDENCE
+                else "manual"
+            )
+        ),
         "category_source": "user" if confirmed_category else "auto",
         "main_color": main_color.model_dump(),
         "color_confidence": main_color.confidence,
@@ -602,6 +625,22 @@ def _card_to_response_dict(
     return d
 
 
+def _card_respects_reference(card: Dict[str, Any], reference_category: str) -> bool:
+    categories = {str((it or {}).get("category") or "").strip() for it in card.get("items") or []}
+    if reference_category and reference_category not in categories:
+        return False
+    if "裤子" in categories and "裙子" in categories:
+        return False
+    return True
+
+
+def _filter_reference_safe_cards(
+    cards: List[Dict[str, Any]],
+    reference_category: str,
+) -> List[Dict[str, Any]]:
+    return [c for c in cards if _card_respects_reference(c, reference_category)]
+
+
 def _fallback_virtual_outfits(
     clip_result: Dict[str, Any],
     weather_note: str,
@@ -633,9 +672,18 @@ def _fallback_virtual_outfits(
                 "color_score": 0.5,
                 "gender_compatibility": None,
                 "overall_score": 0.45,
-                "items": [],
-                "preview_image_url": "",
-                "effect_image_url": "",
+                "items": [
+                    {
+                        "name": f"{cat} · 参考图",
+                        "category": cat,
+                        "image_url": clip_result.get("image_url", ""),
+                        "fit_note": "target",
+                        "style_tags": styles[:5],
+                        "main_color": clip_result.get("main_color") or {},
+                    }
+                ],
+                "preview_image_url": clip_result.get("image_url", ""),
+                "effect_image_url": clip_result.get("image_url", ""),
                 "style_tags": styles[:5],
                 "weather_fit_note": weather_note,
                 "adapter_note": weather_note,
@@ -685,6 +733,11 @@ async def generate_smart_outfits(
             reference_color_name=reference_color_name,
         ),
     )
+    if reference_info.get("requires_manual_confirmation"):
+        raise ValueError("参考图品类识别置信度偏低，请先手动确认品类后再生成")
+    if not reference_info.get("category"):
+        raise ValueError("请先确认参考图品类后再生成")
+    reference_info["image_url"] = image_url
 
     user_style_prefs = _coerce_str_list(user_profile.style_preference if user_profile else [])
     user_body_type = user_profile.body_type if user_profile else None
@@ -753,6 +806,7 @@ async def generate_smart_outfits(
     )
 
     cards_dicts = [c.model_dump() for c in cards]
+    cards_dicts = _filter_reference_safe_cards(cards_dicts, reference_info["category"])
     cards_ranked = rerank_outfit_cards(
         cards_dicts,
         preferred_scene=preferred_scene,
@@ -766,6 +820,7 @@ async def generate_smart_outfits(
     wardrobe_info = _wardrobe_summary(wardrobe_ordered)
 
     # Phase 3: 并行生成所有卡片的 AI 推荐（I/O 并行）
+    cards_ranked = _filter_reference_safe_cards(cards_ranked, reference_info["category"])
     card_dicts = [_card_to_response_dict(c, weather_note, base) for c in cards_ranked[:count]]
     ai_tasks = [
         _generate_ai_recommendation(

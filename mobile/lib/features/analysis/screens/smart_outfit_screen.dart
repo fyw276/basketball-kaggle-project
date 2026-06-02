@@ -517,6 +517,7 @@ class _SmartOutfitPageState extends State<_SmartOutfitPage> {
                               smartOutfit.setWardrobeReference(
                                 resolved,
                                 category: picked.first.category,
+                                mainColorName: picked.first.mainColorName,
                               );
                               setState(() => _didJumpToInitialIndex = false);
                             }

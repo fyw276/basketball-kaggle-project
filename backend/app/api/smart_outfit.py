@@ -174,6 +174,8 @@ async def post_upload_reference(
         "recognized_category": recognition.get("recognized_category", ""),
         "category_confidence": recognition.get("category_confidence", 0.0),
         "reference_low_confidence": recognition.get("reference_low_confidence", False),
+        "requires_manual_confirmation": recognition.get("requires_manual_confirmation", False),
+        "confidence_band": recognition.get("confidence_band", ""),
         "main_color": recognition.get("main_color", {}),
         "color_confidence": recognition.get("color_confidence"),
         "style_tags": recognition.get("style_tags", []),

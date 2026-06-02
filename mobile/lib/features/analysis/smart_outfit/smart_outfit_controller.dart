@@ -9,6 +9,7 @@ import '../../../core/providers/auth_provider.dart';
 import '../../../core/providers/theme_provider.dart';
 import '../../../core/services/api_client.dart';
 import '../../../core/utils/app_snackbar.dart' show showAppSnackBar;
+import '../../../core/utils/media_url.dart';
 import 'smart_outfit_cache.dart';
 import 'smart_outfit_geo_weather.dart';
 
@@ -99,6 +100,7 @@ class SmartOutfitController extends ChangeNotifier {
   String referenceSource = '';
   Map<String, dynamic> referenceRecognition = const {};
   bool referenceUploading = false;
+  bool _referenceCorrectionRecorded = false;
   List<Map<String, dynamic>> outfits = [];
   int regenIndex = 0;
   bool generating = false;
@@ -500,22 +502,30 @@ class SmartOutfitController extends ChangeNotifier {
     referenceColorName = null;
     referenceSource = '';
     referenceRecognition = const {};
+    _referenceCorrectionRecorded = false;
     outfits = [];
     regenIndex = 0;
     notifyListeners();
   }
 
   /// 从衣橱直接设置参考图 URL，跳过上传步骤。
-  void setWardrobeReference(String url, {String? category}) {
+  void setWardrobeReference(
+    String url, {
+    String? category,
+    String? mainColorName,
+  }) {
     _images.clear();
     imageUrl = url;
     referenceCategory = category;
-    referenceColorName = null;
+    referenceColorName = mainColorName;
     referenceSource = 'wardrobe';
     referenceRecognition = {
       if (category != null && category.isNotEmpty) 'category': category,
+      if (mainColorName != null && mainColorName.isNotEmpty)
+        'main_color': {'name': mainColorName},
       'category_source': 'wardrobe',
     };
+    _referenceCorrectionRecorded = false;
     outfits = [];
     regenIndex = 0;
     notifyListeners();
@@ -563,11 +573,51 @@ class SmartOutfitController extends ChangeNotifier {
     if (url == null || url.isEmpty) {
       throw Exception('无 image_url');
     }
-    imageUrl = url;
+    imageUrl = resolveGarmentImageUrl(url, api.baseUrl) ?? url;
     referenceSource = 'upload';
     _applyReferenceUploadResult(r);
     _images.clear();
     notifyListeners();
+  }
+
+  Future<void> _recordReferenceCorrectionIfNeeded(ApiClient api) async {
+    if (_referenceCorrectionRecorded || referenceSource != 'upload') return;
+    final autoCategory =
+        referenceRecognition['recognized_category']?.toString().trim();
+    final autoConfidence = referenceRecognition['category_confidence'] as num?;
+    final mainColor = referenceRecognition['main_color'];
+    final autoColor =
+        mainColor is Map ? mainColor['name']?.toString().trim() : null;
+    final userCategory = referenceCategory?.trim();
+    final userColor = referenceColorName?.trim();
+    final categoryChanged = autoCategory != null &&
+        autoCategory.isNotEmpty &&
+        userCategory != null &&
+        userCategory.isNotEmpty &&
+        autoCategory != userCategory;
+    final colorChanged = autoColor != null &&
+        autoColor.isNotEmpty &&
+        userColor != null &&
+        userColor.isNotEmpty &&
+        autoColor != userColor;
+    if (!categoryChanged && !colorChanged) return;
+    _referenceCorrectionRecorded = true;
+    try {
+      await api.submitFeedbackEvent(
+        eventType: 'view',
+        source: 'smart_ref_correction',
+        payload: {
+          'image_url': imageUrl ?? '',
+          'auto_category': autoCategory ?? '',
+          'auto_confidence': autoConfidence?.toDouble() ?? 0.0,
+          'user_category': userCategory ?? '',
+          'auto_color': autoColor ?? '',
+          'user_color': userColor ?? '',
+        },
+      );
+    } catch (_) {
+      // Correction telemetry should never block outfit generation.
+    }
   }
 
   Future<void> prepareReferenceRecognition(ApiClient api) async {
@@ -610,6 +660,7 @@ class SmartOutfitController extends ChangeNotifier {
       if (needsReferenceCategoryConfirmation) {
         return SmartOutfitGenerateResult.needReferenceCategory();
       }
+      await _recordReferenceCorrectionIfNeeded(api);
       final r = await api.generateSmartOutfit(
         imageUrl: imageUrl!,
         location: locationForApi,
