@@ -15,6 +15,7 @@ import 'smart_outfit_geo_weather.dart';
 enum SmartOutfitGenerateKind {
   success,
   needImage,
+  needReferenceCategory,
   notAuthenticated,
   credentialInvalid,
   apiError,
@@ -47,6 +48,12 @@ class SmartOutfitGenerateResult {
   static SmartOutfitGenerateResult needImage() {
     return const SmartOutfitGenerateResult._(
       kind: SmartOutfitGenerateKind.needImage,
+    );
+  }
+
+  static SmartOutfitGenerateResult needReferenceCategory() {
+    return const SmartOutfitGenerateResult._(
+      kind: SmartOutfitGenerateKind.needReferenceCategory,
     );
   }
 
@@ -95,6 +102,10 @@ class SmartOutfitController extends ChangeNotifier {
   int regenIndex = 0;
   bool generating = false;
   bool oneTapBusy = false;
+
+  bool get needsReferenceCategoryConfirmation =>
+      referenceRecognition['reference_low_confidence'] == true &&
+      (referenceCategory == null || referenceCategory!.trim().isEmpty);
 
   // —— 天气 / 定位（与生成共用）——
   String cityShort = '';
@@ -522,12 +533,17 @@ class SmartOutfitController extends ChangeNotifier {
     final mainColor = r['main_color'];
     final colorName =
         mainColor is Map ? mainColor['name']?.toString().trim() : null;
+    final lowConfidence = r['reference_low_confidence'] == true;
     referenceRecognition = Map<String, dynamic>.from(r);
-    if (category != null && category.isNotEmpty) {
+    if (!lowConfidence && category != null && category.isNotEmpty) {
       referenceCategory = category;
+    } else if (lowConfidence) {
+      referenceCategory = null;
     }
-    if (colorName != null && colorName.isNotEmpty) {
+    if (!lowConfidence && colorName != null && colorName.isNotEmpty) {
       referenceColorName = colorName;
+    } else if (lowConfidence) {
+      referenceColorName = null;
     }
   }
 
@@ -546,6 +562,7 @@ class SmartOutfitController extends ChangeNotifier {
     }
     imageUrl = url;
     _applyReferenceUploadResult(r);
+    _images.clear();
     notifyListeners();
   }
 
@@ -586,6 +603,9 @@ class SmartOutfitController extends ChangeNotifier {
 
     try {
       await ensureUploaded(api);
+      if (needsReferenceCategoryConfirmation) {
+        return SmartOutfitGenerateResult.needReferenceCategory();
+      }
       final r = await api.generateSmartOutfit(
         imageUrl: imageUrl!,
         location: locationForApi,

@@ -229,6 +229,8 @@ class _SmartOutfitPageState extends State<_SmartOutfitPage> {
     final confidenceText =
         confidence is num ? ' ${(confidence * 100).toStringAsFixed(0)}%' : '';
     final lowConfidence = recognition['reference_low_confidence'] == true;
+    final recognizedCategory =
+        recognition['recognized_category']?.toString().trim();
 
     return Card(
       elevation: 1,
@@ -266,7 +268,9 @@ class _SmartOutfitPageState extends State<_SmartOutfitPage> {
             if (lowConfidence) ...[
               const SizedBox(height: 6),
               Text(
-                '识别置信度偏低，请确认品类后再生成。',
+                recognizedCategory != null && recognizedCategory.isNotEmpty
+                    ? '自动识别为 $recognizedCategory，但置信度偏低，请手动确认品类后再生成。'
+                    : '识别置信度偏低，请手动确认品类后再生成。',
                 style: TextStyle(fontSize: 12, color: palette.textBody),
               ),
             ],
@@ -343,6 +347,9 @@ class _SmartOutfitPageState extends State<_SmartOutfitPage> {
         break;
       case SmartOutfitGenerateKind.needImage:
         showAppSnackBar(context, '请先上传一张参考衣物图片');
+        break;
+      case SmartOutfitGenerateKind.needReferenceCategory:
+        showAppSnackBar(context, '识别置信度偏低，请先手动选择参考图品类');
         break;
       case SmartOutfitGenerateKind.notAuthenticated:
         showAppSnackBar(context, '请先登录后再生成穿搭');
