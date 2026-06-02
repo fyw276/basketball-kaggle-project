@@ -18,6 +18,7 @@ import '../../analysis/screens/smart_outfit_screen.dart';
 import '../../analysis/screens/similarity_analysis_screen.dart';
 import '../../analysis/screens/suitability_analysis_screen.dart';
 import '../../analysis/screens/virtual_tryon_screen.dart';
+import '../../agent/screens/agent_chat_screen.dart';
 import '../../wardrobe/screens/wardrobe_screen.dart';
 
 /// 主页：功能入口列表；配色随全局性别表达指数；底部滑块仅在 Shell 中展示。
@@ -51,6 +52,9 @@ class _AppHomeScreenState extends State<AppHomeScreen> {
 
   Future<void> _loadHomeCards() async {
     if (!mounted) return;
+    final auth = context.read<AuthProvider>();
+    final apiClient = auth.apiClient;
+    final isAuthenticated = auth.isAuthenticated;
     setState(() => _homeLoading = true);
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -79,11 +83,9 @@ class _AppHomeScreenState extends State<AppHomeScreen> {
         }
       }
 
-      final auth = context.read<AuthProvider>();
       final weatherQuery = city.trim().isNotEmpty ? city.trim() : fullAddress;
-      if (auth.isAuthenticated && weatherQuery.isNotEmpty) {
-        final live =
-            await auth.apiClient.getSmartOutfitWeatherByCity(weatherQuery);
+      if (isAuthenticated && weatherQuery.isNotEmpty) {
+        final live = await apiClient.getSmartOutfitWeatherByCity(weatherQuery);
         if (live['error'] == null) {
           city = (live['city']?.toString().trim().isNotEmpty ?? false)
               ? live['city'].toString().trim()
@@ -311,12 +313,27 @@ class _AppHomeScreenState extends State<AppHomeScreen> {
                             const SmartOutfitScreen(autoPickAndGenerate: true),
                           ),
                         ),
+                        _QuickActionChip(
+                          palette: palette,
+                          icon: Icons.chat_bubble_outline_rounded,
+                          label: '问助手',
+                          onTap: () => _push(context, const AgentChatScreen()),
+                        ),
                       ],
                     ),
                   ],
                 ),
               ),
               const SizedBox(height: 16),
+              _HomeRow(
+                palette: palette,
+                radius: _radius,
+                icon: Icons.support_agent_rounded,
+                title: 'AI 穿搭助手',
+                subtitle: '用对话串联衣橱、推荐、天气、试衣和反馈',
+                onTap: () => _push(context, const AgentChatScreen()),
+              ),
+              const SizedBox(height: 12),
               _HomeRow(
                 palette: palette,
                 radius: _radius,
