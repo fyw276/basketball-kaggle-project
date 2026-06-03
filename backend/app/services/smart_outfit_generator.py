@@ -22,11 +22,15 @@ from app.observability.dependency_metrics import (
 )
 from app.schemas.garment import ColorSchema
 from app.services.garment import get_garments_by_user
-from app.services.llm_cache import get_llm_cache
-from app.services.outfit_recommender_3d import (
-    OutfitRecommender3D,
-    normalize_category_for_outfit_templates,
+from app.services.garment_taxonomy import (
+    CATEGORY_TOP,
+    VALID_CATEGORIES,
+    normalize_category,
+    normalize_color_name,
+    validate_outfit_slots,
 )
+from app.services.llm_cache import get_llm_cache
+from app.services.outfit_recommender_3d import OutfitRecommender3D
 from app.services.prompt_guard import guard_wrap
 from app.services.smart_outfit_rerank import rerank_outfit_cards
 from app.services.storage import StorageService
@@ -479,19 +483,19 @@ def _shuffle_wardrobe(wardrobe: List[Garment], seed: int) -> List[Garment]:
 LOW_MAIN_COLOR_CONFIDENCE = 0.35
 AUTO_REFERENCE_CATEGORY_CONFIDENCE = 0.70
 MANUAL_REFERENCE_CATEGORY_CONFIDENCE = 0.35
-REFERENCE_CATEGORIES = {"上衣", "裤子", "裙子", "外套", "鞋", "包"}
+REFERENCE_CATEGORIES = VALID_CATEGORIES
 
 
 def _normalize_reference_category(raw: Optional[str]) -> Optional[str]:
     raw_clean = (raw or "").strip()
     if not raw_clean:
         return None
-    cat = normalize_category_for_outfit_templates(raw_clean)
+    cat = normalize_category(raw_clean, default=CATEGORY_TOP)
     return cat if cat in REFERENCE_CATEGORIES else None
 
 
 def _with_reference_color_name(color: ColorSchema, name: Optional[str]) -> ColorSchema:
-    clean = (name or "").strip()
+    clean = normalize_color_name(name, default="")
     if not clean:
         return color
     data = color.model_dump()
@@ -571,7 +575,10 @@ def _card_to_response_dict(
     items_out: List[Dict[str, Any]] = []
     for it in d.get("items") or []:
         mc = it.get("main_color") or {}
-        cat = (it.get("category") or "单品") or "单品"
+        raw_cat = (it.get("category") or "").strip()
+        cat = normalize_category(raw_cat, default="单品") if raw_cat else "单品"
+        if cat not in VALID_CATEGORIES:
+            cat = "单品"
         mc_name = str(mc.get("name") or "").strip()
         conf = mc.get("confidence")
         try:
@@ -587,7 +594,7 @@ def _card_to_response_dict(
         items_out.append(
             {
                 "name": name,
-                "category": it.get("category"),
+                "category": cat,
                 "image_url": it.get("image_url"),
                 "fit_note": it.get("role", ""),
                 "style_tags": it.get("style_tags") or [],
@@ -626,10 +633,15 @@ def _card_to_response_dict(
 
 
 def _card_respects_reference(card: Dict[str, Any], reference_category: str) -> bool:
-    categories = {str((it or {}).get("category") or "").strip() for it in card.get("items") or []}
-    if reference_category and reference_category not in categories:
+    categories = {
+        normalize_category(str((it or {}).get("category") or "").strip(), default="")
+        for it in card.get("items") or []
+    }
+    categories.discard("")
+    ref = normalize_category(reference_category, default="")
+    if ref and ref not in categories:
         return False
-    if "裤子" in categories and "裙子" in categories:
+    if not categories or not validate_outfit_slots(categories):
         return False
     return True
 
@@ -648,7 +660,7 @@ def _fallback_virtual_outfits(
     seed: int,
 ) -> List[Dict[str, Any]]:
     """衣橱为空时：基于参考图品类与风格生成文字型搭配方案。"""
-    cat = clip_result.get("category", "上衣")
+    cat = normalize_category(clip_result.get("category"), default=CATEGORY_TOP)
     styles = clip_result.get("style_tags") or ["休闲"]
     rng = random.Random(seed)
     variants = [

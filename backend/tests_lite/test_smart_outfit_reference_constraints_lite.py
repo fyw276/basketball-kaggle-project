@@ -218,3 +218,27 @@ def test_reference_summary_user_color_override(monkeypatch):
     assert out["category_source"] == "user"
     assert out["main_color"]["name"] == "粉"
     assert out["main_color"]["confidence"] == 1.0
+
+
+def test_card_respects_reference_rejects_two_lower_slots():
+    card = {
+        "items": [
+            {"category": "上衣"},
+            {"category": "裤子"},
+            {"category": "裙子"},
+        ]
+    }
+
+    assert sog._card_respects_reference(card, "裤子") is False
+
+
+def test_card_respects_reference_accepts_confirmed_pants_slot():
+    card = {
+        "items": [
+            {"category": "上衣"},
+            {"category": "裤子"},
+            {"category": "外套"},
+        ]
+    }
+
+    assert sog._card_respects_reference(card, "裤子") is True

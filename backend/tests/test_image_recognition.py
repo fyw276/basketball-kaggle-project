@@ -81,6 +81,30 @@ class TestColorExtractor:
         assert colors[0].confidence is not None
         assert 0.0 <= colors[0].confidence <= 1.0
 
+    def test_extract_color_ignores_white_product_background(self):
+        extractor = ColorExtractor(n_colors=3)
+        img = Image.new("RGB", (240, 240), "white")
+        for x in range(80, 160):
+            for y in range(40, 220):
+                img.putpixel((x, y), (245, 168, 190))
+
+        colors = extractor.extract_colors(img)
+
+        assert colors[0].name == "粉"
+
+    def test_extract_multicolor_black_white_garment(self):
+        extractor = ColorExtractor(n_colors=3)
+        img = Image.new("RGB", (240, 240), "white")
+        for x in range(50, 190):
+            for y in range(40, 220):
+                is_black = ((x // 24) + (y // 24)) % 2 == 0
+                img.putpixel((x, y), (15, 15, 15) if is_black else (240, 240, 240))
+
+        colors = extractor.extract_colors(img)
+        names = {c.name for c in colors}
+
+        assert {"黑", "白"}.issubset(names)
+
 
 class TestCategoryClassifier:
     """Test category classification"""

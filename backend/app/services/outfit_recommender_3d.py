@@ -24,6 +24,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.core.logging import setup_logging
 from app.models.garment import Garment
 from app.schemas.garment import ColorSchema
+from app.services.garment_taxonomy import (
+    CATEGORY_BAG,
+    CATEGORY_PANTS,
+    CATEGORY_SHOES,
+    CATEGORY_SKIRT,
+    CATEGORY_TOP,
+    normalize_category,
+    validate_outfit_slots,
+)
 from app.services.outfit_rules import CategoryRules, ColorRules, StyleRules
 
 if TYPE_CHECKING:
@@ -134,36 +143,23 @@ SCENE_OUTFIT_TEMPLATES: Dict[str, List[Dict]] = {
     ],
 }
 
-# 场景模板里只会出现这六类；CLIP 等识别器可能把「国风」「复古」等风格词当作 category，导致无法匹配任何模板。
-TEMPLATE_SLOT_CATEGORIES = frozenset({"上衣", "裤子", "裙子", "外套", "鞋", "包"})
-
 
 def normalize_category_for_outfit_templates(raw: Optional[str]) -> str:
-    """
-    将识别结果中的 category 映射到模板槽位品类，避免非标准标签（如「国风」）使模板循环全部 continue。
-    原始标签应保留在 style_tags 中供风格打分。
-    """
-    s = (raw or "").strip()
-    if not s:
-        return "上衣"
-    if s in TEMPLATE_SLOT_CATEGORIES:
-        return s
-    if "裙" in s or s in ("连衣裙", "礼服", "旗袍", "半身裙"):
-        return "裙子"
-    if "裤" in s:
-        return "裤子"
-    if "外套" in s or "夹克" in s or "大衣" in s or "风衣" in s:
-        return "外套"
-    if "鞋" in s or s in ("靴子", "凉鞋", "拖鞋", "运动鞋", "高跟鞋"):
-        return "鞋"
-    if "包" in s or "袋" in s:
-        return "包"
-    return "上衣"
+    return normalize_category(raw, default=CATEGORY_TOP)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 体型感知推荐常量
-# ──────────────────────────────────────────────────────────────────────────────
+def _normalize_garment_category_in_place(garment: Garment) -> None:
+    raw = (getattr(garment, "category", "") or "").strip()
+    normalized = normalize_category(raw, default=CATEGORY_TOP)
+    if normalized == raw:
+        return
+    garment.category = normalized
+    tags = getattr(garment, "style_tags", None) or []
+    if not isinstance(tags, list):
+        tags = []
+    if raw and raw not in tags:
+        garment.style_tags = [raw] + list(tags)
+
 
 BODY_TYPE_IDEAL_FITS: Dict[str, List[str]] = {
     "偏瘦": ["宽松", "oversized", "标准"],
@@ -384,6 +380,10 @@ class OutfitRecommender3D:
 
         if not wardrobe:
             return []
+
+        _normalize_garment_category_in_place(target_garment)
+        for garment in wardrobe:
+            _normalize_garment_category_in_place(garment)
 
         raw_target_cat = (getattr(target_garment, "category", None) or "").strip()
         slot_cat = normalize_category_for_outfit_templates(target_garment.category)
@@ -751,32 +751,31 @@ class OutfitRecommender3D:
         categories: List[str],
         fixed_reference_category: str,
     ) -> bool:
-        cats = set(categories)
-        has_body = "上衣" in cats and bool(cats & {"裤子", "裙子"})
-        if fixed_reference_category in {"鞋", "包"}:
+        cats = {normalize_category(c, default="") for c in categories}
+        fixed = normalize_category(fixed_reference_category, default="")
+        has_body = CATEGORY_TOP in cats and bool(cats & {CATEGORY_PANTS, CATEGORY_SKIRT})
+        if fixed in {CATEGORY_SHOES, CATEGORY_BAG}:
             return has_body
-        return fixed_reference_category in cats
+        return fixed in cats
 
     @staticmethod
     def _template_conflicts_with_fixed_reference(
         categories: List[str],
         fixed_reference_category: str,
     ) -> bool:
-        cats = set(categories)
-        if "裤子" in cats and "裙子" in cats:
+        cats = {normalize_category(c, default="") for c in categories}
+        fixed = normalize_category(fixed_reference_category, default="")
+        if not validate_outfit_slots(cats):
             return True
-        if fixed_reference_category == "裤子" and "裙子" in cats:
+        if fixed == CATEGORY_PANTS and CATEGORY_SKIRT in cats:
             return True
-        if fixed_reference_category == "裙子" and "裤子" in cats:
+        if fixed == CATEGORY_SKIRT and CATEGORY_PANTS in cats:
             return True
         return False
 
     @staticmethod
     def _has_conflicting_bottoms(garments: List[Garment]) -> bool:
-        cats = {getattr(g, "category", None) for g in garments}
-        return "裤子" in cats and "裙子" in cats
-
-    # ─── 4D Scoring ─────────────────────────────────────────────────────────────
+        return not validate_outfit_slots(getattr(g, "category", None) for g in garments)
 
     def _score_outfit_3d(
         self,
@@ -949,15 +948,14 @@ class OutfitRecommender3D:
         return min(1.0, primary_match + secondary_bonus)
 
     def _score_category(self, garments: List[Garment]) -> float:
-        """Score category completeness (has top + bottom)."""
-        categories = {g.category for g in garments}
+        categories = {
+            normalize_category(getattr(g, "category", None), default="") for g in garments
+        }
         has_top = bool(categories & {"上衣", "外套"})
         has_bottom = bool(categories & {"裤子", "裙子"})
         base = 1.0 if has_top and has_bottom else 0.5
-        # Bonus for having 3+ items
         if len(garments) >= 3:
             base = min(1.0, base + 0.1)
-        # Bonus for outerwear in formal scenes
         if "外套" in categories:
             base = min(1.0, base + 0.1)
         return base
@@ -997,16 +995,14 @@ class OutfitRecommender3D:
     # ─── Helpers ─────────────────────────────────────────────────────────────
 
     def _group_by_category(self, wardrobe: List[Garment]) -> Dict[str, List[Garment]]:
-        """Group wardrobe by category."""
-        grouped = {}
+        grouped: Dict[str, List[Garment]] = {}
         for g in wardrobe:
-            if g.category not in grouped:
-                grouped[g.category] = []
-            grouped[g.category].append(g)
+            category = normalize_category(getattr(g, "category", None), default=CATEGORY_TOP)
+            g.category = category
+            grouped.setdefault(category, []).append(g)
         return grouped
 
     def _determine_role(self, garment: Garment) -> str:
-        """Determine the role of a garment in the outfit."""
         role_map = {
             "上衣": "top",
             "裤子": "bottom",
@@ -1015,7 +1011,8 @@ class OutfitRecommender3D:
             "鞋": "shoes",
             "包": "bag",
         }
-        return role_map.get(garment.category, "accessory")
+        category = normalize_category(getattr(garment, "category", None), default="")
+        return role_map.get(category, "accessory")
 
     def _get_secondary_scenes(
         self,
