@@ -149,6 +149,7 @@ class ColorExtractor:
             slot["weight"] = float(slot["weight"]) + float(pct)
             slot["rgb"] = slot["rgb"] + np.array(rgb, dtype=np.float64) * float(pct)
 
+        merged = self._drop_likely_shadow_black(merged)
         ordered = sorted(merged.items(), key=self._color_sort_key, reverse=True)
         out: List[ColorSchema] = []
         for name, data in ordered:
@@ -166,6 +167,28 @@ class ColorExtractor:
             if len(out) >= self.n_colors:
                 break
         return out
+
+    @staticmethod
+    def _drop_likely_shadow_black(
+        merged: dict[str, dict[str, object]],
+    ) -> dict[str, dict[str, object]]:
+        black = merged.get("黑")
+        if not black:
+            return merged
+
+        black_weight = float(black["weight"])
+        light_neutral_weight = sum(
+            float((merged.get(name) or {}).get("weight", 0.0)) for name in ("白", "灰")
+        )
+        chromatic_weight = sum(
+            float((merged.get(name) or {}).get("weight", 0.0)) for name in CHROMATIC_COLOR_NAMES
+        )
+
+        if black_weight <= 0.22 and light_neutral_weight >= 0.30 and chromatic_weight < 0.18:
+            filtered = dict(merged)
+            filtered.pop("黑", None)
+            return filtered
+        return merged
 
     @staticmethod
     def _color_sort_key(item: tuple[str, dict[str, object]]) -> tuple[float, float]:

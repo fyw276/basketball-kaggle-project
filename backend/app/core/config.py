@@ -2,10 +2,13 @@
 Application configuration using Pydantic Settings
 """
 
+from pathlib import Path
 from typing import List
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -509,7 +512,7 @@ class Settings(BaseSettings):
     )
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", str(BACKEND_ROOT / ".env")),
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",

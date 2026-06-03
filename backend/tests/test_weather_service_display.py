@@ -9,6 +9,7 @@ from app.services.weather_service import (
     _is_route_like_road,
     _normalize_admin_parts,
     _normalize_city_query,
+    _should_try_nominatim_after_geocode,
 )
 
 
@@ -73,3 +74,9 @@ def test_amap_cn_weather_to_wmo_approx_maps_common():
     assert _amap_cn_weather_to_wmo_approx("阴") == 3
     assert _amap_cn_weather_to_wmo_approx("阵雨") == 61
     assert _amap_cn_weather_to_wmo_approx("雷阵雨") == 95
+
+
+def test_amap_reverse_success_is_not_overridden_by_nominatim():
+    assert _should_try_nominatim_after_geocode("amap") is False
+    assert _should_try_nominatim_after_geocode("open_meteo_zh") is True
+    assert _should_try_nominatim_after_geocode("none") is True

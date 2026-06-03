@@ -105,6 +105,58 @@ class TestColorExtractor:
 
         assert {"黑", "白"}.issubset(names)
 
+    def test_extract_silver_white_shoe_does_not_promote_shadow_to_black(self):
+        extractor = ColorExtractor(n_colors=3)
+        img = Image.new("RGB", (240, 240), "white")
+        for x in range(46, 194):
+            for y in range(94, 174):
+                img.putpixel((x, y), (226, 228, 226))
+        for x in range(76, 176):
+            for y in range(126, 156):
+                img.putpixel((x, y), (248, 248, 246))
+        for x in range(72, 184):
+            for y in range(166, 178):
+                img.putpixel((x, y), (44, 44, 44))
+
+        colors = extractor.extract_colors(img)
+        names = [c.name for c in colors]
+
+        assert names[0] in {"白", "灰"}
+        assert "黑" not in names
+
+    def test_extract_black_white_pants_keeps_real_black_and_white(self):
+        extractor = ColorExtractor(n_colors=3)
+        img = Image.new("RGB", (260, 260), "white")
+        for x in range(74, 122):
+            for y in range(36, 232):
+                img.putpixel((x, y), (16, 16, 16))
+        for x in range(138, 186):
+            for y in range(36, 232):
+                img.putpixel((x, y), (238, 238, 236))
+
+        colors = extractor.extract_colors(img)
+        names = {c.name for c in colors}
+
+        assert {"黑", "白"}.issubset(names)
+
+    def test_extract_green_skirt_over_mixed_background_keeps_green_main(self):
+        extractor = ColorExtractor(n_colors=3)
+        img = Image.new("RGB", (260, 260), (245, 245, 245))
+        for x in range(40, 96):
+            for y in range(40, 235):
+                img.putpixel((x, y), (226, 177, 139))
+        for x in range(88, 212):
+            for y in range(82, 228):
+                if abs(x - 150) + y < 330:
+                    img.putpixel((x, y), (38, 142, 72))
+        for x in range(110, 204):
+            for y in range(214, 230):
+                img.putpixel((x, y), (34, 34, 34))
+
+        colors = extractor.extract_colors(img)
+
+        assert colors[0].name == "绿"
+
     def test_extract_chromatic_color_over_dark_shadow(self):
         extractor = ColorExtractor(n_colors=3)
         img = Image.new("RGB", (240, 240), (18, 18, 18))

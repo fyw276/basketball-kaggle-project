@@ -321,6 +321,10 @@ def _full_address_spaced(parts: List[str]) -> str:
     return " ".join(p.strip() for p in parts if p and str(p).strip())
 
 
+def _should_try_nominatim_after_geocode(geocode_source: str) -> bool:
+    return (geocode_source or "").strip() != "amap"
+
+
 def _structured_from_open_meteo(r: Dict[str, Any]) -> Tuple[str, str, str, str]:
     """Open-Meteo 单条 result → 省、市、区、街道/路。"""
     province = str(r.get("admin1") or "").strip()
@@ -556,14 +560,15 @@ async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, 
                 )
                 geocode_source = "amap"
 
-        nom, nom_err = await _nominatim_reverse(client, latitude, longitude)
-        if nom_err:
-            geocode_errors.append(f"nominatim: {nom_err}")
-        if nom:
-            p, c, d, s, full_line = _merge_external_with_om(
-                op, oc, od, os, line_om, nom, (p, c, d, s)
-            )
-            geocode_source = "nominatim"
+        if _should_try_nominatim_after_geocode(geocode_source):
+            nom, nom_err = await _nominatim_reverse(client, latitude, longitude)
+            if nom_err:
+                geocode_errors.append(f"nominatim: {nom_err}")
+            if nom:
+                p, c, d, s, full_line = _merge_external_with_om(
+                    op, oc, od, os, line_om, nom, (p, c, d, s)
+                )
+                geocode_source = "nominatim"
 
         if not full_line.strip() and r0:
             fb = _line_from_om_result(r0)
@@ -613,14 +618,24 @@ async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, 
             f"?latitude={latitude}&longitude={longitude}"
             "&current=temperature_2m,weather_code&timezone=auto"
         )
-        wr = await client.get(wx_url)
-        wr.raise_for_status()
-        wj = wr.json()
-        cur_wx = wj.get("current") or {}
-        temp = float(cur_wx.get("temperature_2m", 20.0))
-        code = int(cur_wx.get("weather_code", 0))
+        temp = 22.0
+        code = 0
         wcn = wmo_to_cn(code)
-        weather_source = "open_meteo"
+        weather_source = "fallback"
+        weather_fallback = False
+        try:
+            wr = await client.get(wx_url, timeout=12.0)
+            wr.raise_for_status()
+            wj = wr.json()
+            cur_wx = wj.get("current") or {}
+            temp = float(cur_wx.get("temperature_2m", temp))
+            code = int(cur_wx.get("weather_code", code))
+            wcn = wmo_to_cn(code)
+            weather_source = "open_meteo"
+        except Exception as e:
+            logger.warning(f"open-meteo weather failed: {e}")
+            geocode_errors.append(f"open_meteo_weather: {_truncate_err(str(e))}")
+            weather_fallback = True
 
         if getattr(settings, "AMAP_WEATHER_ENABLED", False) and amap_key:
             city_for_wx = (
@@ -633,6 +648,7 @@ async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, 
                     wcn = str(aw["weather"]).strip() or wcn
                     code = _amap_cn_weather_to_wmo_approx(wcn)
                     weather_source = "amap"
+                    weather_fallback = False
 
         city_short = c or city_short
 
@@ -658,6 +674,7 @@ async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, 
             "geocode_source": geocode_source,
             "geocode_error": err_join,
             "weather_source": weather_source,
+            "fallback": weather_fallback,
         }
 
 
