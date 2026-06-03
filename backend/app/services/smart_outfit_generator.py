@@ -575,11 +575,12 @@ def _card_to_response_dict(
     items_out: List[Dict[str, Any]] = []
     for it in d.get("items") or []:
         mc = it.get("main_color") or {}
+        secondary = it.get("secondary_colors") or []
         raw_cat = (it.get("category") or "").strip()
         cat = normalize_category(raw_cat, default="单品") if raw_cat else "单品"
         if cat not in VALID_CATEGORIES:
             cat = "单品"
-        mc_name = str(mc.get("name") or "").strip()
+        mc_name = _display_color_name(mc, secondary)
         conf = mc.get("confidence")
         try:
             conf_f = float(conf) if conf is not None else None
@@ -599,6 +600,7 @@ def _card_to_response_dict(
                 "fit_note": it.get("role", ""),
                 "style_tags": it.get("style_tags") or [],
                 "main_color": mc,
+                "secondary_colors": secondary,
                 "color_hint": color_hint,
             }
         )
@@ -630,6 +632,17 @@ def _card_to_response_dict(
     d["weather_fit_note"] = weather_note
     d["adapter_note"] = weather_note
     return d
+
+
+def _display_color_name(main_color: Dict[str, Any], secondary_colors: List[Any]) -> str:
+    names = [str((main_color or {}).get("name") or "").strip()]
+    for c in secondary_colors or []:
+        if isinstance(c, dict):
+            names.append(str(c.get("name") or "").strip())
+    normalized = [normalize_color_name(n, default="") for n in names if n]
+    if "黑" in normalized and "白" in normalized:
+        return "黑白"
+    return normalized[0] if normalized else ""
 
 
 def _card_respects_reference(card: Dict[str, Any], reference_category: str) -> bool:

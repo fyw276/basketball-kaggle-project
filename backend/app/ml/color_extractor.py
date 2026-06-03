@@ -20,6 +20,9 @@ from app.services.garment_taxonomy import normalize_color_name
 
 logger = setup_logging()
 
+CHROMATIC_COLOR_NAMES = {"红", "黄", "绿", "蓝", "紫", "粉", "棕"}
+NEUTRAL_COLOR_NAMES = {"黑", "白", "灰"}
+
 
 class ColorExtractor:
     """Extract dominant garment colors with lightweight background suppression."""
@@ -146,10 +149,9 @@ class ColorExtractor:
             slot["weight"] = float(slot["weight"]) + float(pct)
             slot["rgb"] = slot["rgb"] + np.array(rgb, dtype=np.float64) * float(pct)
 
+        ordered = sorted(merged.items(), key=self._color_sort_key, reverse=True)
         out: List[ColorSchema] = []
-        for name, data in sorted(
-            merged.items(), key=lambda kv: float(kv[1]["weight"]), reverse=True
-        ):
+        for name, data in ordered:
             weight = max(float(data["weight"]), 1e-6)
             rgb = tuple(int(np.clip(round(v / weight), 0, 255)) for v in data["rgb"])
             out.append(
@@ -164,6 +166,20 @@ class ColorExtractor:
             if len(out) >= self.n_colors:
                 break
         return out
+
+    @staticmethod
+    def _color_sort_key(item: tuple[str, dict[str, object]]) -> tuple[float, float]:
+        name, data = item
+        weight = float(data["weight"])
+        if name in CHROMATIC_COLOR_NAMES and weight >= 0.08:
+            return (3.0, weight)
+        if name == "黑" and weight >= 0.12:
+            return (2.2, weight)
+        if name in CHROMATIC_COLOR_NAMES and weight >= 0.04:
+            return (2.0, weight)
+        if name in NEUTRAL_COLOR_NAMES:
+            return (1.0, weight)
+        return (0.0, weight)
 
     def map_to_standard_color(self, rgb: Tuple[int, int, int]) -> str:
         h, s, v = self.rgb_to_hsv(rgb)

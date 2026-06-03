@@ -105,6 +105,17 @@ class TestColorExtractor:
 
         assert {"黑", "白"}.issubset(names)
 
+    def test_extract_chromatic_color_over_dark_shadow(self):
+        extractor = ColorExtractor(n_colors=3)
+        img = Image.new("RGB", (240, 240), (18, 18, 18))
+        for x in range(70, 170):
+            for y in range(70, 205):
+                img.putpixel((x, y), (45, 145, 75))
+
+        colors = extractor.extract_colors(img)
+
+        assert colors[0].name == "绿"
+
 
 class TestCategoryClassifier:
     """Test category classification"""

@@ -242,3 +242,13 @@ def test_card_respects_reference_accepts_confirmed_pants_slot():
     }
 
     assert sog._card_respects_reference(card, "裤子") is True
+
+
+def test_display_color_name_combines_black_and_white():
+    assert (
+        sog._display_color_name(
+            {"name": "白", "confidence": 0.55},
+            [{"name": "黑", "confidence": 0.35}],
+        )
+        == "黑白"
+    )

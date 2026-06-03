@@ -4,10 +4,49 @@ import 'fashion_palettes.dart';
 class AppTheme {
   AppTheme._();
 
+  static const List<String> _fontFallback = [
+    'Noto Sans CJK SC',
+    'Noto Sans SC',
+    'Microsoft YaHei',
+    'Microsoft YaHei UI',
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Source Han Sans SC',
+    'SimHei',
+    'Arial Unicode MS',
+  ];
+
+  static TextStyle? _fallbackTextStyle(TextStyle? style) =>
+      style?.copyWith(fontFamilyFallback: _fontFallback);
+
+  static TextTheme _withChineseFallback(TextTheme base) {
+    return base.copyWith(
+      displayLarge: _fallbackTextStyle(base.displayLarge),
+      displayMedium: _fallbackTextStyle(base.displayMedium),
+      displaySmall: _fallbackTextStyle(base.displaySmall),
+      headlineLarge: _fallbackTextStyle(base.headlineLarge),
+      headlineMedium: _fallbackTextStyle(base.headlineMedium),
+      headlineSmall: _fallbackTextStyle(base.headlineSmall),
+      titleLarge: _fallbackTextStyle(base.titleLarge),
+      titleMedium: _fallbackTextStyle(base.titleMedium),
+      titleSmall: _fallbackTextStyle(base.titleSmall),
+      bodyLarge: _fallbackTextStyle(base.bodyLarge),
+      bodyMedium: _fallbackTextStyle(base.bodyMedium),
+      bodySmall: _fallbackTextStyle(base.bodySmall),
+      labelLarge: _fallbackTextStyle(base.labelLarge),
+      labelMedium: _fallbackTextStyle(base.labelMedium),
+      labelSmall: _fallbackTextStyle(base.labelSmall),
+    );
+  }
+
   /// 从 Palette（三段配色）构建 ThemeData。
   static ThemeData buildThemeDataFromPalette(Palette p) {
+    final baseTextTheme = _withChineseFallback(Typography.material2021().black);
     return ThemeData(
       useMaterial3: true,
+      fontFamilyFallback: _fontFallback,
+      textTheme: baseTextTheme,
+      primaryTextTheme: _withChineseFallback(Typography.material2021().black),
       colorScheme: ColorScheme.fromSeed(
         seedColor: p.primary,
         brightness: Brightness.light,
@@ -48,7 +87,10 @@ class AppTheme {
       chipTheme: ChipThemeData(
         backgroundColor: p.chipUnselectedBg,
         selectedColor: p.chipSelectedBg,
-        labelStyle: TextStyle(color: p.textTitle),
+        labelStyle: TextStyle(
+          color: p.textTitle,
+          fontFamilyFallback: _fontFallback,
+        ),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
       ),
       navigationBarTheme: NavigationBarThemeData(
@@ -58,9 +100,17 @@ class AppTheme {
         labelTextStyle: WidgetStateProperty.resolveWith((states) {
           if (states.contains(WidgetState.selected)) {
             return TextStyle(
-                color: p.primary, fontWeight: FontWeight.w700, fontSize: 12);
+              color: p.primary,
+              fontWeight: FontWeight.w700,
+              fontSize: 12,
+              fontFamilyFallback: _fontFallback,
+            );
           }
-          return TextStyle(color: p.textBody, fontSize: 12);
+          return TextStyle(
+            color: p.textBody,
+            fontSize: 12,
+            fontFamilyFallback: _fontFallback,
+          );
         }),
         iconTheme: WidgetStateProperty.resolveWith((states) {
           if (states.contains(WidgetState.selected)) {
@@ -102,6 +152,9 @@ class AppTheme {
       buildThemeDataFromPalette(FashionPalettes.fromGenderExpression(0.5));
   static ThemeData get darkTheme => ThemeData(
         useMaterial3: true,
+        fontFamilyFallback: _fontFallback,
+        textTheme: _withChineseFallback(Typography.material2021().white),
+        primaryTextTheme: _withChineseFallback(Typography.material2021().white),
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF6366F1),
           brightness: Brightness.dark,

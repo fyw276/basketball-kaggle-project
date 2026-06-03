@@ -204,6 +204,7 @@ class OutfitItem(BaseModel):
     garment_id: UUID
     category: str
     main_color: ColorSchema
+    secondary_colors: List[ColorSchema] = Field(default_factory=list)
     style_tags: List[str]
     image_url: str
     role: str  # target / top / bottom / outer / shoes / bag
@@ -877,17 +878,25 @@ class OutfitRecommender3D:
             if not isinstance(st, list):
                 st = []
             mc = getattr(g, "main_color", None) or {}
+            sc = getattr(g, "secondary_colors", None) or []
+            if not isinstance(sc, list):
+                sc = []
+            main_color = (
+                ColorSchema(**mc)
+                if isinstance(mc, dict)
+                else ColorSchema(
+                    name="?",
+                    rgb=(128, 128, 128),
+                    hsv=(0.0, 0.0, 50.0),
+                    hex_code="#808080",
+                )
+            )
             items.append(
                 OutfitItem(
                     garment_id=g.garment_id,
                     category=g.category,
-                    main_color=(
-                        ColorSchema(**mc)
-                        if isinstance(mc, dict)
-                        else ColorSchema(
-                            name="灰", rgb=(128, 128, 128), hsv=(0.0, 0.0, 50.0), hex_code="#808080"
-                        )
-                    ),
+                    main_color=main_color,
+                    secondary_colors=[ColorSchema(**c) for c in sc if isinstance(c, dict)],
                     style_tags=st,
                     image_url=_public_image_url_for_garment(g),
                     role=role,
