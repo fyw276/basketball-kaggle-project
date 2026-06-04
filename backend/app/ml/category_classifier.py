@@ -1,5 +1,8 @@
 """
-Category classification for garment images using MobileNetV2
+Category classification for garment images.
+
+Primary: CLIP zero-shot classifier (clip_category_classifier.py)
+Fallback: MobileNetV2 ImageNet mapping (when CLIP/PyTorch unavailable)
 """
 
 from pathlib import Path
@@ -7,6 +10,10 @@ from typing import Any, Tuple, Union
 
 import numpy as np
 from PIL import Image
+
+from app.core.logging import setup_logging
+from app.ml.image_preprocessor import ImagePreprocessor
+from app.ml.model_loader import ModelLoader
 
 try:
     import tensorflow as tf
@@ -17,9 +24,15 @@ except Exception:  # pragma: no cover - optional dependency
 if tf is not None and (not hasattr(tf, "keras") or not hasattr(tf, "Tensor")):  # pragma: no cover
     tf = None
 
-from app.core.logging import setup_logging
-from app.ml.image_preprocessor import ImagePreprocessor
-from app.ml.model_loader import ModelLoader
+# Check if CLIP (PyTorch + transformers) is available
+_CLIP_AVAILABLE = False
+try:
+    import torch  # noqa: F401
+    import transformers  # noqa: F401
+
+    _CLIP_AVAILABLE = True
+except Exception:
+    pass
 
 logger = setup_logging()
 
@@ -71,12 +84,13 @@ class CategoryClassifier:
         self.model_loader = model_loader or ModelLoader()
         self.preprocessor = preprocessor or ImagePreprocessor()
         self.confidence_threshold = 0.12
+        self.use_clip_fallback = tf is None
 
-        # Load MobileNetV2 with ImageNet classification head for now
-        # In production, this should be a fine-tuned model
+        # Load MobileNetV2 as fallback (CLIP is loaded lazily as primary)
         self.model = self._load_classification_model()
 
-        logger.info(f"CategoryClassifier initialized with threshold={confidence_threshold}")
+        primary = "CLIP zero-shot" if _CLIP_AVAILABLE else "MobileNetV2 ImageNet"
+        logger.info(f"CategoryClassifier initialized, primary={primary}")
 
     def _load_classification_model(self) -> Any:
         """
@@ -108,16 +122,25 @@ class CategoryClassifier:
         self, image_source: Union[str, Path, bytes, Image.Image]
     ) -> Tuple[str, float]:
         """
-        Classify garment category from image
+        Classify garment category from image.
 
-        Args:
-            image_source: Image file path, bytes, or PIL Image
-
-        Returns:
-            Tuple[str, float]: (category_name, confidence)
-                - category_name: One of 6 categories (上衣/裤子/裙子/外套/鞋/包)
-                - confidence: Confidence score [0, 1]
+        Primary path: CLIP zero-shot classifier (two-stage outer detection).
+        Fallback: MobileNetV2 ImageNet mapping (when CLIP unavailable).
         """
+        # ── Primary: CLIP zero-shot classifier ─────────────────────
+        if _CLIP_AVAILABLE:
+            try:
+                return self._classify_with_clip_fallback(image_source)
+            except Exception as exc:
+                logger.warning(
+                    "CLIP primary classification failed, falling back to MobileNetV2: %s", exc
+                )
+
+        # ── Fallback: MobileNetV2 ImageNet mapping ─────────────────
+        if isinstance(self.model, _FallbackCategoryModel):
+            # TensorFlow unavailable and CLIP also failed
+            return self.heuristic_category(image_source), 0.0
+
         # Preprocess image
         preprocessed = self.preprocessor.preprocess_single(image_source)
 
@@ -135,6 +158,21 @@ class CategoryClassifier:
         logger.info(f"Classified as '{category}' with confidence {confidence:.3f}")
 
         return category, confidence
+
+    def _classify_with_clip_fallback(
+        self,
+        image_source: Union[str, Path, bytes, Image.Image],
+        fallback_confidence: float = 0.0,
+    ) -> Tuple[str, float]:
+        """Use CLIP zero-shot classification before geometry fallback."""
+        try:
+            from app.ml.clip_category_classifier import get_clip_category_classifier
+
+            category, confidence = get_clip_category_classifier().classify_category(image_source)
+            return category, confidence
+        except Exception as exc:
+            logger.warning("CLIP category fallback failed: %s", exc)
+            return self.heuristic_category(image_source), fallback_confidence
 
     def _map_to_garment_category(self, predictions: np.ndarray) -> Tuple[str, float]:
         """

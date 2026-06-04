@@ -222,8 +222,43 @@ class _SmartOutfitPageState extends State<_SmartOutfitPage> {
         (ctrl.imageUrl != null && ctrl.imageUrl!.isNotEmpty);
     if (!hasReference) return const SizedBox.shrink();
 
-    const categories = ['上衣', '裤子', '裙子', '外套', '鞋', '包'];
-    const colors = ['白', '黑', '粉', '蓝', '灰', '棕', '米色', '红', '绿'];
+    const categories = [
+      '上衣',
+      '裤子',
+      '裙子',
+      '外套',
+      '鞋',
+      '包',
+      '连衣裙',
+      '汉服',
+      '国风',
+      '马面裙',
+    ];
+    const colors = [
+      '白',
+      '黑',
+      '灰',
+      '红',
+      '粉',
+      '橙',
+      '棕',
+      '米',
+      '卡其',
+      '黄',
+      '绿',
+      '青',
+      '墨绿',
+      '蓝',
+      '藏青',
+      '紫',
+      '酒红',
+      '金',
+      '银',
+      '浅蓝',
+      '浅绿',
+      '浅紫',
+      '深灰',
+    ];
     final recognition = ctrl.referenceRecognition;
     final confidence = recognition['category_confidence'];
     final confidenceText =

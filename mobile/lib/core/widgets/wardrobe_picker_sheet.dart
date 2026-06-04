@@ -56,9 +56,12 @@ class _WardrobePickerSheetState extends State<WardrobePickerSheet> {
     '裤子',
     '裙子',
     '外套',
-    '鞋子',
-    '包包',
-    '配饰',
+    '鞋',
+    '包',
+    '连衣裙',
+    '汉服',
+    '国风',
+    '马面裙',
   ];
 
   String _selectedCat = '全部';

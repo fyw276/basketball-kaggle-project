@@ -27,9 +27,10 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     _Cat('裤子', Icons.airline_seat_legroom_normal),
     _Cat('裙子', Icons.checkroom),
     _Cat('外套', Icons.layers),
-    _Cat('鞋子', Icons.snowshoeing),
-    _Cat('包包', Icons.shopping_bag),
-    _Cat('配饰', Icons.watch),
+    _Cat('鞋', Icons.snowshoeing),
+    _Cat('包', Icons.shopping_bag),
+    _Cat('连衣裙', Icons.woman),
+    _Cat('汉服', Icons.architecture),
   ];
 
   String _chip = '全部';
@@ -147,11 +148,14 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     final map = {
       '上衣': ['上衣', 'T恤', '衬衫', '卫衣', '针织衫', '上衣(汉)'],
       '裤子': ['裤子', '下装', '牛仔裤', '长裤', '下装(汉)'],
-      '裙子': ['裙子', '连衣裙', '短裙', '长裙', '马面裙', '汉服', '国风'],
+      '裙子': ['裙子', '短裙', '长裙'],
       '外套': ['外套', '夹克', '大衣', '风衣', '羽绒服'],
-      '鞋子': ['鞋子', '鞋', '运动鞋', '高跟鞋', '靴子'],
-      '包包': ['包包', '包', '背包', '手提包'],
-      '配饰': ['配饰', '帽子', '围巾', '腰带', '手表'],
+      '鞋': ['鞋', '鞋子', '运动鞋', '高跟鞋', '靴子'],
+      '包': ['包', '包包', '背包', '手提包'],
+      '连衣裙': ['连衣裙', '裙', '礼服'],
+      '汉服': ['汉服', '上衣(汉)', '下装(汉)'],
+      '国风': ['国风', '新中式'],
+      '马面裙': ['马面裙'],
     };
     final targets = map[to] ?? [to];
     return targets.any((t) => from.contains(t) || t.contains(from));
