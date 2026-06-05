@@ -709,17 +709,34 @@ class _SimilarityScreenState extends State<SimilarityScreen> {
                 subtitle: Text(item['part_role']?.toString() ?? ''),
                 trailing: IconButton(
                   icon: const Icon(Icons.arrow_forward),
-                  onPressed: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => const VirtualTryonScreen(),
-                      ),
-                    );
-                  },
+                  onPressed: () => _openTryonCandidate(item),
                 ),
               );
             }),
           ],
+        ),
+      ),
+    );
+  }
+
+  void _openTryonCandidate(Map<String, dynamic> item) {
+    final imageUrl = item['image_url']?.toString().trim() ?? '';
+    if (imageUrl.isEmpty) {
+      showAppSnackBar(
+        context,
+        '该候选缺少图片地址，无法带入试衣',
+        backgroundColor: Colors.orange,
+      );
+      return;
+    }
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => VirtualTryonScreen(
+          prefilledGarmentId: item['garment_id']?.toString(),
+          prefilledGarmentImageUrl: imageUrl,
+          prefilledCategory:
+              item['category']?.toString() ?? item['part_role']?.toString(),
         ),
       ),
     );

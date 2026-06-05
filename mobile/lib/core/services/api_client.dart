@@ -993,6 +993,8 @@ class ApiClient {
   Future<Map<String, dynamic>> virtualTryon({
     dynamic garmentImage,
     dynamic personImage,
+    String? garmentId,
+    String? imageUrl,
     String? prompt,
     String modelGender = 'neutral',
     String? garmentCategory,
@@ -1009,6 +1011,12 @@ class ApiClient {
         final part = await _multipartImage('garment_file', garmentImage);
         if (part == null) return {'error': 'Unsupported garment image type'};
         request.files.add(part);
+      }
+      if (garmentId != null && garmentId.trim().isNotEmpty) {
+        request.fields['garment_id'] = garmentId.trim();
+      }
+      if (imageUrl != null && imageUrl.trim().isNotEmpty) {
+        request.fields['image_url'] = imageUrl.trim();
       }
 
       if (personImage != null) {
@@ -1065,8 +1073,14 @@ class ApiClient {
   /// 方案 A 预检：只评估输入质量，不生成试衣图。
   Future<Map<String, dynamic>> tryonV2ValidateInput({
     dynamic garmentImage,
+    dynamic garmentImage2,
     dynamic personImage,
+    String? garmentId,
+    String? garmentId2,
+    String? garmentImageUrl,
+    String? garmentImageUrl2,
     String garmentCategory = 'bottom',
+    String garmentCategory2 = 'bottom',
     String mode = 'strict',
     Duration timeout = const Duration(seconds: 60),
   }) async {
@@ -1083,15 +1097,35 @@ class ApiClient {
         if (part == null) return {'error': 'Unsupported garment image type'};
         request.files.add(part);
       }
+      if (garmentImage2 != null) {
+        final part = await _multipartImage('garment_file_2', garmentImage2);
+        if (part == null) return {'error': 'Unsupported garment image type'};
+        request.files.add(part);
+      }
 
       if (personImage != null) {
         final part = await _multipartImage('person_file', personImage);
         if (part == null) return {'error': 'Unsupported person image type'};
         request.files.add(part);
       }
+      if (garmentId != null && garmentId.trim().isNotEmpty) {
+        request.fields['garment_id'] = garmentId.trim();
+      }
+      if (garmentId2 != null && garmentId2.trim().isNotEmpty) {
+        request.fields['garment_id_2'] = garmentId2.trim();
+      }
+      if (garmentImageUrl != null && garmentImageUrl.trim().isNotEmpty) {
+        request.fields['garment_image_url'] = garmentImageUrl.trim();
+      }
+      if (garmentImageUrl2 != null && garmentImageUrl2.trim().isNotEmpty) {
+        request.fields['garment_image_url_2'] = garmentImageUrl2.trim();
+      }
 
       if (garmentCategory.trim().isNotEmpty) {
         request.fields['garment_category'] = garmentCategory.trim();
+      }
+      if (garmentCategory2.trim().isNotEmpty) {
+        request.fields['garment_category_2'] = garmentCategory2.trim();
       }
       request.fields['mode'] = mode;
 
@@ -1155,7 +1189,6 @@ class ApiClient {
         if (part == null) return {'error': 'Unsupported person image type'};
         request.files.add(part);
       }
-
       request.fields['model_gender'] = modelGender;
       request.fields['mode'] = mode;
       if (prompt != null && prompt.trim().isNotEmpty) {
@@ -1212,6 +1245,8 @@ class ApiClient {
     dynamic garmentImage,
     dynamic garmentImage2,
     dynamic personImage,
+    String? garmentId,
+    String? garmentId2,
     String? garmentImageUrl,
     String? garmentImageUrl2,
     String? prompt,
@@ -1249,6 +1284,12 @@ class ApiClient {
         request.files.add(part);
       }
 
+      if (garmentId != null && garmentId.trim().isNotEmpty) {
+        request.fields['garment_id'] = garmentId.trim();
+      }
+      if (garmentId2 != null && garmentId2.trim().isNotEmpty) {
+        request.fields['garment_id_2'] = garmentId2.trim();
+      }
       request.fields['model_gender'] = modelGender;
       request.fields['mode'] = mode;
       request.fields['garment_category'] = garmentCategory;

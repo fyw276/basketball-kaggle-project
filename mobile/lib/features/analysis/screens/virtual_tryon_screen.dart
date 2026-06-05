@@ -1,3 +1,5 @@
+// ignore_for_file: prefer_const_constructors
+
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -159,6 +161,12 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
   final _aspectRatioCache = <String, double>{};
 
   static const _cacheKey = 'virtual_tryon';
+  static const _carouselDotRadius = BorderRadius.all(Radius.circular(4));
+
+  String? get _prefilledGarmentId {
+    final value = widget.prefilledGarmentId?.trim();
+    return value == null || value.isEmpty ? null : value;
+  }
 
   @override
   void initState() {
@@ -334,10 +342,12 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
 
   Future<void> _generate() async {
     final hasPrimaryGarment = _garmentImage != null ||
-        (_standardizedGarmentUrl?.trim().isNotEmpty ?? false);
+        (_standardizedGarmentUrl?.trim().isNotEmpty ?? false) ||
+        _prefilledGarmentId != null;
     if (!hasPrimaryGarment || _personFront == null) return;
     if (_garmentCategory == _GarmentCategoryChoice.outfit &&
-        _garmentImage2 == null) {
+        _garmentImage2 == null &&
+        (_standardizedGarmentUrl2?.trim().isNotEmpty ?? false) == false) {
       if (mounted) {
         showAppSnackBar(context, '已选择「上衣+下装」，请再上传第二件（下装/裙装）');
       }
@@ -454,6 +464,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
       garmentImage: _garmentImage,
       garmentImage2: isOutfit ? _garmentImage2 : null,
       personImage: _personFront,
+      garmentId: _prefilledGarmentId,
       garmentCategory: isOutfit ? 'outfit' : (cat.isEmpty ? 'auto' : cat),
       garmentCategory2: 'bottom',
       garmentImageUrl: _standardizedGarmentUrl,
@@ -474,6 +485,8 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
       return auth.apiClient.virtualTryon(
         garmentImage: _garmentImage,
         personImage: _personFront,
+        garmentId: _prefilledGarmentId,
+        imageUrl: _standardizedGarmentUrl,
         garmentCategory: _garmentCategory.apiValue,
       );
     }
@@ -513,11 +526,14 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
     final garment = _garmentImage;
     final person = _personFront;
     final hasGarmentUrl = _standardizedGarmentUrl?.trim().isNotEmpty ?? false;
-    if ((garment == null && !hasGarmentUrl) || person == null) {
+    final hasGarmentId = _prefilledGarmentId != null;
+    if ((garment == null && !hasGarmentUrl && !hasGarmentId) ||
+        person == null) {
       return '请先上传衣服图和人物照';
     }
     if (_garmentCategory == _GarmentCategoryChoice.outfit &&
-        _garmentImage2 == null) {
+        _garmentImage2 == null &&
+        (_standardizedGarmentUrl2?.trim().isNotEmpty ?? false) == false) {
       return '已选择「上衣+下装」，请再上传第二件（下装/裙装）';
     }
 
@@ -553,17 +569,18 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
       return personCheck;
     }
 
-    if (garment == null && hasGarmentUrl) {
-      return null;
-    }
-
     final category = (_garmentCategory.apiValue ?? 'auto').trim();
     final mode = _qualityMode.validateApiValue;
     final isOutfit = _garmentCategory == _GarmentCategoryChoice.outfit;
     final remote = await apiClient.tryonV2ValidateInput(
       garmentImage: garment,
+      garmentImage2: isOutfit ? _garmentImage2 : null,
       personImage: person,
+      garmentId: _prefilledGarmentId,
+      garmentImageUrl: _standardizedGarmentUrl,
+      garmentImageUrl2: isOutfit ? _standardizedGarmentUrl2 : null,
       garmentCategory: isOutfit ? 'outfit' : category,
+      garmentCategory2: 'bottom',
       mode: mode,
     );
 
@@ -1395,7 +1412,8 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
               child: ElevatedButton.icon(
                 onPressed: ((_garmentImage != null ||
                             (_standardizedGarmentUrl?.trim().isNotEmpty ??
-                                false)) &&
+                                false) ||
+                            _prefilledGarmentId != null) &&
                         _personFront != null &&
                         !_loading)
                     ? _generate
@@ -1458,8 +1476,7 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                         color: i == _currentIndex
                             ? palette.primary
                             : palette.divider,
-                        borderRadius:
-                            const BorderRadius.all(Radius.circular(4)),
+                        borderRadius: _carouselDotRadius,
                       ),
                     );
                   }),
