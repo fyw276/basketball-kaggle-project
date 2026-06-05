@@ -75,6 +75,51 @@ def test_low_confidence_fallback_only_for_unknown_auto_categories(raw):
     assert mod._should_use_low_confidence_fallback(raw, manual_category_selected=False) is True
 
 
+@pytest.mark.parametrize(("clip_category", "expected"), [("鞋", "鞋"), ("包", "包")])
+def test_clip_upload_category_override_rescues_shoes_and_bags(monkeypatch, clip_category, expected):
+    class _ClipCategoryClassifier:
+        def classify_category(self, _image_bytes):
+            return clip_category, 0.13
+
+    monkeypatch.setattr(
+        "app.ml.clip_category_classifier.get_clip_category_classifier",
+        lambda: _ClipCategoryClassifier(),
+    )
+
+    assert mod._clip_upload_category_override(b"img", "上衣", 0.08, False) == (
+        expected,
+        0.13,
+    )
+
+
+def test_clip_upload_category_override_respects_manual_category(monkeypatch):
+    class _ClipCategoryClassifier:
+        def classify_category(self, _image_bytes):
+            return "鞋", 0.99
+
+    monkeypatch.setattr(
+        "app.ml.clip_category_classifier.get_clip_category_classifier",
+        lambda: _ClipCategoryClassifier(),
+    )
+
+    assert mod._clip_upload_category_override(b"img", "上衣", 0.08, True) is None
+
+
+def test_silhouette_override_turns_upper_into_pants(monkeypatch):
+    monkeypatch.setattr(mod, "_looks_like_pants_image", lambda _b: True)
+    assert mod._apply_silhouette_category_override(b"img", "上衣", False) == "裤子"
+
+
+def test_silhouette_override_respects_manual_category(monkeypatch):
+    monkeypatch.setattr(mod, "_looks_like_pants_image", lambda _b: True)
+    assert mod._apply_silhouette_category_override(b"img", "上衣", True) == "上衣"
+
+
+def test_silhouette_override_leaves_non_pants_as_is(monkeypatch):
+    monkeypatch.setattr(mod, "_looks_like_pants_image", lambda _b: False)
+    assert mod._apply_silhouette_category_override(b"img", "上衣", False) == "上衣"
+
+
 def test_recognize_with_cache_hit(monkeypatch):
     cached = {
         "category": "上衣",

@@ -96,6 +96,85 @@ def _should_use_low_confidence_fallback(raw_category: str, manual_category_selec
     return not _is_known_auto_category(raw_category)
 
 
+def _clip_upload_category_override(
+    image_bytes: bytes,
+    current_category: str,
+    current_confidence: float,
+    manual_category_selected: bool,
+) -> tuple[str, float] | None:
+    """Use the focused CLIP category model to rescue product-photo upload categories.
+
+    The legacy recognizer is still useful for colors/features, but ImageNet or
+    geometry fallbacks tend to bias square/wide shoes and bags into "上衣".
+    """
+    if manual_category_selected:
+        return None
+    try:
+        from app.ml.clip_category_classifier import get_clip_category_classifier
+
+        clip_category, clip_confidence = get_clip_category_classifier().classify_category(
+            image_bytes
+        )
+    except Exception as exc:
+        logger.info("Wardrobe upload CLIP category override unavailable: %s", exc)
+        return None
+
+    clip_category_for_save = _normalize_auto_category(clip_category)
+    if clip_category_for_save not in VALID_CATEGORIES:
+        return None
+
+    current_category = _normalize_auto_category(current_category)
+    should_override = (
+        # Shoes and bags are common product-photo failures for ImageNet/geometry.
+        (clip_category_for_save in {"鞋", "包"} and clip_confidence >= 0.12)
+        or (
+            current_category == "上衣"
+            and current_confidence < 0.45
+            and clip_confidence >= 0.20
+            and clip_category_for_save != current_category
+        )
+        or (current_confidence < 0.15 and clip_confidence >= 0.12)
+    )
+    if not should_override:
+        return None
+
+    logger.info(
+        "Wardrobe upload CLIP category override: %s(conf=%.3f) -> %s(conf=%.3f)",
+        current_category,
+        current_confidence,
+        clip_category_for_save,
+        clip_confidence,
+    )
+    return clip_category_for_save, float(clip_confidence)
+
+
+def _looks_like_pants_image(image_bytes: bytes) -> bool:
+    try:
+        from app.services.tryon_v2.preprocess import _looks_like_pants_shape
+
+        img = Image.open(io.BytesIO(image_bytes))
+        img.load()
+        return bool(_looks_like_pants_shape(img))
+    except Exception:
+        return False
+
+
+def _apply_silhouette_category_override(
+    image_bytes: bytes,
+    category_for_save: str,
+    manual_category_selected: bool,
+) -> str:
+    if manual_category_selected:
+        return category_for_save
+    if category_for_save != "裤子" and _looks_like_pants_image(image_bytes):
+        logger.info(
+            "Wardrobe category silhouette override: %s -> 裤子",
+            category_for_save,
+        )
+        return "裤子"
+    return category_for_save
+
+
 def _normalize_category_for_update(raw: str) -> str:
     s = (raw or "").strip()
     if s in _SIDEBAR_TO_BACKEND_CATEGORY:
@@ -225,7 +304,8 @@ async def upload_garment_simple(
             )
 
         recognized_category = str(recognition_result.get("category") or "").strip()
-        category_confidence = float(recognition_result.get("category_confidence") or 0.0)
+        recognized_confidence = float(recognition_result.get("category_confidence") or 0.0)
+        category_confidence = recognized_confidence
         category_for_save = _normalize_auto_category(recognized_category)
         manual_category_selected = False
 
@@ -240,10 +320,25 @@ async def upload_garment_simple(
             category_for_save = manual_category
             manual_category_selected = True
 
+        clip_override = _clip_upload_category_override(
+            image_bytes,
+            category_for_save,
+            category_confidence,
+            manual_category_selected,
+        )
+        if clip_override is not None:
+            category_for_save, category_confidence = clip_override
+
         # CLIP 不可用或置信度过低时，用 MobileNet 六大类兜底，保证侧栏分类可用。
-        if category_confidence < 0.15 and _should_use_low_confidence_fallback(
-            recognized_category, manual_category_selected
-        ):
+        should_run_legacy_fallback = (
+            clip_override is None
+            and category_confidence < 0.15
+            and _should_use_low_confidence_fallback(
+                recognized_category,
+                manual_category_selected,
+            )
+        )
+        if should_run_legacy_fallback:
             try:
                 from app.ml.category_classifier import CategoryClassifier
 
@@ -251,6 +346,17 @@ async def upload_garment_simple(
                 category_for_save = _normalize_auto_category(fallback_category)
             except Exception:
                 pass
+
+        category_for_save = _apply_silhouette_category_override(
+            image_bytes, category_for_save, manual_category_selected
+        )
+        logger.info(
+            "Wardrobe upload category decision: raw=%r raw_conf=%.3f manual=%s saved=%s",
+            recognized_category,
+            recognized_confidence,
+            manual_category_selected,
+            category_for_save,
+        )
 
         # Step 2: Save image
         try:
@@ -389,7 +495,8 @@ async def upload_garments_batch_simple(
                 cache_hits += 1
 
             recognized_category = str(recognition_result.get("category") or "").strip()
-            category_confidence = float(recognition_result.get("category_confidence") or 0.0)
+            recognized_confidence = float(recognition_result.get("category_confidence") or 0.0)
+            category_confidence = recognized_confidence
             category_for_save = _normalize_auto_category(recognized_category)
             manual_category_selected = False
 
@@ -403,9 +510,24 @@ async def upload_garments_batch_simple(
                 category_for_save = manual_category
                 manual_category_selected = True
 
-            if category_confidence < 0.15 and _should_use_low_confidence_fallback(
-                recognized_category, manual_category_selected
-            ):
+            clip_override = _clip_upload_category_override(
+                image_bytes,
+                category_for_save,
+                category_confidence,
+                manual_category_selected,
+            )
+            if clip_override is not None:
+                category_for_save, category_confidence = clip_override
+
+            should_run_legacy_fallback = (
+                clip_override is None
+                and category_confidence < 0.15
+                and _should_use_low_confidence_fallback(
+                    recognized_category,
+                    manual_category_selected,
+                )
+            )
+            if should_run_legacy_fallback:
                 try:
                     from app.ml.category_classifier import CategoryClassifier
 
@@ -413,6 +535,19 @@ async def upload_garments_batch_simple(
                     category_for_save = _normalize_auto_category(fallback_category)
                 except Exception:
                     pass
+
+            category_for_save = _apply_silhouette_category_override(
+                image_bytes, category_for_save, manual_category_selected
+            )
+            logger.info(
+                "Wardrobe batch upload category decision: file=%r raw=%r raw_conf=%.3f "
+                "manual=%s saved=%s",
+                filename,
+                recognized_category,
+                recognized_confidence,
+                manual_category_selected,
+                category_for_save,
+            )
 
             await file.seek(0)
             image_path, image_url = await storage.save_image(file, str(current_user.user_id))

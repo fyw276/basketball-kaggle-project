@@ -412,7 +412,7 @@ class _AgentChatPageState extends State<_AgentChatPage> {
                     height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : Icon(Icons.send, color: palette.onPrimary),
+                : Icon(Icons.send, color: theme.colorScheme.onPrimary),
             style: IconButton.styleFrom(
               backgroundColor:
                   ctrl.isRunning ? theme.disabledColor : palette.primary,

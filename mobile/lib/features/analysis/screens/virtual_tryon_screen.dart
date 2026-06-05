@@ -1,9 +1,14 @@
-import 'package:flutter/material.dart';
 import 'dart:ui' as ui;
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../../core/providers/auth_provider.dart';
 import '../../../core/services/feature_local_store.dart';
+import '../../../core/services/image_saver.dart';
 import '../../../core/providers/theme_provider.dart';
 import '../../../core/theme/fashion_palettes.dart';
 import '../../../core/utils/app_snackbar.dart';
@@ -113,7 +118,16 @@ extension _GarmentCategoryChoiceApi on _GarmentCategoryChoice {
 /// 虚拟试衣：上传衣服图 + 人物照（建议全身正面），单次请求生成一张结果图。
 /// 品类（上装/下装/裙装）用于后端与专用 VTON 路由；试裤子时请选手动「下装」。
 class VirtualTryonScreen extends StatefulWidget {
-  const VirtualTryonScreen({super.key});
+  final String? prefilledGarmentId;
+  final String? prefilledGarmentImageUrl;
+  final String? prefilledCategory;
+
+  const VirtualTryonScreen({
+    super.key,
+    this.prefilledGarmentId,
+    this.prefilledGarmentImageUrl,
+    this.prefilledCategory,
+  });
 
   @override
   State<VirtualTryonScreen> createState() => _VirtualTryonScreenState();
@@ -149,6 +163,12 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
   @override
   void initState() {
     super.initState();
+    final prefilledUrl = widget.prefilledGarmentImageUrl;
+    if (prefilledUrl != null && prefilledUrl.trim().isNotEmpty) {
+      _standardizedGarmentUrl = prefilledUrl.trim();
+      _garmentCategory = _choiceFromTryonCategory(widget.prefilledCategory);
+      _garmentQualityHint = '已从 Look 分析预填待试穿衣物';
+    }
     FeatureLocalStore.loadJson(_cacheKey).then((m) {
       if (m == null || !mounted) return;
       final list = m['results'];
@@ -313,7 +333,9 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
   }
 
   Future<void> _generate() async {
-    if (_garmentImage == null || _personFront == null) return;
+    final hasPrimaryGarment = _garmentImage != null ||
+        (_standardizedGarmentUrl?.trim().isNotEmpty ?? false);
+    if (!hasPrimaryGarment || _personFront == null) return;
     if (_garmentCategory == _GarmentCategoryChoice.outfit &&
         _garmentImage2 == null) {
       if (mounted) {
@@ -458,16 +480,48 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
     return v2;
   }
 
+  Future<void> _saveCurrentResult() async {
+    if (_results.isEmpty) return;
+    final index = _currentIndex.clamp(0, _results.length - 1);
+    final uri = Uri.parse(_results[index]);
+
+    try {
+      if (kIsWeb) {
+        final opened = await launchUrl(uri, webOnlyWindowName: '_blank');
+        if (!opened) throw Exception('无法打开图片下载链接');
+      } else {
+        final response = await http.get(uri);
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          throw Exception('图片下载失败：HTTP ${response.statusCode}');
+        }
+        await saveImageToGallery(response.bodyBytes, album: '智能穿搭助手');
+      }
+
+      if (!mounted) return;
+      showAppSnackBar(context, kIsWeb ? '已在新标签页打开试衣图' : '已保存到相册');
+    } catch (e) {
+      if (!mounted) return;
+      showAppSnackBar(
+        context,
+        '保存失败：${userFacingApiError(e)}',
+        backgroundColor: Colors.red,
+      );
+    }
+  }
+
   Future<String?> _precheckTryOnInputs(dynamic apiClient) async {
     final garment = _garmentImage;
     final person = _personFront;
-    if (garment == null || person == null) return '请先上传衣服图和人物照';
+    final hasGarmentUrl = _standardizedGarmentUrl?.trim().isNotEmpty ?? false;
+    if ((garment == null && !hasGarmentUrl) || person == null) {
+      return '请先上传衣服图和人物照';
+    }
     if (_garmentCategory == _GarmentCategoryChoice.outfit &&
         _garmentImage2 == null) {
       return '已选择「上衣+下装」，请再上传第二件（下装/裙装）';
     }
 
-    final garmentCheck = await _inspectImage(garment);
+    final garmentCheck = garment == null ? null : await _inspectImage(garment);
     if (garmentCheck != null) {
       if (mounted) {
         setState(() {
@@ -497,6 +551,10 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
         });
       }
       return personCheck;
+    }
+
+    if (garment == null && hasGarmentUrl) {
+      return null;
     }
 
     final category = (_garmentCategory.apiValue ?? 'auto').trim();
@@ -611,10 +669,9 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
     showDialog<void>(
       context: context,
       builder: (context) {
-        final palette = context.read<ThemeProvider>().palette;
         return AlertDialog(
           title: const Text('建议上传图样'),
-          content: Column(
+          content: const Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -624,14 +681,14 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                 title: '推荐',
                 text: '无模特、白底、主体清晰、占画面比例较大的商品图。',
               ),
-              const SizedBox(height: 10),
+              SizedBox(height: 10),
               _TipRow(
                 icon: Icons.remove_circle_outline,
                 color: Colors.orange,
                 title: '谨慎',
                 text: '纯色背景、轻微裁切但衣服主体完整的图片。',
               ),
-              const SizedBox(height: 10),
+              SizedBox(height: 10),
               _TipRow(
                 icon: Icons.cancel_outlined,
                 color: Colors.redAccent,
@@ -914,10 +971,10 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  Wrap(
+                  const Wrap(
                     spacing: 8,
                     runSpacing: 8,
-                    children: const [
+                    children: [
                       _StandardChip(
                         label: '无模特',
                         icon: Icons.person_off_outlined,
@@ -950,8 +1007,8 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  Row(
-                    children: const [
+                  const Row(
+                    children: [
                       Expanded(
                         child: _ExampleTile(
                           label: '推荐示例',
@@ -1336,10 +1393,13 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
             SizedBox(
               height: 52,
               child: ElevatedButton.icon(
-                onPressed:
-                    (_garmentImage != null && _personFront != null && !_loading)
-                        ? _generate
-                        : null,
+                onPressed: ((_garmentImage != null ||
+                            (_standardizedGarmentUrl?.trim().isNotEmpty ??
+                                false)) &&
+                        _personFront != null &&
+                        !_loading)
+                    ? _generate
+                    : null,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: palette.primary,
                   foregroundColor: Colors.white,
@@ -1379,6 +1439,12 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                 aspectRatioCache: _aspectRatioCache,
               ),
               const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: _saveCurrentResult,
+                icon: const Icon(Icons.download_outlined),
+                label: Text(kIsWeb ? '打开试衣图' : '保存到相册'),
+              ),
+              const SizedBox(height: 12),
               if (_results.length > 1) ...[
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -1392,7 +1458,8 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                         color: i == _currentIndex
                             ? palette.primary
                             : palette.divider,
-                        borderRadius: BorderRadius.circular(4),
+                        borderRadius:
+                            const BorderRadius.all(Radius.circular(4)),
                       ),
                     );
                   }),

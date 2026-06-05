@@ -21,38 +21,93 @@ class ColorRules:
     3. Complementary (互补色): Opposite colors on color wheel
     """
 
-    # Color wheel mapping (HSV hue values)
+    # Color wheel mapping (HSV hue values) — extended
     COLOR_WHEEL = {
-        "红": (0, 15),  # Red
-        "橙": (15, 45),  # Orange
-        "黄": (45, 75),  # Yellow
-        "绿": (75, 165),  # Green
-        "蓝": (165, 255),  # Blue (cyan to blue)
-        "紫": (255, 330),  # Purple
-        "粉": (330, 360),  # Pink (wraps to red)
+        "红": (0, 15),
+        "粉": (330, 360),
+        "橙": (15, 45),
+        "黄": (45, 75),
+        "绿": (75, 165),
+        "青": (165, 195),
+        "蓝": (195, 255),
+        "紫": (255, 285),
+        "紫红": (285, 330),
+        # Extended warm/cool groups
+        "酒红": (0, 15),
+        "粉红": (330, 360),
+        "橙红": (10, 25),
+        "青绿": (165, 195),
+        "蓝绿": (165, 195),
+        "藏青": (220, 260),
+        "墨绿": (90, 160),
     }
 
-    # Neutral colors (work with everything)
-    NEUTRAL_COLORS = {"黑", "白", "灰", "棕", "米", "卡其"}
+    # Neutral colors (work with everything) — extended
+    NEUTRAL_COLORS = {
+        "黑",
+        "白",
+        "灰",
+        "深灰",
+        "棕",
+        "米",
+        "卡其",
+        "金",
+        "银",
+        "暗红",
+        "浅红",
+    }
 
-    # Color harmony rules
+    # Canonical colour name → list of names to treat as the same base
+    # for harmony rules (so "粉红" matches rules for "粉", etc.)
+    _COLOR_ALIAS = {
+        "粉红": "粉",
+        "浅红": "红",
+        "暗红": "红",
+        "酒红": "红",
+        "橙红": "橙",
+        "青绿": "青",
+        "蓝绿": "青",
+        "墨绿": "绿",
+        "藏青": "蓝",
+        "紫红": "紫",
+        "亮": "灰",
+        "浅": "灰",
+        "暗": "灰",
+    }
+
+    def _canonical(self, name: str) -> str:
+        """Reduce extended colour names to their harmony-rule base."""
+        stripped = name.strip()
+        # Try direct alias
+        if stripped in self._COLOR_ALIAS:
+            return self._COLOR_ALIAS[stripped]
+        # Try prefix match (e.g. "亮蓝" → "蓝")
+        for alias, base in self._COLOR_ALIAS.items():
+            if alias in stripped:
+                return base
+        return stripped
+
+    # Color harmony rules (use canonical base names internally)
     COMPLEMENTARY_PAIRS = {
-        "红": ["绿", "蓝绿"],
-        "橙": ["蓝"],
-        "黄": ["紫"],
-        "绿": ["红", "粉"],
-        "蓝": ["橙", "黄"],
-        "紫": ["黄"],
+        "红": ["绿", "青绿", "蓝绿"],
+        "橙": ["蓝", "藏青"],
+        "黄": ["紫", "紫红"],
+        "绿": ["红", "粉", "粉红"],
+        "青": ["橙红", "红"],
+        "蓝": ["橙", "黄", "橙红"],
+        "紫": ["黄", "青绿"],
+        "粉": ["绿", "墨绿"],
     }
 
     ANALOGOUS_COLORS = {
-        "红": ["橙", "粉", "紫"],
-        "橙": ["红", "黄"],
-        "黄": ["橙", "绿"],
-        "绿": ["黄", "蓝"],
-        "蓝": ["绿", "紫"],
-        "紫": ["蓝", "红", "粉"],
-        "粉": ["红", "紫"],
+        "红": ["橙", "粉", "紫", "橙红"],
+        "橙": ["红", "黄", "橙红"],
+        "黄": ["橙", "绿", "青绿"],
+        "绿": ["黄", "青", "蓝"],
+        "青": ["绿", "蓝", "蓝绿"],
+        "蓝": ["青", "紫", "绿", "藏青"],
+        "紫": ["蓝", "红", "粉", "紫红"],
+        "粉": ["红", "紫", "粉红"],
     }
 
     def __init__(self):
@@ -63,7 +118,8 @@ class ColorRules:
         self, color1: ColorSchema, color2: ColorSchema
     ) -> Tuple[float, str]:
         """
-        Calculate color harmony score between two colors
+        Calculate color harmony score between two colors.
+        Extended to support free-form colour names via canonical alias mapping.
 
         Args:
             color1: First color
@@ -72,30 +128,37 @@ class ColorRules:
         Returns:
             Tuple[float, str]: (harmony_score [0, 1], harmony_type)
         """
-        name1 = color1.name
-        name2 = color2.name
+        name1 = self._canonical(color1.name)
+        name2 = self._canonical(color2.name)
 
-        # Same color - perfect harmony
-        if name1 == name2:
+        # Also keep original names for neutral / same-colour fast paths
+        orig1, orig2 = color1.name, color2.name
+
+        # Same colour — perfect harmony
+        if orig1 == orig2 or name1 == name2:
             return 1.0, "同色系"
 
-        # Neutral colors - always harmonious
-        if name1 in self.NEUTRAL_COLORS or name2 in self.NEUTRAL_COLORS:
+        # Any name containing a neutral keyword → treat as neutral
+        neutral_keywords = {"黑", "白", "灰", "深灰", "亮灰", "棕", "米", "卡其", "银", "金"}
+        is_neutral = any(k in orig1 for k in neutral_keywords) or any(
+            k in orig2 for k in neutral_keywords
+        )
+        if is_neutral:
             return 0.9, "中性色搭配"
 
-        # Check complementary colors
+        # Check complementary colours (canonical names)
         if self._is_complementary(name1, name2):
             return 0.85, "互补色"
 
-        # Check analogous colors
+        # Check analogous colours (canonical names)
         if self._is_analogous(name1, name2):
             return 0.8, "邻近色"
 
-        # Check if colors are in same family (using HSV)
+        # Check if colours are in same HSV family (fallback)
         if self._is_same_family(color1, color2):
             return 0.75, "同色系"
 
-        # Default - acceptable but not ideal
+        # Default — acceptable but not ideal
         return 0.5, "一般搭配"
 
     def _is_complementary(self, color1: str, color2: str) -> bool:

@@ -37,6 +37,7 @@ tensorflow==2.18.0
 # ── NEW: Fashion AI (CLIP + Diffusers) ──────────────────────────────────────
 # CLIP for zero-shot fashion classification (FashionCLIP approach)
 transformers>=4.36.0,<5.0.0    # CLIP model support
+tokenizers>=0.21,<0.22          # Required by transformers 4.49+ CLIP runtime
 # 务必加版本上界：否则 pip 会装成 torch 2.11+（CPU 轮），覆盖你在 CUDA 上手动装的 +cu124
 torch>=2.6.0,<2.7.0
 torchvision>=0.21.0,<0.22.0     # 须与 torch 小版本一致；CUDA 请见 docs/PYTORCH_CUDA_WINDOWS.md

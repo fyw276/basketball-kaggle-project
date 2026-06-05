@@ -3176,6 +3176,16 @@ async def tryon_garment_v2(
                                     debug_session_dir=debug_session_dir,
                                 )
                             color_fidelity_applied = True
+                        elif raw_quality.decision == "color_only":
+                            result_img, cf_meta = catvton_lab_chroma_color_correct(
+                                catvton_result=result_img,
+                                original_garment=original_garment_image,
+                                person_image=person_image,
+                                garment_category=gc or "top",
+                                raw_mask_image=raw_mask_image,
+                                fidelity_strength=fidelity_strength,
+                            )
+                            color_fidelity_applied = True
                         elif (
                             force_lower_spatial
                             or engine_decision == "spatial"
@@ -3188,16 +3198,6 @@ async def tryon_garment_v2(
                                 garment_category=gc or "top",
                                 fidelity_strength=fidelity_strength,
                                 debug_session_dir=debug_session_dir,
-                            )
-                            color_fidelity_applied = True
-                        elif raw_quality.decision == "color_only":
-                            result_img, cf_meta = catvton_lab_chroma_color_correct(
-                                catvton_result=result_img,
-                                original_garment=original_garment_image,
-                                person_image=person_image,
-                                garment_category=gc or "top",
-                                raw_mask_image=raw_mask_image,
-                                fidelity_strength=fidelity_strength,
                             )
                             color_fidelity_applied = True
                         elif not features.is_white_garment and (

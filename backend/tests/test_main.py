@@ -3,8 +3,9 @@ Tests for main application
 """
 
 from fastapi.testclient import TestClient
+from starlette.responses import Response
 
-from app.main import app
+from app.main import ApiEnvelopeMiddleware, app
 from tests.api_json import unwrap_json
 
 client = TestClient(app)
@@ -44,3 +45,20 @@ def test_openapi_schema():
     assert "openapi" in data
     assert "info" in data
     assert "paths" in data
+
+
+def test_envelope_middleware_leaves_204_body_empty():
+    """204 responses must not be wrapped with a JSON envelope body."""
+    from fastapi import FastAPI
+
+    local_app = FastAPI()
+    local_app.add_middleware(ApiEnvelopeMiddleware)
+
+    @local_app.delete("/resource")
+    def delete_resource():
+        return Response(status_code=204)
+
+    response = TestClient(local_app).delete("/resource")
+
+    assert response.status_code == 204
+    assert response.content == b""

@@ -77,6 +77,10 @@ class ApiEnvelopeMiddleware(BaseHTTPMiddleware):
         # Keep OpenAPI schema/docs and static uploads raw so they are served correctly.
         if any(path.startswith(p) for p in self._RAW_PREFIXES):
             return response
+        # 204/304 responses must not have a body. Wrapping them in the JSON
+        # envelope violates the original Content-Length and can crash uvicorn.
+        if response.status_code in (204, 304) or request.method.upper() == "HEAD":
+            return response
 
         body = b""
         async for chunk in response.body_iterator:

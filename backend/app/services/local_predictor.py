@@ -11,6 +11,7 @@ class RuleBasedPredictor:
     """A tiny rule-based predictor that mimics a sklearn-like .predict API."""
 
     _COLOR_GROUP = {
+        # Original 10
         "黑": "dark",
         "白": "light",
         "灰": "neutral",
@@ -21,8 +22,30 @@ class RuleBasedPredictor:
         "橙": "warm",
         "黄": "warm",
         "棕": "earth",
+        # Extended colours
+        "粉": "warm",
+        "酒红": "warm",
+        "浅红": "warm",
+        "暗红": "warm",
+        "粉红": "warm",
+        "橙红": "warm",
         "米": "earth",
         "卡其": "earth",
+        "黄绿": "cool",
+        "青": "cool",
+        "青绿": "cool",
+        "蓝绿": "cool",
+        "墨绿": "cool",
+        "藏青": "cool",
+        "蓝紫": "cool",
+        "紫红": "warm",
+        "深灰": "dark",
+        "亮灰": "neutral",
+        "金": "warm",
+        "银": "neutral",
+        "浅": "light",  # prefix catch-all
+        "亮": "light",
+        "暗": "dark",
     }
 
     _SEASON_BONUS = {

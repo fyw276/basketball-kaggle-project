@@ -90,7 +90,7 @@ async def get_weather_context(
             "geocode_source": data.get("geocode_source", ""),
             "geocode_error": data.get("geocode_error", ""),
             "weather_source": data.get("weather_source", "open_meteo"),
-            "fallback": False,
+            "fallback": bool(data.get("fallback", False)),
         }
     except Exception as e:
         record_weather_exception(e)

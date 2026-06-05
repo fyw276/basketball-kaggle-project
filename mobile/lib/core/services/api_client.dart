@@ -1798,7 +1798,7 @@ class ApiClient {
 
     final request = http.Request('POST', uri)
       ..headers.addAll(headers)
-      ..body = utf8.encode(json.encode(body)) as String;
+      ..body = json.encode(body);
 
     final client = http.Client();
     try {
