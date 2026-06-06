@@ -25,9 +25,10 @@
 ## 文档索引
 
 ### 架构文档
-- [Try-On 技术蓝图](./TRYON_TECH_BLUEPRINT_AB.md)（虚拟试衣 v2 方案 A+扩展模式）
+- [Try-On 技术蓝图](../docs/TRYON_TECH_BLUEPRINT_AB.md)（虚拟试衣 v2 方案 A+扩展模式）
 
 ### 功能文档
+- [2026-05-29 功能同步](../docs/AGENT_AND_TRYON_FIDELITY_SYNC_2026-05-24.md#2026-05-29-sync)（Look 相似度、试衣保存、天气 fallback）
 - [Agent 与 Try-On Fidelity 同步](../docs/AGENT_AND_TRYON_FIDELITY_SYNC_2026-05-24.md)（2026-05-24）
 - [Flutter Try-On v2 完整模式支持](./features/2026-05-10-flutter-tryon-v2-complete.md)（2026-05-10）
 - 待添加

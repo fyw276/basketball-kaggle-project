@@ -201,7 +201,7 @@ pre-commit run --all-files
 **画像**（`/api/v1/profile/`）: POST/GET/PUT
 **衣橱**（`/api/v1/wardrobe/`）: CRUD + split-outfit；简化版（`/api/v1/wardrobe/simple/`）
 **识别**（`/api/v1/recognition/`）: analyze、category、colors、categories
-**分析**（`/api/v1/analysis/`）: similarity、outfits（多图）、suitability（三维原因说明）
+**分析**（`/api/v1/analysis/`）: similarity、look-similarity（整身 Look 拆分匹配）、outfits（多图）、suitability（三维原因说明）
 **智能穿搭**（`/api/v1/smart-outfit/`）: weather、weather-by-city、upload-reference、generate
 **情绪**（`/api/v1/mood/`）: quick-recall、recommend
 **虚拟试衣**（`/api/v1/tryon/`）: garment（v1，SD Inpainting + fallback）

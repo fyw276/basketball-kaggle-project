@@ -1,5 +1,16 @@
 # 更新日志
 
+## 2026-05-29
+### 新增
+- Flutter 相似度分析新增“单品 / Look”模式切换；Look 模式调用 `POST /api/v1/analysis/look-similarity`，按上装、下装等部件展示衣橱匹配、缺失品类和可试穿候选。
+- Look 分析候选可直接带入虚拟试衣，试衣页支持使用预填的衣橱图片 URL 作为衣服输入。
+- 虚拟试衣结果新增保存入口：移动端下载图片并保存到相册，Web 端在新标签页打开结果图。
+
+### 修复与同步
+- 后端天气上下文现在保留真实 `fallback` 标记，Open-Meteo 失败时返回可解释的天气 fallback 来源。
+- Try-on v2 颜色保真分支调整为先处理 `color_only`，避免被空间保真分支提前截获。
+- 同步用户手册、README、backend README、mobile README 与文档索引，补齐 Look 相似度、试衣保存和天气 fallback 说明。
+
 ## 2026-05-24
 ### 新增
 - Agent chat SSE 端点：`POST /api/v1/agent/chat-stream`，支持多轮工具调用、执行步骤流和最终回答流。

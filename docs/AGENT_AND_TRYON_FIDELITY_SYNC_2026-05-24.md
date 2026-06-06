@@ -64,3 +64,25 @@ This sync documents the current branch work across three surfaces:
 - Replaced stale five/six-mode try-on wording with the current seven-mode set:
   `strict`, `balanced`, `replace`, `realistic`, `realistic_v2`, `professional`, `hybrid`.
 - Updated backend and mobile docs to include Agent chat, skills, SSE streaming, Prometheus metrics, hybrid memory search, and try-on-specific rate limiting.
+
+## 2026-05-29 Sync
+
+### Backend
+
+- `GET /api/v1/smart-outfit/weather` now forwards the weather service's real `fallback` value instead of always returning false.
+- `fetch_weather_lat_lon()` now isolates Open-Meteo failures, records `open_meteo_weather` in `geocode_error`, and returns a safe fallback temperature/weather source when live weather is unavailable.
+- Try-on v2 CatVTON color fidelity now handles `color_only` decisions before spatial fidelity decisions, so color-only corrections are not shadowed by the spatial branch.
+
+### Flutter Client
+
+- `SimilarityScreen` now supports two modes: single-garment similarity and full Look similarity.
+- Look similarity calls `ApiClient.analyzeLookSimilarityFromXFile()` with try-on candidates and accessories enabled, then renders overall score, part-level matches, missing categories, and candidate actions.
+- Try-on candidate actions can prefill `VirtualTryonScreen` with a garment id/image URL/category from a Look result.
+- `VirtualTryonScreen` now accepts a prefilled garment URL as a valid primary garment input and can generate after only the person photo is added.
+- Try-on results can be saved: mobile downloads the current result and writes it to the device album through `gal`; Web opens the result image with `url_launcher`.
+
+### Documentation And Assets
+
+- `docs/USER_OPERATION_GUIDE.md` and `scripts/generate_project_tutorial_pdf.py` now cover style scoring, profile settings, body-shape insight, Agent usage, and the newer Look/try-on flows.
+- New tutorial mockups live under `docs/_tutorial_assets/`: `profile_mockup.png`, `body_shape_mockup.png`, `agent_mockup.png`, and `style_score_mockup.png`.
+- The generated tutorial PDF is expected at `docs/smart_outfit_project_tutorial.pdf`.
