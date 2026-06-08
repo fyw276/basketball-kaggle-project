@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../../core/providers/auth_provider.dart';
 import '../../../core/providers/theme_provider.dart';
 import '../../../core/services/api_client.dart';
+import '../../../core/services/feature_local_store.dart';
 import '../models/agent_step.dart';
 import '../widgets/agent_pipeline_widget.dart';
 
@@ -46,40 +47,100 @@ class _ChatMessage {
   final String content;
   final List<AgentStep>? steps;
   final String? answerContent;
+  final bool isGreeting;
 
   _ChatMessage({
     required this.role,
     required this.content,
     this.steps,
     this.answerContent,
+    this.isGreeting = false,
   });
+
+  Map<String, dynamic> toJson() => {'role': role, 'content': content};
+
+  factory _ChatMessage.fromJson(Map<String, dynamic> json) {
+    return _ChatMessage(
+      role: json['role']?.toString() ?? 'assistant',
+      content: json['content']?.toString() ?? '',
+    );
+  }
 }
 
 class _AgentChatController extends ChangeNotifier {
+  static const _historyLimit = 100;
+  static const _welcomeText = '你好！我是你的 AI 穿搭助手。你可以问我搭配、天气、衣橱和穿搭建议。';
+
   final List<_ChatMessage> messages = [];
   final TextEditingController inputCtrl = TextEditingController();
   bool isRunning = false;
+  bool isHistoryLoading = true;
   List<AgentStep> currentSteps = [];
   String? currentAnswer;
   String? currentError;
 
   ApiClient? _api;
+  String _historyFeatureId = 'agent_chat_history_guest';
 
-  void init(ApiClient api) {
+  bool get hasConversation => messages.any((message) => !message.isGreeting);
+
+  Future<void> init(ApiClient api, {String? username}) async {
     _api = api;
+    final safeUsername = (username ?? 'guest').replaceAll(
+      RegExp(r'[^a-zA-Z0-9_-]'),
+      '_',
+    );
+    _historyFeatureId = 'agent_chat_history_$safeUsername';
+
+    final cached = await FeatureLocalStore.loadJson(_historyFeatureId);
+    final rawMessages = cached?['messages'];
+    if (rawMessages is List) {
+      for (final raw in rawMessages) {
+        if (raw is! Map) continue;
+        final message = _ChatMessage.fromJson(Map<String, dynamic>.from(raw));
+        if ((message.role == 'user' || message.role == 'assistant') &&
+            message.content.trim().isNotEmpty) {
+          messages.add(message);
+        }
+      }
+    }
+    _ensureWelcomeMessage();
+    isHistoryLoading = false;
+    notifyListeners();
+  }
+
+  void _ensureWelcomeMessage() {
     if (messages.isEmpty) {
       messages.add(_ChatMessage(
         role: 'assistant',
-        content:
-            '你好！我是你的 AI 穿搭助手。你可以从「衣橱」上传衣服照片，然后问我推荐搭配、分析适合度，或者告诉我你想穿的场合，我来帮你挑选。',
+        content: _welcomeText,
+        isGreeting: true,
       ));
-      notifyListeners();
     }
+  }
+
+  Future<void> _persistMessages() async {
+    final history = messages.where((message) => !message.isGreeting).toList();
+    final bounded = history.length > _historyLimit
+        ? history.sublist(history.length - _historyLimit)
+        : history;
+    await FeatureLocalStore.saveJson(_historyFeatureId, {
+      'version': 1,
+      'messages': bounded.map((message) => message.toJson()).toList(),
+    });
+  }
+
+  Future<void> clearHistory() async {
+    if (isRunning) return;
+    await FeatureLocalStore.clear(_historyFeatureId);
+    messages.clear();
+    _ensureWelcomeMessage();
+    notifyListeners();
   }
 
   Future<void> send() async {
     final text = inputCtrl.text.trim();
-    if (text.isEmpty || isRunning || _api == null) return;
+    if (text.isEmpty || isRunning || isHistoryLoading || _api == null) return;
 
     inputCtrl.clear();
     messages.add(_ChatMessage(role: 'user', content: text));
@@ -88,10 +149,11 @@ class _AgentChatController extends ChangeNotifier {
     currentAnswer = null;
     currentError = null;
     notifyListeners();
+    await _persistMessages();
 
     try {
       final history = messages
-          .where((m) => m.role != 'system')
+          .where((m) => !m.isGreeting && m.role != 'system')
           .map((m) => {'role': m.role, 'content': m.content})
           .toList();
 
@@ -125,6 +187,7 @@ class _AgentChatController extends ChangeNotifier {
       currentSteps = [];
       currentAnswer = null;
       currentError = null;
+      await _persistMessages();
       notifyListeners();
     }
   }
@@ -229,7 +292,7 @@ class _AgentChatPageState extends State<_AgentChatPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final auth = context.read<AuthProvider>();
       final ctrl = context.read<_AgentChatController>();
-      ctrl.init(auth.apiClient);
+      ctrl.init(auth.apiClient, username: auth.username);
     });
   }
 
@@ -240,7 +303,18 @@ class _AgentChatPageState extends State<_AgentChatPage> {
     final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('AI 穿搭助手')),
+      appBar: AppBar(
+        title: const Text('AI 穿搭助手'),
+        actions: [
+          IconButton(
+            tooltip: '清空聊天记录',
+            onPressed: ctrl.hasConversation && !ctrl.isRunning
+                ? () => ctrl.clearHistory()
+                : null,
+            icon: const Icon(Icons.delete_outline),
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Expanded(
@@ -397,9 +471,9 @@ class _AgentChatPageState extends State<_AgentChatPage> {
           Expanded(
             child: TextField(
               controller: ctrl.inputCtrl,
-              enabled: !ctrl.isRunning,
+              enabled: !ctrl.isRunning && !ctrl.isHistoryLoading,
               decoration: InputDecoration(
-                hintText: '问我穿搭问题...',
+                hintText: ctrl.isHistoryLoading ? '正在加载历史对话...' : '问我穿搭问题...',
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(24),
                 ),
@@ -413,7 +487,9 @@ class _AgentChatPageState extends State<_AgentChatPage> {
           ),
           const SizedBox(width: 8),
           IconButton.filled(
-            onPressed: ctrl.isRunning ? null : () => ctrl.send(),
+            onPressed: ctrl.isRunning || ctrl.isHistoryLoading
+                ? null
+                : () => ctrl.send(),
             icon: ctrl.isRunning
                 ? const SizedBox(
                     width: 20,
