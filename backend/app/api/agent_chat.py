@@ -102,6 +102,22 @@ def _ms_since(t0: float) -> int:
     return int((time.monotonic() - t0) * 1000)
 
 
+def _agent_llm_config_error(api_base: str, api_key: str) -> Optional[str]:
+    """Return an actionable error when the Agent LLM is not configured."""
+    base = (api_base or "").strip()
+    key = (api_key or "").strip()
+    if not base:
+        return (
+            "AI 助手尚未配置模型接口。请在 backend/.env 中设置 "
+            "AI_RECOMMENDER_API_BASE_URL、AI_RECOMMENDER_API_KEY 和 AI_RECOMMENDER_MODEL。"
+        )
+    if not base.startswith(("http://", "https://")):
+        return "AI_RECOMMENDER_API_BASE_URL 必须以 http:// 或 https:// 开头。"
+    if not key:
+        return "AI 助手尚未配置 API Key。请在 backend/.env 中设置 AI_RECOMMENDER_API_KEY。"
+    return None
+
+
 # ── Agent loop ──────────────────────────────────────────────────────────────
 
 
@@ -195,19 +211,37 @@ async def _agent_loop_inner(
     if not model:
         model = "gpt-4o-mini"
 
-    llm = AgentLLMClient(
-        api_base=settings.AI_RECOMMENDER_API_BASE_URL,
-        api_key=settings.AI_RECOMMENDER_API_KEY,
-        model=model,
-        timeout_seconds=min(timeout_sec, 30.0),
-    )
-
     run_id = str(_run_state["run_id"])
     step_id = 0
     total_tokens = 0
     total_tool_calls = 0
     round_num = 0
     t0 = time.monotonic()
+
+    config_error = _agent_llm_config_error(
+        settings.AI_RECOMMENDER_API_BASE_URL,
+        settings.AI_RECOMMENDER_API_KEY,
+    )
+    if config_error:
+        step_id += 1
+        yield _agent_event(
+            "error",
+            run_id=run_id,
+            step_id=step_id,
+            elapsed_ms=_ms_since(t0),
+            status="error",
+            data={"message": config_error},
+        )
+        _run_state["outcome"] = "configuration_error"
+        record_agent_failure("configuration_error")
+        return
+
+    llm = AgentLLMClient(
+        api_base=settings.AI_RECOMMENDER_API_BASE_URL,
+        api_key=settings.AI_RECOMMENDER_API_KEY,
+        model=model,
+        timeout_seconds=min(timeout_sec, 30.0),
+    )
 
     safe_user_msg = guard_wrap(user_message, field_name="user_message")
 

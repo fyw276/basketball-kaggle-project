@@ -61,6 +61,7 @@ class _AgentChatController extends ChangeNotifier {
   bool isRunning = false;
   List<AgentStep> currentSteps = [];
   String? currentAnswer;
+  String? currentError;
 
   ApiClient? _api;
 
@@ -85,6 +86,7 @@ class _AgentChatController extends ChangeNotifier {
     isRunning = true;
     currentSteps = [];
     currentAnswer = null;
+    currentError = null;
     notifyListeners();
 
     try {
@@ -101,13 +103,9 @@ class _AgentChatController extends ChangeNotifier {
         _handleEvent(raw);
       }
     } catch (e) {
-      messages.add(_ChatMessage(
-        role: 'assistant',
-        content: '连接出错: $e',
-      ));
+      currentError = '连接出错: $e';
     } finally {
-      isRunning = false;
-      // Finalize: add assistant message if we got an answer
+      // Finalize the pipeline as a persistent assistant message.
       if (currentAnswer != null && currentAnswer!.isNotEmpty) {
         messages.add(_ChatMessage(
           role: 'assistant',
@@ -115,9 +113,18 @@ class _AgentChatController extends ChangeNotifier {
           steps: List.from(currentSteps),
           answerContent: currentAnswer,
         ));
+      } else if (currentError != null && currentError!.isNotEmpty) {
+        messages.add(_ChatMessage(
+          role: 'assistant',
+          content: currentError!,
+          steps: List.from(currentSteps),
+          answerContent: currentError,
+        ));
       }
+      isRunning = false;
       currentSteps = [];
       currentAnswer = null;
+      currentError = null;
       notifyListeners();
     }
   }
@@ -189,6 +196,7 @@ class _AgentChatController extends ChangeNotifier {
 
       case 'error':
         final msg = data?['message'] as String? ?? '未知错误';
+        currentError = msg;
         currentSteps.add(AgentStep(
           stepId: currentSteps.length,
           label: '错误: $msg',
