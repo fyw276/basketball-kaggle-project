@@ -343,13 +343,11 @@ def crop_person_to_standard(
         logger.info(f"[PERSON-CROP] Using aspect-ratio fallback, bbox={bbox}")
 
     x0, y0, x1, y1 = bbox
-    body_w = x1 - x0
     body_h = y1 - y0
 
     if body_h <= 0:
         bbox = (0, 0, orig_w, orig_h)
         x0, y0, x1, y1 = bbox
-        body_w = orig_w
         body_h = orig_h
 
     # ── Compute crop: ensure body occupies body_height_ratio of output ──────────
@@ -358,27 +356,24 @@ def crop_person_to_standard(
     target_body_h = int(target_height * body_height_ratio)
     scale = target_body_h / body_h
 
-    _new_w = int(body_w * scale)  # noqa: F841
-    new_h = target_body_h
-
-    # Make width match target aspect (typically 3:4 portrait)
-    # For CatVTON 768x1024: aspect = 0.75
-    target_aspect = 768 / 1024
-    new_w_from_h = int(new_h * target_aspect)
-
-    # Resize body crop to match target canvas
-    body_crop = image.crop(bbox)
-    resized = body_crop.resize((new_w_from_h, new_h), Image.Resampling.LANCZOS)
-
-    # Pad to full target canvas (center the body horizontally)
     canvas_w, canvas_h = 768, target_height
+    scaled_w = max(1, int(round(orig_w * scale)))
+    scaled_h = max(1, int(round(orig_h * scale)))
+    resized = image.convert("RGB").resize((scaled_w, scaled_h), Image.Resampling.LANCZOS)
+
+    # Preserve the person geometry by scaling the complete source uniformly.
+    # The canvas crop is centered on the detected person rather than stretching
+    # the detected body box to the 3:4 target aspect ratio.
+    bbox_center_x = ((x0 + x1) / 2.0) * scale
+    bbox_center_y = ((y0 + y1) / 2.0) * scale
+    x_offset = int(round((canvas_w / 2.0) - bbox_center_x))
+    y_offset = int(round((canvas_h / 2.0) - bbox_center_y))
+
     canvas = Image.new("RGB", (canvas_w, canvas_h), (128, 128, 128))
-    x_offset = (canvas_w - new_w_from_h) // 2
-    y_offset = (canvas_h - new_h) // 2
     canvas.paste(resized, (x_offset, y_offset))
 
     # Compute actual body_height_ratio in output canvas
-    actual_body_h = new_h
+    actual_body_h = body_h * scale
     actual_ratio = actual_body_h / canvas_h
 
     info = PersonCropInfo(

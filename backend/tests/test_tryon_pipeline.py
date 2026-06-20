@@ -305,6 +305,24 @@ def test_person_crop_preserves_dimensions():
     assert info.body_height_ratio <= 1.0
 
 
+def test_person_crop_scales_without_stretching():
+    """A wide source must keep its original geometry on the 3:4 canvas."""
+    from app.services.person_crop import crop_person_to_standard
+
+    img = Image.new("RGB", (1600, 800), color=(180, 180, 180))
+    arr = np.asarray(img).copy()
+    arr[100:700, 650:950] = (240, 40, 40)
+    result, _ = crop_person_to_standard(Image.fromarray(arr), target_height=1024)
+
+    assert result.size == (768, 1024)
+    output = np.asarray(result)
+    marker = (output[:, :, 0] > 220) & (output[:, :, 1] < 80) & (output[:, :, 2] < 80)
+    ys, xs = np.where(marker)
+    assert xs.size > 0
+    rendered_ratio = (xs.max() - xs.min() + 1) / (ys.max() - ys.min() + 1)
+    assert 0.45 <= rendered_ratio <= 0.55
+
+
 def test_person_crop_both_image_types():
     """crop_person_to_standard handles both return types correctly."""
     from app.services.person_crop import crop_person_to_standard

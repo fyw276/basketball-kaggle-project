@@ -166,6 +166,27 @@ def _pil_image_to_jpeg_bytes(img, quality: int = 90) -> bytes:
             pass
 
 
+def _prepare_person_image_for_tryon(image: Image.Image) -> tuple[Image.Image, dict[str, Any]]:
+    """Normalize a person photo to CatVTON's 3:4 portrait canvas without stretching."""
+    from app.services.person_crop import crop_person_to_standard
+
+    cropped, info = crop_person_to_standard(
+        image,
+        target_height=1024,
+        body_height_ratio=0.75,
+    )
+    return cropped, {
+        "applied": True,
+        "original_size": list(info.original_size),
+        "output_size": list(info.cropped_size),
+        "body_bbox": list(info.body_bbox),
+        "body_height_ratio": info.body_height_ratio,
+        "scale": info.scale,
+        "method": info.method,
+        "resize_mode": "uniform_scale_center_crop_or_pad",
+    }
+
+
 def _ensure_tryon_v2_enabled() -> None:
     if not bool(getattr(settings, "TRYON_V2_ENABLED", True)):
         raise HTTPException(
@@ -596,6 +617,21 @@ async def tryon_garment_v2(
             detail="person_file cannot be empty",
         )
     person_image = Image.open(BytesIO(person_bytes)).convert("RGB")
+    person_image, person_preprocess_meta = _prepare_person_image_for_tryon(person_image)
+    logger.info(
+        "[PERSON-PREPROCESS] %s -> %s, method=%s, body_ratio=%.3f",
+        person_preprocess_meta["original_size"],
+        person_preprocess_meta["output_size"],
+        person_preprocess_meta["method"],
+        person_preprocess_meta["body_height_ratio"],
+    )
+    if debug_session_dir:
+        try:
+            person_image.save(
+                Path(debug_session_dir) / "01a_person_3x4_preprocessed.jpg", quality=95
+            )
+        except Exception as exc:
+            logger.warning("[DEBUG] failed to save preprocessed person image: %s", exc)
 
     # ── 加载衣物图片（三选一：garment_file / garment_id / garment_image_url）──
     garment_image: Image.Image | None = None
@@ -709,6 +745,7 @@ async def tryon_garment_v2(
         pre_meta["standardized_image_url_2"] = garment_image_url_2
 
     pre_meta["garment_image_source"] = garment_image_source or "unknown"
+    pre_meta["person_preprocess"] = person_preprocess_meta
     if garment_image_2 is not None:
         pre_meta["garment_image_2_source"] = garment_image_2_source or "unknown"
 
