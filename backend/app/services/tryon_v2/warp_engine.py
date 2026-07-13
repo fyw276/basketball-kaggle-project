@@ -2840,7 +2840,7 @@ def tryon_pants_warp(
     garment_image: Image.Image,
     *,
     alpha_feather_ratio: float = 0.012,
-    use_knee_split: bool = False,
+    use_knee_split: bool = True,
     include_waistband: bool = False,
 ) -> tuple[Image.Image, WarpMetadata]:
     """Return (result_rgb, metadata).

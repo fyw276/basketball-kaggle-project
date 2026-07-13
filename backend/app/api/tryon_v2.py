@@ -27,6 +27,11 @@ from app.services.tryon_debug_utils import (
     save_debug_stage_image,
 )
 from app.services.tryon_v2 import run_pipeline_a
+from app.services.tryon_v2.category_utils import (
+    is_lower_garment_category,
+    map_to_catvton_cloth_type,
+    prefer_high_quality_mode_for_lower,
+)
 from app.services.tryon_v2.fidelity_guard import (
     decide_color_fidelity_engine,
     detect_post_cf_artifacts,
@@ -538,6 +543,10 @@ async def tryon_garment_v2(
         "realistic": "detail_fidelity",
         "realistic_v2": "detail_fidelity",
         "replace": "stable_fast",
+        # /tryon/pants and older clients used strict|balanced for gate intensity.
+        # Map them onto the CatVTON high-quality path instead of rejecting the request.
+        "strict": "detail_fidelity",
+        "balanced": "hybrid",
     }
     mode = _MODE_FALLBACK.get(mode, mode)
     logger.info(f"[MODE-DEBUG] mode after fallback: '{mode}'")
@@ -849,6 +858,49 @@ async def tryon_garment_v2(
             garment_image_2, garment_category_2
         )
         pre_meta["auto_preprocess_2"] = pre_meta2
+
+    # Pants / lower garments must not default to warp-only / paste paths.
+    # Upgrade to CatVTON detail_fidelity unless the client already chose hybrid.
+    requested_mode = mode
+    mode = prefer_high_quality_mode_for_lower(garment_category, mode)
+    if mode != requested_mode:
+        logger.info(
+            "[LOWER-MODE] upgraded mode %r -> %r for garment_category=%r",
+            requested_mode,
+            mode,
+            garment_category,
+        )
+        pre_meta["lower_mode_upgraded_from"] = requested_mode
+        pre_meta["lower_mode_upgraded_to"] = mode
+
+    # Pants / lower: run input gate before CatVTON so bad half-body photos fail early.
+    if is_lower_garment_category(garment_category) and mode in {
+        "detail_fidelity",
+        "hybrid",
+        "blend",
+        "stable_fast",
+        "paste",
+    }:
+        lower_gate = evaluate_input_gate(
+            person_image=person_image,
+            garment_image=garment_image,
+            garment_category=garment_category or "bottom",
+            strict=True,
+            thresholds=thresholds,
+            garment_confidence=pre_meta.get("recognized_confidence"),
+        )
+        pre_meta["lower_input_gate_scores"] = lower_gate.scores
+        if not lower_gate.passed:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "message": lower_gate.message,
+                    "error_code": lower_gate.error_code,
+                    "retryable": lower_gate.retryable,
+                    "action_hint": lower_gate.action_hint,
+                    "qc_scores": lower_gate.scores,
+                },
+            )
 
     # stable_fast 模式：云端/远程引擎优先，稳定快速
     # bailian(百炼) / remote(远程VTON) / warp(几何贴合兜底)
@@ -1466,14 +1518,7 @@ async def tryon_garment_v2(
 
         cat = (garment_category or "").strip().lower()
         gc = (garment_category or "").strip()
-
-        cloth_type = "upper"
-        if any(
-            k in cat for k in ("bottom", "下装", "裤", "裤装", "短裤", "pants", "长裤", "lower")
-        ):
-            cloth_type = "lower"
-        elif any(k in cat for k in ("skirt", "裙", "连衣裙", "dress", "裙装")):
-            cloth_type = "overall"
+        cloth_type = map_to_catvton_cloth_type(garment_category)
 
         logger.info(
             "[detail_fidelity] category_locked: garment_category=%r → cat=%r, cloth_type=%r",
@@ -1481,6 +1526,18 @@ async def tryon_garment_v2(
             cat,
             cloth_type,
         )
+
+        # Lower garments require CatVTON; do not silently fall back to warp paste.
+        if cloth_type == "lower" and not _catvton_configured():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "message": "裤装高质量试衣需要 CatVTON，但当前未配置。",
+                    "error_code": "CATVTON_NOT_CONFIGURED",
+                    "retryable": True,
+                    "action_hint": "请启用 CATVTON_ENABLED=true，并配置 CATVTON_PATH",
+                },
+            )
 
         # ── CatVTON 调用：最多重试 2 次（瞬时错误 / VRAM OOM / CUDA 抖动）───
         max_retries = 2
@@ -2268,13 +2325,7 @@ async def tryon_garment_v2(
 
         cat = (garment_category or "").strip().lower()
         gc = (garment_category or "").strip()
-        cloth_type = "upper"
-        if any(
-            k in cat for k in ("bottom", "下装", "裤", "裤装", "短裤", "pants", "长裤", "lower")
-        ):
-            cloth_type = "lower"
-        elif any(k in cat for k in ("skirt", "裙", "连衣裙", "dress", "裙装")):
-            cloth_type = "overall"
+        cloth_type = map_to_catvton_cloth_type(garment_category)
 
         # ── CatVTON 调用：最多重试 2 次（瞬时错误 / VRAM OOM / CUDA 抖动）───
         max_retries = 2
@@ -2558,13 +2609,7 @@ async def tryon_garment_v2(
 
         cat = (garment_category or "").strip().lower()
         gc = (garment_category or "").strip()
-        cloth_type = "upper"
-        if any(
-            k in cat for k in ("bottom", "下装", "裤", "裤装", "短裤", "pants", "长裤", "lower")
-        ):
-            cloth_type = "lower"
-        elif any(k in cat for k in ("skirt", "裙", "连衣裙", "dress", "裙装")):
-            cloth_type = "overall"
+        cloth_type = map_to_catvton_cloth_type(garment_category)
 
         qc = QualityChecker(min_score=0.75)
         max_retries = 3
@@ -2879,19 +2924,12 @@ async def tryon_garment_v2(
                     "message": "Hybrid 模式需要 CatVTON 但 CatVTON 未配置",
                     "error_code": "CATVTON_NOT_CONFIGURED",
                     "retryable": True,
-                    "action_hint": "启用本地 CatVTON：CATVTON_ENABLED=true 且 CATVTON_PATH 指向 CatVTON 目录",  # noqa: E501
+                    "action_hint": "请启用 CATVTON_ENABLED=true，并配置 CATVTON_PATH",
                 },
             )
 
         try:
-            cloth_type = "upper"
-            if any(
-                k in gc.lower()
-                for k in ("bottom", "下装", "裤", "裤装", "短裤", "pants", "长裤", "lower")
-            ):
-                cloth_type = "lower"
-            elif any(k in gc.lower() for k in ("skirt", "裙", "连衣裙", "dress", "裙装")):
-                cloth_type = "overall"
+            cloth_type = map_to_catvton_cloth_type(gc)
 
             logger.info(f"Hybrid mode: calling CatVTON cloth_type={cloth_type}")
 
@@ -3020,15 +3058,7 @@ async def tryon_garment_v2(
                         )
                     else:
                         sat_score = 0.0
-                    is_lower_hybrid = str(gc or "").strip().lower() in {
-                        "bottom",
-                        "lower",
-                        "pants",
-                        "trousers",
-                        "下装",
-                        "裤装",
-                        "裤子",
-                    }
+                    is_lower_hybrid = is_lower_garment_category(gc)
                     # Lower garments are currently grounded mostly by warp because
                     # CatVTON often loses exact pants pattern/detail. Keep CatVTON
                     # as local lighting only, otherwise the result reads pasted.
@@ -3521,7 +3551,7 @@ async def tryon_garment_v2(
                     garment_region = _estimate_garment_region_for_postprocess(
                         result_img.size, "top"
                     )
-                elif any(k in gc for k in ("bottom", "下装", "裤")):
+                elif is_lower_garment_category(gc):
                     garment_region = _estimate_garment_region_for_postprocess(
                         result_img.size, "bottom"
                     )
@@ -3626,18 +3656,24 @@ async def tryon_pants_v2(
         "bottom", description="Expected bottom category, e.g. bottom/下装"
     ),
     prompt: str = Form("", description="Optional text prompt"),
-    mode: str = Form("strict", description="strict|balanced"),
+    mode: str = Form(
+        "detail_fidelity",
+        description=("detail_fidelity|hybrid " "(legacy: strict→detail_fidelity, balanced→hybrid)"),
+    ),
     model_gender: str = Form("neutral", description="male|female|neutral"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Backward compatible wrapper
+    # Backward compatible wrapper — always routes through high-quality lower path.
+    resolved_category = garment_category if garment_category else "bottom"
+    if not is_lower_garment_category(resolved_category):
+        resolved_category = "bottom"
     return await tryon_garment_v2(
         garment_file=garment_file,
         person_file=person_file,
         garment_id=None,
         garment_image_url=None,
-        garment_category=garment_category,
+        garment_category=resolved_category,
         garment_file_2=None,
         garment_id_2=None,
         garment_image_url_2=None,
@@ -4031,6 +4067,8 @@ async def tryon_v2_model_status(
         "enabled": bool(getattr(settings, "TRYON_V2_ENABLED", True)),
         "strict_identity_default": bool(getattr(settings, "TRYON_V2_STRICT_IDENTITY", True)),
         "auto_preprocess": bool(getattr(settings, "TRYON_V2_AUTO_PREPROCESS", True)),
+        "lower_body_engine": "catvton_lower",
+        "lower_default_mode": "detail_fidelity",
         "replace_allow_local_diffusion": bool(
             getattr(settings, "TRYON_V2_REPLACE_ALLOW_LOCAL_DIFFUSION", False)
         ),

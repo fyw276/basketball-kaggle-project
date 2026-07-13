@@ -53,11 +53,12 @@ def test_tryon_v2_returns_structured_gate_error(
         "person_file": ("person.jpg", person_bytes, "image/jpeg"),
     }
 
+    # Use top + blend so this stays on pipeline A (pants now upgrade to CatVTON).
     res = client.post(
-        "/api/v2/tryon/pants",
+        "/api/v2/tryon/garment",
         headers=auth_headers,
         files=files,
-        data={"garment_category": "bottom", "mode": "blend"},
+        data={"garment_category": "top", "mode": "blend"},
     )
 
     assert res.status_code == status.HTTP_400_BAD_REQUEST
@@ -103,10 +104,10 @@ def test_tryon_v2_returns_structured_qc_error(
     }
 
     res = client.post(
-        "/api/v2/tryon/pants",
+        "/api/v2/tryon/garment",
         headers=auth_headers,
         files=files,
-        data={"garment_category": "bottom", "mode": "blend"},
+        data={"garment_category": "top", "mode": "blend"},
     )
 
     assert res.status_code == status.HTTP_400_BAD_REQUEST
@@ -145,10 +146,10 @@ def test_tryon_v2_passes_qc_threshold_to_pipeline(
     }
 
     res = client.post(
-        "/api/v2/tryon/pants",
+        "/api/v2/tryon/garment",
         headers=auth_headers,
         files=files,
-        data={"garment_category": "bottom", "mode": "blend"},
+        data={"garment_category": "top", "mode": "blend"},
     )
     assert res.status_code == status.HTTP_200_OK
     assert captured["qc_threshold"] == 0.73
@@ -183,10 +184,10 @@ def test_tryon_v2_success_returns_pipeline_a_result(
     }
 
     res = client.post(
-        "/api/v2/tryon/pants",
+        "/api/v2/tryon/garment",
         headers=auth_headers,
         files=files,
-        data={"garment_category": "bottom", "mode": "blend"},
+        data={"garment_category": "top", "mode": "blend"},
     )
 
     assert res.status_code == status.HTTP_200_OK
@@ -197,6 +198,49 @@ def test_tryon_v2_success_returns_pipeline_a_result(
     url = data.get("result_image_url")
     assert isinstance(url, str) and url.startswith("/uploads/")
     assert "\\" not in url
+
+
+def test_tryon_pants_upgrades_blend_away_from_pipeline_a(
+    client: TestClient, auth_headers: dict, monkeypatch: pytest.MonkeyPatch
+):
+    """Pants + blend must upgrade to CatVTON path, not silent pipeline A warp."""
+    import app.api.tryon_v2 as tryon_v2_api
+
+    called = {"pipeline_a": False}
+
+    def _stub_run_pipeline_a(**kwargs):
+        called["pipeline_a"] = True
+        return {
+            "status": "success",
+            "message": "should not be used for pants",
+            "result_image": Image.new("RGB", (64, 64), color=(1, 2, 3)),
+            "qc_scores": {},
+            "metadata": {"pipeline": "A"},
+        }
+
+    monkeypatch.setattr(tryon_v2_api, "run_pipeline_a", _stub_run_pipeline_a)
+    monkeypatch.setattr(
+        "app.services.tryon_v2.catvton_engine_client._catvton_configured",
+        lambda: False,
+    )
+
+    garment_bytes = _jpeg_bytes(size=(200, 360), color=(40, 70, 140))
+    person_bytes = _jpeg_bytes(size=(300, 520), color=(220, 220, 220))
+    files = {
+        "garment_file": ("pants.jpg", garment_bytes, "image/jpeg"),
+        "person_file": ("person.jpg", person_bytes, "image/jpeg"),
+    }
+    res = client.post(
+        "/api/v2/tryon/pants",
+        headers=auth_headers,
+        files=files,
+        data={"garment_category": "bottom", "mode": "blend"},
+    )
+    assert called["pipeline_a"] is False
+    assert res.status_code in (
+        status.HTTP_400_BAD_REQUEST,
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
 
 
 def test_tryon_v2_validate_input_returns_fail_with_scores(

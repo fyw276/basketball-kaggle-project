@@ -175,6 +175,9 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
     if (prefilledUrl != null && prefilledUrl.trim().isNotEmpty) {
       _standardizedGarmentUrl = prefilledUrl.trim();
       _garmentCategory = _choiceFromTryonCategory(widget.prefilledCategory);
+      if (_garmentCategory == _GarmentCategoryChoice.bottom) {
+        _qualityMode = _TryOnQualityMode.professional;
+      }
       _garmentQualityHint = '已从 Look 分析预填待试穿衣物';
     }
     FeatureLocalStore.loadJson(_cacheKey).then((m) {
@@ -457,15 +460,24 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
 
   Future<Map<String, dynamic>> _requestTryOn(AuthProvider auth) async {
     final cat = (_garmentCategory.apiValue ?? 'auto').trim();
-    final mode = _qualityMode.apiValue;
+    var mode = _qualityMode.apiValue;
     final isOutfit = _garmentCategory == _GarmentCategoryChoice.outfit;
+    final isBottom = _garmentCategory == _GarmentCategoryChoice.bottom;
+
+    // Never let pants fall through as auto/top or paste/stable_fast.
+    final resolvedCategory = isOutfit
+        ? 'outfit'
+        : (isBottom ? 'bottom' : (cat.isEmpty ? 'auto' : cat));
+    if (isBottom && mode == 'paste') {
+      mode = 'detail_fidelity';
+    }
 
     final v2 = await auth.apiClient.virtualTryonV2Garment(
       garmentImage: _garmentImage,
       garmentImage2: isOutfit ? _garmentImage2 : null,
       personImage: _personFront,
       garmentId: _prefilledGarmentId,
-      garmentCategory: isOutfit ? 'outfit' : (cat.isEmpty ? 'auto' : cat),
+      garmentCategory: resolvedCategory,
       garmentCategory2: 'bottom',
       garmentImageUrl: _standardizedGarmentUrl,
       garmentImageUrl2: isOutfit ? _standardizedGarmentUrl2 : null,
@@ -1069,7 +1081,9 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                 const SizedBox(width: 16),
                 Expanded(
                   child: _PickBox(
-                    label: '人物照（必填，建议全身）',
+                    label: _garmentCategory == _GarmentCategoryChoice.bottom
+                        ? '人物照（必填，完整全身）'
+                        : '人物照（必填，建议全身）',
                     image: _personFront,
                     onTap: _pickPerson,
                     onClear: () => setState(() {
@@ -1081,6 +1095,16 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                 ),
               ],
             ),
+            if (_garmentCategory == _GarmentCategoryChoice.bottom) ...[
+              const SizedBox(height: 8),
+              Text(
+                '请上传完整站立全身照，确保腰部、双腿、脚踝清晰可见。',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: palette.textBody.withValues(alpha: 0.85),
+                ),
+              ),
+            ],
             if (_garmentCategory == _GarmentCategoryChoice.outfit) ...[
               const SizedBox(height: 12),
               _PickBox(
@@ -1147,6 +1171,10 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
                     _garmentCategory = c;
                     if (_garmentCategory != _GarmentCategoryChoice.outfit) {
                       _garmentImage2 = null;
+                    }
+                    // Pants must use CatVTON high-quality modes, not paste.
+                    if (_garmentCategory == _GarmentCategoryChoice.bottom) {
+                      _qualityMode = _TryOnQualityMode.professional;
                     }
                     _resetPrecheckPanel();
                   }),

@@ -57,16 +57,9 @@ class TestDetailFidelityClothTypeMapping:
 
     @staticmethod
     def _compute_cloth_type(garment_category: str | None) -> str:
-        """Mirror the logic from tryon_v2.py detail_fidelity mode."""
-        cat = (garment_category or "").strip().lower()
-        cloth_type = "upper"
-        if any(
-            k in cat for k in ("bottom", "下装", "裤", "裤装", "短裤", "pants", "长裤", "lower")
-        ):
-            cloth_type = "lower"
-        elif any(k in cat for k in ("skirt", "裙", "连衣裙", "dress", "裙装")):
-            cloth_type = "overall"
-        return cloth_type
+        from app.services.tryon_v2.category_utils import map_to_catvton_cloth_type
+
+        return map_to_catvton_cloth_type(garment_category)
 
     def test_bottom_maps_to_lower(self):
         assert self._compute_cloth_type("bottom") == "lower"
@@ -86,6 +79,11 @@ class TestDetailFidelityClothTypeMapping:
     def test_pants_maps_to_lower(self):
         """English 'pants' must map to lower (was a bug)."""
         assert self._compute_cloth_type("pants") == "lower"
+
+    def test_jeans_and_trousers_map_to_lower(self):
+        assert self._compute_cloth_type("jeans") == "lower"
+        assert self._compute_cloth_type("trousers") == "lower"
+        assert self._compute_cloth_type("牛仔裤") == "lower"
 
     def test_lower_maps_to_lower(self):
         """'lower' keyword must map to lower."""

@@ -7,40 +7,13 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image
 
-_BOTTOM_KEYWORDS = (
-    "下装",
-    "裤",
-    "裤装",
-    "短裤",
-    "牛仔",
-    "bottom",
-    "pants",
-    "jeans",
-)
+from app.services.tryon_v2.category_utils import LOWER_KEYWORDS, SKIRT_KEYWORDS, TOP_KEYWORDS
 
-_TOP_KEYWORDS = (
-    "上装",
-    "上衣",
-    "t恤",
-    "t-shirt",
-    "shirt",
-    "top",
-    "upper",  # returned by _map_to_tryon_category as fallback for misclassified shoes/bags
-    "hoodie",
-    "sweater",
-    "外套",
-    "jacket",
-    "coat",
-)
+_BOTTOM_KEYWORDS = LOWER_KEYWORDS
 
-_SKIRT_KEYWORDS = (
-    "裙",
-    "裙装",
-    "半身裙",
-    "连衣裙",
-    "dress",
-    "skirt",
-)
+_TOP_KEYWORDS = TOP_KEYWORDS
+
+_SKIRT_KEYWORDS = SKIRT_KEYWORDS
 
 _OUTFIT_KEYWORDS = (
     "outfit",
@@ -53,13 +26,22 @@ _OUTFIT_KEYWORDS = (
 
 # NOTE: "shoes", "shoe", "bag", "hat" removed — these are often misclassified
 # from T-shirt / top images and should not block try-on. Only clear accessory
-# keywords (scarf, shawl, scarf) trigger accessory blocking here.
+# keywords (scarf, shawl) trigger accessory blocking here.
 _ACCESSORY_KEYWORDS = (
     "accessory",
     "围巾",
     "披肩",
     "scarf",
     "shawl",
+)
+
+_LOWER_POSE_KEYS = (
+    "left_hip",
+    "right_hip",
+    "left_knee",
+    "right_knee",
+    "left_ankle",
+    "right_ankle",
 )
 
 
@@ -131,6 +113,25 @@ def _score_garment_background_cleanliness(garment_image: Image.Image) -> float:
     return _clamp01((bg_ratio - 0.05) / 0.20)
 
 
+def _score_lower_pose_keypoints(person_image: Image.Image) -> float:
+    """Score hip/knee/ankle keypoint completeness for pants try-on.
+
+    Returns:
+        0..1 when pose is available; -1.0 when pose detection is unavailable
+        (caller should skip the hard fail in that case).
+    """
+    try:
+        from app.services.tryon_v2.pose_utils import detect_pose_keypoints
+
+        kpts = detect_pose_keypoints(person_image)
+    except Exception:
+        return -1.0
+    if not kpts:
+        return -1.0
+    present = sum(1 for key in _LOWER_POSE_KEYS if kpts.get(key) is not None)
+    return present / float(len(_LOWER_POSE_KEYS))
+
+
 def _has_any_keyword(garment_category: str | None, keywords: tuple[str, ...]) -> bool:
     gc = (garment_category or "").strip().lower()
     if not gc:
@@ -175,6 +176,14 @@ def evaluate_input_gate(
     leg_visibility_min = float(thresholds.get("leg_visibility", 0.45 if strict else 0.35))
     front_pose_min = float(thresholds.get("front_pose", 0.35 if strict else 0.25))
     garment_front_min = float(thresholds.get("garment_front", 0.45 if strict else 0.35))
+    lower_pose_min = float(thresholds.get("lower_pose", 0.67 if strict else 0.50))
+
+    kind = _category_kind(garment_category, garment_confidence)
+
+    # Pants try-on needs a stricter full-body / leg visibility bar.
+    if kind in {"bottom", "outfit"}:
+        full_body_min = max(full_body_min, 0.65 if strict else 0.55)
+        leg_visibility_min = max(leg_visibility_min, 0.55 if strict else 0.45)
 
     scores = {
         "full_body_score": _score_full_body(person_image),
@@ -182,9 +191,13 @@ def evaluate_input_gate(
         "front_pose_score": _score_front_pose(person_image),
         "garment_front_score": _score_garment_front(garment_image),
         "garment_bg_clean_score": _score_garment_background_cleanliness(garment_image),
+        "lower_pose_score": (
+            _score_lower_pose_keypoints(person_image)
+            if kind in {"bottom", "skirt", "outfit"}
+            else 1.0
+        ),
     }
 
-    kind = _category_kind(garment_category, garment_confidence)
     if kind == "accessory":
         return GateResult(
             passed=False,
@@ -205,10 +218,15 @@ def evaluate_input_gate(
         )
 
     if scores["full_body_score"] < full_body_min:
+        message = (
+            "请上传完整站立全身照，确保腰部、双腿、脚踝清晰可见。"
+            if kind in {"bottom", "skirt", "outfit"}
+            else "人物图未满足全身要求，请上传完整站立照片。"
+        )
         return GateResult(
             passed=False,
             error_code="TRYON_V2_PERSON_NOT_FULL_BODY",
-            message="人物图未满足全身要求，请上传完整站立照片。",
+            message=message,
             action_hint="请确保头顶到脚部完整入镜。",
             retryable=False,
             scores=scores,
@@ -222,8 +240,22 @@ def evaluate_input_gate(
         return GateResult(
             passed=False,
             error_code="TRYON_V2_PERSON_LEG_NOT_VISIBLE",
-            message="人物腿部可见度不足，无法稳定贴合下装/裙装。",
+            message="请上传完整站立全身照，确保腰部、双腿、脚踝清晰可见。",
             action_hint="请避免遮挡并保证腿部清晰可见（建议全身站姿）。",
+            retryable=False,
+            scores=scores,
+        )
+
+    if (
+        kind in {"bottom", "outfit"}
+        and scores["lower_pose_score"] >= 0.0
+        and scores["lower_pose_score"] < lower_pose_min
+    ):
+        return GateResult(
+            passed=False,
+            error_code="TRYON_V2_PERSON_LEG_NOT_VISIBLE",
+            message="请上传完整站立全身照，确保腰部、双腿、脚踝清晰可见。",
+            action_hint="裤装试衣需要检测到髋、膝、踝关键点；请换一张双腿完整入镜的全身照。",
             retryable=False,
             scores=scores,
         )
@@ -245,11 +277,20 @@ def evaluate_input_gate(
         )
 
     if scores["garment_front_score"] < garment_front_min:
+        message = (
+            "请上传单条裤子的正面白底商品图，裤腰和裤脚需要完整入镜。"
+            if kind == "bottom"
+            else "商品图不够清晰或主体不完整，无法进行稳定贴合。"
+        )
         return GateResult(
             passed=False,
             error_code="TRYON_V2_GARMENT_NOT_FRONT_VIEW",
-            message="商品图不够清晰或主体不完整，无法进行稳定贴合。",
-            action_hint="请上传正面、主体完整、背景干净的商品图。",
+            message=message,
+            action_hint=(
+                "请上传单条裤子的正面白底商品图，裤腰和裤脚需要完整入镜。"
+                if kind == "bottom"
+                else "请上传正面、主体完整、背景干净的商品图。"
+            ),
             retryable=False,
             scores=scores,
         )

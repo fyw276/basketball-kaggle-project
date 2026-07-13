@@ -125,20 +125,9 @@ def _get_catvton_path() -> str:
 
 def _catvton_category_hint(garment_category: Optional[str]) -> str:
     """Map garment category string to CatVTON type."""
-    s = (garment_category or "").strip().lower()
-    if s in {"lower", "bottom", "pants", "trousers"}:
-        return "lower"
-    if s in {"overall", "skirt", "dress"}:
-        return "overall"
-    if s in {"upper", "top", "shirt", "tshirt", "t-shirt"}:
-        return "upper"
-    if any(k in s for k in ("裙", "连衣裙", "dress", "skirt", "裙装")):
-        return "overall"
-    if any(k in s for k in ("下装", "裤", "裤装", "bottom", "短裤", "pants", "长裤")):
-        return "lower"
-    if any(k in s for k in ("上装", "上衣", "外套", "top", "t恤", "毛衣", "shirt", "T恤", "卫衣")):
-        return "upper"
-    return "upper"
+    from app.services.tryon_v2.category_utils import map_to_catvton_cloth_type
+
+    return map_to_catvton_cloth_type(garment_category)
 
 
 def _run_catvton_sync(

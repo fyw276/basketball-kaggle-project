@@ -352,6 +352,67 @@ def _looks_like_pants_shape(rgba: Image.Image) -> bool:
     return bool(split_ratio >= 0.28 and top_connected)
 
 
+def evaluate_lower_garment_qc(rgba: Image.Image) -> dict[str, Any]:
+    """QC for pants product photos (waist + both legs + hem completeness).
+
+    Returns a dict with passed/score/reasons for input_gate and preprocess metadata.
+    """
+    reasons: list[str] = []
+    pants_shape = _looks_like_pants_shape(rgba)
+    if not pants_shape:
+        reasons.append("silhouette_not_pants")
+
+    im = rgba.convert("RGBA")
+    arr = np.asarray(im, dtype=np.uint8)
+    a = arr[:, :, 3]
+    ys, xs = np.where(a > 10)
+    fill_score = 0.0
+    aspect_score = 0.0
+    if xs.size >= 50:
+        x0, x1 = int(xs.min()), int(xs.max()) + 1
+        y0, y1 = int(ys.min()), int(ys.max()) + 1
+        bw = max(1, x1 - x0)
+        bh = max(1, y1 - y0)
+        fg = float((a[y0:y1, x0:x1] > 10).sum())
+        fill_score = fg / float(max(bw * bh, 1))
+        aspect = bh / float(max(bw, 1))
+        aspect_score = 1.0 if 1.2 <= aspect <= 3.5 else 0.35
+        if aspect < 1.15:
+            reasons.append("too_short_or_cropped")
+        if fill_score > 0.92:
+            reasons.append("possible_poster_or_solid_block")
+    else:
+        reasons.append("foreground_too_small")
+
+    # Clean / white-ish background check on original RGB if available.
+    rgb = arr[:, :, :3]
+    gray = rgb.mean(axis=2)
+    chroma = rgb.max(axis=2) - rgb.min(axis=2)
+    bg_ratio = float(((gray > 235) & (chroma < 18)).mean())
+    bg_score = 1.0 if bg_ratio >= 0.18 else (0.0 if bg_ratio <= 0.04 else (bg_ratio - 0.04) / 0.14)
+    if bg_score < 0.35:
+        reasons.append("background_not_clean")
+
+    shape_score = 1.0 if pants_shape else 0.15
+    score = max(
+        0.0,
+        min(1.0, 0.45 * shape_score + 0.25 * aspect_score + 0.15 * fill_score + 0.15 * bg_score),
+    )
+    passed = bool(pants_shape and score >= 0.45 and "foreground_too_small" not in reasons)
+    return {
+        "passed": passed,
+        "score": round(float(score), 3),
+        "pants_shape": bool(pants_shape),
+        "bg_clean_score": round(float(bg_score), 3),
+        "reasons": reasons,
+        "message": (None if passed else "请上传单条裤子的正面白底商品图，裤腰和裤脚需要完整入镜。"),
+    }
+
+
+# Backwards-compatible alias used by callers / tests.
+pants_qc = evaluate_lower_garment_qc
+
+
 def preprocess_garment_image(
     garment_image: Image.Image,
     *,
@@ -522,6 +583,11 @@ def preprocess_garment_image(
             "canvas": int(canvas),
             "accessory_shape": bool(accessory_shape),
             "pants_shape": bool(pants_shape),
+            "pants_qc": (
+                evaluate_lower_garment_qc(cutout.cropped)
+                if (pants_shape or tryon_cat == "bottom" or cloth_type == "lower")
+                else None
+            ),
             "cloth_type_used": cloth_type,
             "alignment_applied": alignment_applied,
             "preview_white_generated": preview_white is not None,

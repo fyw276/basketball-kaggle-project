@@ -158,23 +158,20 @@ def create_lower_body_polygon_mask(
     pw: int,
     ph: int,
     feather_radius: int = 0,
+    outer_pad_ratio: float = 0.045,
 ) -> np.ndarray:
-    """使用臀部+脚踝关键点生成下装 polygon mask（cv2.fillPoly）。
+    """使用臀部+膝+踝关键点生成下装 polygon mask（cv2.fillPoly）。
 
-    Polygon 顶点（左臀→右臀→右踝→左踝→左膝→右膝→左臀）：
-        1. 左臀
-        2. 右臀
-        3. 右踝（如果可用）
-        4. 左踝（如果可用）
-        5. 左膝（如果可用，作为腿部内侧参考）
-        6. 右膝（如果可用）
+    Polygon 顶点顺序（顺时针，含左右腿外侧 padding）：
+        左髋 -> 右髋 -> 右膝外侧 -> 右踝外侧 -> 左踝外侧 -> 左膝外侧 -> 左髋
 
-    如果缺少踝/膝关键点，则退化为四边形（左臀→右臀→右腿中线→左腿中线）。
+    如果缺少踝/膝关键点，则退化为髋部梯形 fallback。
 
     Args:
         keypoints: detect_pose_keypoints() 返回的归一化关键点字典
         pw, ph: 图像宽高（像素）
         feather_radius: 边缘羽化半径（0=禁用）
+        outer_pad_ratio: 左右腿外侧水平扩张比例（相对髋宽）
 
     Returns:
         (ph, pw) uint8 数组，255=下装区域，0=保留区域
@@ -186,32 +183,57 @@ def create_lower_body_polygon_mask(
     lk = keypoints.get("left_knee")
     rk = keypoints.get("right_knee")
 
+    if not (lh and rh):
+        return _lower_body_fallback(pw, ph, feather_radius)
+
+    hip_width = abs(rh[0] - lh[0])
+    pad = max(0.015, float(outer_pad_ratio) * max(hip_width, 0.08))
+    # Image x increases rightward; left side pads toward smaller x, right toward larger x.
+    left_sign = -1.0
+    right_sign = 1.0
+
+    def _outer(pt: tuple[float, float], side: float) -> tuple[float, float]:
+        return (float(pt[0]) + side * pad, float(pt[1]))
+
     pts: list[tuple[float, float]] = []
+    pts.append(_outer(lh, left_sign))
+    pts.append(_outer(rh, right_sign))
 
-    if lh:
-        pts.append(lh)
-    if rh:
-        pts.append(rh)
+    if rk:
+        pts.append(_outer(rk, right_sign))
+    elif ra:
+        # Interpolate a knee-ish point if only ankle exists.
+        mid = ((rh[0] + ra[0]) / 2.0, (rh[1] + ra[1]) / 2.0)
+        pts.append(_outer(mid, right_sign))
 
-    has_leg_pts = la or ra or lk or rk
+    if ra:
+        # Keep hem slightly above shoe tips.
+        ankle = (ra[0], max(0.0, ra[1] - 0.01))
+        pts.append(_outer(ankle, right_sign))
+    elif rk:
+        pts.append(_outer((rk[0], min(0.98, rk[1] + 0.18)), right_sign))
 
-    if has_leg_pts:
-        # 全裤腿 polygon：臀→踝（6点或更多）
-        if ra:
-            pts.append(ra)
-        if la:
-            pts.append(la)
-        if lk:
-            # 左膝：作为腿部内侧中点参考
-            pts.append(lk)
-        if rk:
-            pts.append(rk)
-    else:
-        # 缺少腿部关键点，退化为梯形
-        if lh and rh:
-            mid_x = (lh[0] + rh[0]) / 2
-            pts.append((mid_x, lh[1] + 0.05))
-            pts.append((mid_x, lh[1] + 0.05))
+    if la:
+        ankle = (la[0], max(0.0, la[1] - 0.01))
+        pts.append(_outer(ankle, left_sign))
+    elif lk:
+        pts.append(_outer((lk[0], min(0.98, lk[1] + 0.18)), left_sign))
+
+    if lk:
+        pts.append(_outer(lk, left_sign))
+    elif la:
+        mid = ((lh[0] + la[0]) / 2.0, (lh[1] + la[1]) / 2.0)
+        pts.append(_outer(mid, left_sign))
+
+    # Need at least a trapezoid (hips + two lower points).
+    if len(pts) < 4:
+        mid_y = (lh[1] + rh[1]) / 2.0 + 0.35
+        pts = [
+            _outer(lh, left_sign),
+            _outer(rh, right_sign),
+            _outer((rh[0], mid_y), right_sign),
+            _outer((lh[0], mid_y), left_sign),
+        ]
 
     if len(pts) < 3:
         return _lower_body_fallback(pw, ph, feather_radius)

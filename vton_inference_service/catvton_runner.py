@@ -112,6 +112,95 @@ def _get_schp_parser():
         return None
 
 
+def _try_schp_lower_mask(
+    person_img: "Image.Image",
+    debug_output_dir: Path | None = None,
+) -> "Image.Image | None":
+    """Build lower-body edit mask from SCHP: pants + legs, exclude shoes/upper/face."""
+    parser = _get_schp_parser()
+    if parser is None:
+        return None
+    try:
+        parsed = parser.parse_person(person_img)
+        if parsed is None:
+            return None
+
+        region = None
+        if hasattr(parsed, "bottom_region"):
+            region = parsed.bottom_region()
+        elif isinstance(parsed, dict):
+            region = parsed.get("bottom_region")
+            if region is None:
+                parts = [
+                    p
+                    for p in (
+                        parsed.get("lower_garment"),
+                        parsed.get("left_leg"),
+                        parsed.get("right_leg"),
+                    )
+                    if p is not None
+                ]
+                if parts:
+                    region = np.clip(sum(parts), 0, 255).astype(np.uint8)
+        else:
+            region = np.clip(
+                parsed.lower_garment.astype(np.uint16)
+                + parsed.left_leg.astype(np.uint16)
+                + parsed.right_leg.astype(np.uint16),
+                0,
+                255,
+            ).astype(np.uint8)
+
+        if region is None:
+            return None
+        mask_np = np.asarray(region)
+        if mask_np.ndim == 3:
+            mask_np = mask_np[..., 0]
+        mask_np = (mask_np > 0).astype(np.uint8) * 255
+        coverage = float(mask_np.mean()) / 255.0
+        if coverage < 0.02 or coverage > 0.55:
+            logger.warning(
+                "[SCHP] lower mask coverage out of range (%.3f); falling back",
+                coverage,
+            )
+            return None
+
+        for attr in ("face", "upper_clothes", "left_shoe", "right_shoe", "hair"):
+            part = None
+            if hasattr(parsed, attr):
+                part = getattr(parsed, attr)
+            elif isinstance(parsed, dict):
+                part = parsed.get(attr)
+            if part is None:
+                continue
+            part_np = np.asarray(part)
+            if part_np.ndim == 3:
+                part_np = part_np[..., 0]
+            if part_np.shape == mask_np.shape:
+                mask_np = np.where(part_np > 0, 0, mask_np).astype(np.uint8)
+
+        mask = Image.fromarray(mask_np, mode="L")
+        mask = _refine_garment_mask_boundary(mask)
+        if _debug_output_dir is None and debug_output_dir is not None:
+            init_debug_session(debug_output_dir)
+        if _debug_output_dir is not None:
+            save_debug_image(
+                "03_mask",
+                mask,
+                {
+                    "cloth_type": "lower",
+                    "source": "schp_human_parsing",
+                    "coverage": round(coverage, 4),
+                    "note": "SCHP pants+legs, shoes/upper/face excluded",
+                },
+            )
+        logger.info("[SCHP] lower mask ready (coverage=%.3f)", coverage)
+        return mask
+    except Exception as e:
+        logger.warning("[SCHP] lower mask failed: %s", e)
+        return None
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 通用工具
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -691,18 +780,12 @@ def _make_cloth_mask_mediapipe(
     garment_img: "Image.Image | None" = None,
 ) -> "Image.Image":
     """
-    生成衣服区域遮罩（优先级：rembg衣服分割 > MediaPipe人物分割 > 关键点polygon fallback）。
+    生成衣服区域遮罩。
+
+    下装优先级：SCHP human parsing > rembg服装映射 > MediaPipe polygon > 比例 fallback
+    上装优先级：rembg衣服分割 > MediaPipe人物分割 > 关键点polygon fallback
 
     返回 L 模式 PIL Image（白色 = 待编辑的衣服区域，黑色 = 保留区域）。
-
-    关键改进（v2）：
-    1. 优先使用 rembg 分割衣服产品图，精确获取衣服边界
-    2. 根据人体姿态关键点将衣服 mask 映射到人物坐标系统
-    3. 只有 rembg 不可用时才 fallback 到 MediaPipe 人物分割
-    4. 只有 MediaPipe 也失败时才使用关键点 polygon fallback（替代矩形）
-    5. 所有 mask 均使用 polygon fillPoly，更贴合人体轮廓
-
-    打开 03_mask.png 和 04_pose_keypoints.jpg 逐帧对比即可验证质量。
     """
     # ── 强制 RGB：MediaPipe 接收 RGBA(4ch) 会触发 image_frame.cc 断言崩溃 ──
     print(f"[MEDIAPIPE-INPUT] person_img mode={person_img.mode}, size={person_img.size}", flush=True)
@@ -712,6 +795,12 @@ def _make_cloth_mask_mediapipe(
     if garment_img is not None and garment_img.mode not in ("RGB", "L"):
         logger.warning(f"[MEDIAPIPE-INPUT] Converting garment_img from {garment_img.mode} to RGB")
         garment_img = garment_img.convert("RGB")
+
+    # ── Lower: SCHP / human parsing first (pants + legs, exclude shoes/upper/face) ──
+    if cloth_type == "lower":
+        schp_mask = _try_schp_lower_mask(person_img, debug_output_dir=debug_output_dir)
+        if schp_mask is not None:
+            return schp_mask
 
     # ── Step 0: 尝试 rembg 衣服精确分割（最高优先级）────────────
     if garment_img is not None:
@@ -1083,19 +1172,37 @@ def _get_cloth_region_polygon(
         if not (lh and rh):
             return _lower_polygon_fallback(pw, ph)
 
+        hip_w = abs(rh[0] - lh[0])
+        pad = max(int(pw * 0.015), int(hip_w * 0.045))
+
+        def outer(p, side: int):
+            return (clamp(p[0] + side * pad, 0, pw), clamp(p[1], 0, ph))
+
+        # 左髋 -> 右髋 -> 右膝外侧 -> 右踝外侧 -> 左踝外侧 -> 左膝外侧
         pts: list[tuple[int, int]] = []
-        pts.append((clamp(lh[0], 0, pw), clamp(lh[1], 0, ph)))
-        pts.append((clamp(rh[0], 0, pw), clamp(rh[1], 0, ph)))
-
-        if ra:
-            pts.append((clamp(ra[0], 0, pw), clamp(ra[1], 0, ph)))
-        if la:
-            pts.append((clamp(la[0], 0, pw), clamp(la[1], 0, ph)))
-        if lk:
-            pts.append((clamp(lk[0], 0, pw), clamp(lk[1], 0, ph)))
+        pts.append(outer(lh, -1))
+        pts.append(outer(rh, 1))
         if rk:
-            pts.append((clamp(rk[0], 0, pw), clamp(rk[1], 0, ph)))
+            pts.append(outer(rk, 1))
+        elif ra:
+            mid = ((rh[0] + ra[0]) // 2, (rh[1] + ra[1]) // 2)
+            pts.append(outer(mid, 1))
+        if ra:
+            pts.append(outer((ra[0], max(0, ra[1] - int(ph * 0.01))), 1))
+        elif rk:
+            pts.append(outer((rk[0], min(ph - 1, rk[1] + int(ph * 0.18))), 1))
+        if la:
+            pts.append(outer((la[0], max(0, la[1] - int(ph * 0.01))), -1))
+        elif lk:
+            pts.append(outer((lk[0], min(ph - 1, lk[1] + int(ph * 0.18))), -1))
+        if lk:
+            pts.append(outer(lk, -1))
+        elif la:
+            mid = ((lh[0] + la[0]) // 2, (lh[1] + la[1]) // 2)
+            pts.append(outer(mid, -1))
 
+        if len(pts) < 4:
+            return _lower_polygon_fallback(pw, ph)
         return pts
 
     else:  # overall (dress)

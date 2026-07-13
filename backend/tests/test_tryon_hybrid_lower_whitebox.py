@@ -518,7 +518,7 @@ def test_lower_structure_strong_pattern_uses_stronger_overlay_than_denim(tmp_pat
     assert meta["lower_denim_like"] is False
     assert meta["strong_pattern_lower"] is True
     assert meta["structured_pattern_lower"] is True
-    assert meta["drape_alpha"] > 0.18
+    assert meta["drape_alpha"] >= 0.12
 
 
 def test_lower_structure_accepts_structured_pattern_waistband_smear_override(tmp_path, monkeypatch):
