@@ -158,14 +158,15 @@ def create_lower_body_polygon_mask(
     pw: int,
     ph: int,
     feather_radius: int = 0,
-    outer_pad_ratio: float = 0.045,
+    outer_pad_ratio: float = 0.90,
 ) -> np.ndarray:
     """使用臀部+膝+踝关键点生成下装 polygon mask（cv2.fillPoly）。
 
-    Polygon 顶点顺序（顺时针，含左右腿外侧 padding）：
-        左髋 -> 右髋 -> 右膝外侧 -> 右踝外侧 -> 左踝外侧 -> 左膝外侧 -> 左髋
+    Polygon 顶点顺序（图像空间顺时针，含左右腿外侧 padding）：
+        图像左髋 -> 图像右髋 -> 右膝外侧 -> 右踝外侧 -> 左踝外侧 -> 左膝外侧
 
-    如果缺少踝/膝关键点，则退化为髋部梯形 fallback。
+    重要：MediaPipe 的 left/right 是人物自身左右。正面照时人物左髋在图像右侧，
+    因此外侧 padding 必须按图像 x 相对髋中心向外扩展，不能按语义 left=-1/right=+1。
 
     Args:
         keypoints: detect_pose_keypoints() 返回的归一化关键点字典
@@ -182,57 +183,74 @@ def create_lower_body_polygon_mask(
     ra = keypoints.get("right_ankle")
     lk = keypoints.get("left_knee")
     rk = keypoints.get("right_knee")
+    ls = keypoints.get("left_shoulder")
+    rs = keypoints.get("right_shoulder")
 
     if not (lh and rh):
         return _lower_body_fallback(pw, ph, feather_radius)
 
-    hip_width = abs(rh[0] - lh[0])
-    pad = max(0.015, float(outer_pad_ratio) * max(hip_width, 0.08))
-    # Image x increases rightward; left side pads toward smaller x, right toward larger x.
-    left_sign = -1.0
-    right_sign = 1.0
+    # Reorder into image-space left/right so fillPoly walks without self-intersection.
+    if lh[0] <= rh[0]:
+        img_l_hip, img_r_hip = lh, rh
+        img_l_knee, img_r_knee = lk, rk
+        img_l_ankle, img_r_ankle = la, ra
+    else:
+        img_l_hip, img_r_hip = rh, lh
+        img_l_knee, img_r_knee = rk, lk
+        img_l_ankle, img_r_ankle = ra, la
 
-    def _outer(pt: tuple[float, float], side: float) -> tuple[float, float]:
-        return (float(pt[0]) + side * pad, float(pt[1]))
+    hip_width = abs(img_r_hip[0] - img_l_hip[0])
+    shoulder_width = abs(rs[0] - ls[0]) if ls and rs else hip_width
+    pad = max(
+        0.055,
+        float(outer_pad_ratio) * max(hip_width, 0.08),
+        0.50 * max(shoulder_width, hip_width),
+    )
+    ankle_pad = max(pad, pad * 1.40)
+    waist_lift = 0.03
+
+    def _outer_left(pt: tuple[float, float], p_pad: float = pad) -> tuple[float, float]:
+        return (float(pt[0]) - p_pad, float(pt[1]))
+
+    def _outer_right(pt: tuple[float, float], p_pad: float = pad) -> tuple[float, float]:
+        return (float(pt[0]) + p_pad, float(pt[1]))
 
     pts: list[tuple[float, float]] = []
-    pts.append(_outer(lh, left_sign))
-    pts.append(_outer(rh, right_sign))
+    pts.append(_outer_left((img_l_hip[0], max(0.0, img_l_hip[1] - waist_lift))))
+    pts.append(_outer_right((img_r_hip[0], max(0.0, img_r_hip[1] - waist_lift))))
 
-    if rk:
-        pts.append(_outer(rk, right_sign))
-    elif ra:
-        # Interpolate a knee-ish point if only ankle exists.
-        mid = ((rh[0] + ra[0]) / 2.0, (rh[1] + ra[1]) / 2.0)
-        pts.append(_outer(mid, right_sign))
+    if img_r_knee:
+        pts.append(_outer_right(img_r_knee))
+    elif img_r_ankle:
+        mid = ((img_r_hip[0] + img_r_ankle[0]) / 2.0, (img_r_hip[1] + img_r_ankle[1]) / 2.0)
+        pts.append(_outer_right(mid))
 
-    if ra:
-        # Keep hem slightly above shoe tips.
-        ankle = (ra[0], max(0.0, ra[1] - 0.01))
-        pts.append(_outer(ankle, right_sign))
-    elif rk:
-        pts.append(_outer((rk[0], min(0.98, rk[1] + 0.18)), right_sign))
+    if img_r_ankle:
+        ankle = (img_r_ankle[0], max(0.0, img_r_ankle[1] - 0.01))
+        pts.append(_outer_right(ankle, ankle_pad))
+    elif img_r_knee:
+        pts.append(_outer_right((img_r_knee[0], min(0.98, img_r_knee[1] + 0.18)), ankle_pad))
 
-    if la:
-        ankle = (la[0], max(0.0, la[1] - 0.01))
-        pts.append(_outer(ankle, left_sign))
-    elif lk:
-        pts.append(_outer((lk[0], min(0.98, lk[1] + 0.18)), left_sign))
+    if img_l_ankle:
+        ankle = (img_l_ankle[0], max(0.0, img_l_ankle[1] - 0.01))
+        pts.append(_outer_left(ankle, ankle_pad))
+    elif img_l_knee:
+        pts.append(_outer_left((img_l_knee[0], min(0.98, img_l_knee[1] + 0.18)), ankle_pad))
 
-    if lk:
-        pts.append(_outer(lk, left_sign))
-    elif la:
-        mid = ((lh[0] + la[0]) / 2.0, (lh[1] + la[1]) / 2.0)
-        pts.append(_outer(mid, left_sign))
+    if img_l_knee:
+        pts.append(_outer_left(img_l_knee))
+    elif img_l_ankle:
+        mid = ((img_l_hip[0] + img_l_ankle[0]) / 2.0, (img_l_hip[1] + img_l_ankle[1]) / 2.0)
+        pts.append(_outer_left(mid))
 
     # Need at least a trapezoid (hips + two lower points).
     if len(pts) < 4:
-        mid_y = (lh[1] + rh[1]) / 2.0 + 0.35
+        mid_y = (img_l_hip[1] + img_r_hip[1]) / 2.0 + 0.35
         pts = [
-            _outer(lh, left_sign),
-            _outer(rh, right_sign),
-            _outer((rh[0], mid_y), right_sign),
-            _outer((lh[0], mid_y), left_sign),
+            _outer_left(img_l_hip),
+            _outer_right(img_r_hip),
+            _outer_right((img_r_hip[0], mid_y), ankle_pad),
+            _outer_left((img_l_hip[0], mid_y), ankle_pad),
         ]
 
     if len(pts) < 3:

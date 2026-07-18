@@ -19,11 +19,25 @@ Usage:
 
 from __future__ import annotations
 
+import importlib.util
+import logging
+import os
+import sys
+import types
+from pathlib import Path
+
 import cv2
 import numpy as np
 from PIL import Image
 
 __all__ = ["schp_parse", "SCHPParser"]
+
+logger = logging.getLogger(__name__)
+
+# SCHP LIP input conventions (from pirocheto/schp-lip-20 image processor)
+_SCHP_INPUT_SIZE = 473
+_SCHP_MEAN = [0.406, 0.456, 0.485]
+_SCHP_STD = [0.225, 0.224, 0.229]
 
 
 # LIP dataset labels (20 classes) from pirocheto/schp-lip-20
@@ -56,8 +70,12 @@ _UPPER_CLOTHES_IDX = {5, 6, 7}  # upper_clothes, dress, coat
 _LOWER_GARMENT_IDX = {9, 12}  # pants, skirt
 _LEFT_ARM_IDX = {14}
 _RIGHT_ARM_IDX = {15}
-_LEFT_LEG_IDX = {16, 18}  # left_leg, left_shoe
-_RIGHT_LEG_IDX = {17, 19}  # right_leg, right_shoe
+_LEFT_LEG_IDX = {16}  # left_leg only (exclude shoes for lower try-on)
+_RIGHT_LEG_IDX = {17}  # right_leg only
+_LEFT_SHOE_IDX = {18}
+_RIGHT_SHOE_IDX = {19}
+_FACE_IDX = {13}
+_HAIR_IDX = {2}
 
 
 class SCHPResult:
@@ -104,12 +122,28 @@ class SCHPResult:
     def right_leg(self) -> np.ndarray:
         return self.get_mask(*_RIGHT_LEG_IDX)
 
+    @property
+    def left_shoe(self) -> np.ndarray:
+        return self.get_mask(*_LEFT_SHOE_IDX)
+
+    @property
+    def right_shoe(self) -> np.ndarray:
+        return self.get_mask(*_RIGHT_SHOE_IDX)
+
+    @property
+    def face(self) -> np.ndarray:
+        return self.get_mask(*_FACE_IDX)
+
+    @property
+    def hair(self) -> np.ndarray:
+        return self.get_mask(*_HAIR_IDX)
+
     def top_region(self) -> np.ndarray:
         """Combined mask for upper garment + arms (top try-on area)."""
         return self.upper_clothes + self.left_arm + self.right_arm
 
     def bottom_region(self) -> np.ndarray:
-        """Combined mask for lower garment (bottom try-on area)."""
+        """Combined mask for lower garment + legs (exclude shoes)."""
         return self.lower_garment + self.left_leg + self.right_leg
 
     def as_dict(self) -> dict[str, np.ndarray]:
@@ -125,13 +159,130 @@ class SCHPResult:
         }
 
 
+def _candidate_paths(*parts: str) -> list[Path]:
+    roots: list[Path] = []
+    for key in ("CATVTON_PATH", "HF_HOME", "TRANSFORMERS_CACHE"):
+        val = (os.environ.get(key) or "").strip()
+        if val:
+            roots.append(Path(val))
+    roots.extend(
+        [
+            Path(r"D:\models\CatVTON_full"),
+            Path(r"D:\hf-cache"),
+            Path.home() / ".cache" / "huggingface",
+        ]
+    )
+    try:
+        from app.core.config import settings
+
+        cat_path = (getattr(settings, "CATVTON_PATH", "") or "").strip()
+        if cat_path:
+            roots.insert(0, Path(cat_path))
+    except Exception:
+        pass
+
+    out: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        p = root.joinpath(*parts)
+        key = str(p).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
+def _find_lip_checkpoint() -> Path | None:
+    for p in _candidate_paths("SCHP", "exp-schp-201908261155-lip.pth"):
+        if p.is_file():
+            return p
+    # Search CatVTON HF cache snapshots for the lip weight
+    for root in _candidate_paths("hub", "models--zhengchong--CatVTON", "snapshots"):
+        if not root.is_dir():
+            continue
+        for snap in root.iterdir():
+            cand = snap / "SCHP" / "exp-schp-201908261155-lip.pth"
+            if cand.is_file():
+                return cand
+    return None
+
+
+def _find_schp_remote_file(filename: str) -> Path | None:
+    """Locate modeling/config files from the HuggingFace cache (offline-friendly)."""
+    patterns = [
+        ("transformers", "models--pirocheto--schp-lip-20", "snapshots"),
+        ("hub", "models--pirocheto--schp-lip-20", "snapshots"),
+        ("modules", "transformers_modules", "pirocheto", "schp-lip-20"),
+    ]
+    for parts in patterns:
+        for root in _candidate_paths(*parts):
+            if not root.exists():
+                continue
+            if root.is_file() and root.name == filename:
+                return root
+            if root.is_dir():
+                direct = root / filename
+                if direct.is_file():
+                    return direct
+                for snap in root.iterdir():
+                    cand = snap / filename
+                    if cand.is_file():
+                        return cand
+    return None
+
+
+def _install_schp_config_shim(config_path: Path) -> None:
+    """Satisfy `from schp.configuration_schp import SCHPConfig` used by modeling_schp.py."""
+    if "schp.configuration_schp" in sys.modules:
+        return
+    pkg = types.ModuleType("schp")
+    pkg.__path__ = []  # type: ignore[attr-defined]
+    sys.modules["schp"] = pkg
+    spec = importlib.util.spec_from_file_location("schp.configuration_schp", config_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load SCHP config from {config_path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["schp.configuration_schp"] = mod
+    spec.loader.exec_module(mod)
+
+
+def _load_schp_modeling(modeling_path: Path):
+    _install_schp_config_shim(
+        _find_schp_remote_file("configuration_schp.py")
+        or modeling_path.with_name("configuration_schp.py")
+    )
+    mod_name = "clothing_assistant_schp_modeling"
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+    spec = importlib.util.spec_from_file_location(mod_name, modeling_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load SCHP modeling from {modeling_path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _preprocess_schp_image(image: Image.Image, device: str):
+    """Match pirocheto SCHPImageProcessor (473x473 + BGR-indexed mean/std)."""
+    import torchvision.transforms.functional as TF
+
+    pil = image.convert("RGB").resize(
+        (_SCHP_INPUT_SIZE, _SCHP_INPUT_SIZE), Image.Resampling.BILINEAR
+    )
+    t = TF.to_tensor(pil)
+    t = TF.normalize(t, mean=_SCHP_MEAN, std=_SCHP_STD)
+    return t.unsqueeze(0).to(device)
+
+
 class SCHPParser:
     """Human parsing using SCHP (Self-Corrected Human Parsing).
 
-    Loads the pretrained ResNet-101 + SCHP model from HuggingFace
-    (pirocheto/schp-lip-20) via the transformers library.
-
-    Falls back to heuristic-based parsing if the model cannot be loaded.
+    Preferred load order:
+      1. Local CatVTON LIP `.pth` + cached modeling_schp.py (offline / no pip `schp`)
+      2. HuggingFace `pirocheto/schp-lip-20` via transformers (when network + deps OK)
+      3. Heuristic GrabCut fallback (rejected by lower-mask QA)
     """
 
     def __init__(self, model_name: str = "pirocheto/schp-lip-20"):
@@ -139,32 +290,76 @@ class SCHPParser:
         self._model = None
         self._processor = None
         self._device = "cpu"
+        self._source = "unknown"
 
     def _load_model(self):
-        """Lazy-load the SCHP model from HuggingFace."""
+        """Lazy-load SCHP — prefer local CatVTON LIP weights."""
         if self._model is not None:
             return
 
+        errors: list[str] = []
         try:
-            import torch
-            from transformers import AutoImageProcessor, AutoModelForSemanticSegmentation
-
-            self._processor = AutoImageProcessor.from_pretrained(
-                self.model_name,
-                trust_remote_code=True,
-            )
-            self._model = AutoModelForSemanticSegmentation.from_pretrained(
-                self.model_name,
-                trust_remote_code=True,
-            )
-            self._device = "cuda" if torch.cuda.is_available() else "cpu"
-            self._model.to(self._device)
-            self._model.eval()
-
+            self._load_from_local_lip_checkpoint()
+            return
         except Exception as e:
-            self._model = None
-            self._processor = None
-            raise RuntimeError(f"Failed to load SCHP model: {e}") from e
+            errors.append(f"local_lip: {e}")
+            logger.warning("[SCHP] local LIP checkpoint load failed: %s", e)
+
+        try:
+            self._load_from_transformers_hub()
+            return
+        except Exception as e:
+            errors.append(f"transformers_hub: {e}")
+            logger.warning("[SCHP] transformers hub load failed: %s", e)
+
+        self._model = None
+        self._processor = None
+        raise RuntimeError("; ".join(errors) or "Failed to load SCHP model")
+
+    def _load_from_local_lip_checkpoint(self) -> None:
+        import torch
+
+        ckpt = _find_lip_checkpoint()
+        if ckpt is None:
+            raise FileNotFoundError("CatVTON LIP SCHP checkpoint not found")
+        modeling_path = _find_schp_remote_file("modeling_schp.py")
+        config_path = _find_schp_remote_file("configuration_schp.py")
+        if modeling_path is None or config_path is None:
+            raise FileNotFoundError(
+                "Cached modeling_schp.py / configuration_schp.py not found under HF_HOME"
+            )
+
+        modeling = _load_schp_modeling(modeling_path)
+        config_mod = sys.modules["schp.configuration_schp"]
+        config = config_mod.SCHPConfig(num_labels=20)
+        self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._model = modeling.SCHPForSemanticSegmentation.from_schp_checkpoint(
+            str(ckpt),
+            config=config,
+            map_location=self._device,
+        )
+        self._model.to(self._device)
+        self._model.eval()
+        self._processor = None  # use built-in preprocessor
+        self._source = "schp_local_lip"
+        logger.info("[SCHP] loaded local LIP checkpoint: %s (device=%s)", ckpt, self._device)
+
+    def _load_from_transformers_hub(self) -> None:
+        import torch
+        from transformers import AutoImageProcessor, AutoModelForSemanticSegmentation
+
+        self._processor = AutoImageProcessor.from_pretrained(
+            self.model_name,
+            trust_remote_code=True,
+        )
+        self._model = AutoModelForSemanticSegmentation.from_pretrained(
+            self.model_name,
+            trust_remote_code=True,
+        )
+        self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._model.to(self._device)
+        self._model.eval()
+        self._source = "schp_transformers"
 
     def parse_person(self, image: Image.Image) -> SCHPResult:
         """
@@ -189,14 +384,15 @@ class SCHPParser:
 
             orig_w, orig_h = image.size
 
-            inputs = self._processor(
-                images=image,
-                return_tensors="pt",
-            )
-            inputs = {k: v.to(self._device) for k, v in inputs.items()}
-
-            with torch.no_grad():
-                outputs = self._model(**inputs)
+            if self._processor is not None:
+                inputs = self._processor(images=image, return_tensors="pt")
+                inputs = {k: v.to(self._device) for k, v in inputs.items()}
+                with torch.no_grad():
+                    outputs = self._model(**inputs)
+            else:
+                pixel_values = _preprocess_schp_image(image, self._device)
+                with torch.no_grad():
+                    outputs = self._model(pixel_values=pixel_values)
 
             logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
             pred = logits.argmax(dim=1).squeeze(0).cpu().numpy()
@@ -204,9 +400,10 @@ class SCHPParser:
             pred = Image.fromarray(pred.astype(np.uint8)).resize((orig_w, orig_h), Image.NEAREST)
             parsing_map = np.array(pred, dtype=np.int32)
 
-            return SCHPResult(parsing_map, LIP_LABELS, source="schp_transformers")
+            return SCHPResult(parsing_map, LIP_LABELS, source=self._source or "schp_transformers")
 
-        except Exception:
+        except Exception as e:
+            logger.warning("[SCHP] parse_person failed, heuristic fallback: %s", e)
             return self._heuristic_parsing(image)
 
     def _heuristic_parsing(self, image: Image.Image) -> SCHPResult:

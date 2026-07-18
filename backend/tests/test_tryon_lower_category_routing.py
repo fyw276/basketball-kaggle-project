@@ -80,3 +80,27 @@ def test_lower_body_polygon_covers_legs_not_face():
     assert float(mask[:60, :].mean()) < 5.0
     # Lower legs / crotch region should be filled.
     assert float(mask[100:180, 35:65].mean()) > 100.0
+
+
+def test_lower_body_polygon_pads_outward_for_mediapipe_facing_camera():
+    """MediaPipe person-left has larger image-x when facing camera; pad must go outward."""
+    kpts = {
+        "left_shoulder": (0.58, 0.30),
+        "right_shoulder": (0.40, 0.30),
+        "left_hip": (0.53, 0.54),
+        "right_hip": (0.44, 0.54),
+        "left_knee": (0.53, 0.71),
+        "right_knee": (0.44, 0.71),
+        "left_ankle": (0.53, 0.85),
+        "right_ankle": (0.46, 0.85),
+    }
+    mask = create_lower_body_polygon_mask(kpts, pw=1236, ph=1498, feather_radius=0)
+    ys, xs = np.where(mask > 127)
+    assert xs.size > 0
+    width = int(xs.max() - xs.min())
+    # Must be wider than raw hip span (~110px); previously collapsed to ~100px center strip.
+    assert width >= 280
+    coverage = float((mask > 127).mean())
+    assert coverage >= 0.07
+    # Still must not paint the face band.
+    assert float(mask[: int(1498 * 0.12), int(1236 * 0.25) : int(1236 * 0.75)].mean()) < 5.0

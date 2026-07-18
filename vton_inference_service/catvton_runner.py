@@ -116,13 +116,25 @@ def _try_schp_lower_mask(
     person_img: "Image.Image",
     debug_output_dir: Path | None = None,
 ) -> "Image.Image | None":
-    """Build lower-body edit mask from SCHP: pants + legs, exclude shoes/upper/face."""
+    """Build lower-body edit mask from SCHP: pants + legs, exclude shoes/upper/face.
+
+    Rejects heuristic GrabCut pseudo-SCHP (rectangle bands) so MediaPipe polygon
+    can take over when the real transformers SCHP model is unavailable.
+    """
     parser = _get_schp_parser()
     if parser is None:
         return None
     try:
         parsed = parser.parse_person(person_img)
         if parsed is None:
+            return None
+
+        source = str(getattr(parsed, "source", "") or "")
+        if source.startswith("heuristic"):
+            logger.warning(
+                "[SCHP] refusing heuristic lower mask (source=%s); falling back to pose",
+                source,
+            )
             return None
 
         region = None
@@ -156,7 +168,11 @@ def _try_schp_lower_mask(
         mask_np = np.asarray(region)
         if mask_np.ndim == 3:
             mask_np = mask_np[..., 0]
-        mask_np = (mask_np > 0).astype(np.uint8) * 255
+        # bottom_region is float 0-1 from SCHPResult.get_mask
+        if mask_np.dtype != np.uint8:
+            mask_np = (mask_np > 0.3).astype(np.uint8) * 255
+        else:
+            mask_np = (mask_np > 0).astype(np.uint8) * 255
         coverage = float(mask_np.mean()) / 255.0
         if coverage < 0.02 or coverage > 0.55:
             logger.warning(
@@ -169,6 +185,8 @@ def _try_schp_lower_mask(
             part = None
             if hasattr(parsed, attr):
                 part = getattr(parsed, attr)
+                if callable(part):
+                    continue
             elif isinstance(parsed, dict):
                 part = parsed.get(attr)
             if part is None:
@@ -177,7 +195,22 @@ def _try_schp_lower_mask(
             if part_np.ndim == 3:
                 part_np = part_np[..., 0]
             if part_np.shape == mask_np.shape:
-                mask_np = np.where(part_np > 0, 0, mask_np).astype(np.uint8)
+                thr = 0.3 if part_np.dtype != np.uint8 else 0
+                mask_np = np.where(part_np > thr, 0, mask_np).astype(np.uint8)
+
+        # Reject near-rectangular GrabCut leftovers even if source was mislabeled.
+        ys, xs = np.where(mask_np > 127)
+        if xs.size > 0:
+            y0, y1 = int(ys.min()), int(ys.max())
+            x0, x1 = int(xs.min()), int(xs.max())
+            bbox_area = max(1, (x1 - x0 + 1) * (y1 - y0 + 1))
+            fill = float(xs.size) / float(bbox_area)
+            if fill > 0.92:
+                logger.warning(
+                    "[SCHP] lower mask looks rectangular (fill=%.3f); falling back to pose",
+                    fill,
+                )
+                return None
 
         mask = Image.fromarray(mask_np, mode="L")
         mask = _refine_garment_mask_boundary(mask)
@@ -189,12 +222,27 @@ def _try_schp_lower_mask(
                 mask,
                 {
                     "cloth_type": "lower",
-                    "source": "schp_human_parsing",
+                    "source": source or "schp_human_parsing",
                     "coverage": round(coverage, 4),
                     "note": "SCHP pants+legs, shoes/upper/face excluded",
                 },
             )
-        logger.info("[SCHP] lower mask ready (coverage=%.3f)", coverage)
+            # Also save overlay for preprocess_only visual QA.
+            person_np = np.array(person_img.convert("RGB")).astype(np.float32)
+            alpha = np.array(mask.convert("L")).astype(np.float32) / 255.0
+            mask_3ch = np.stack([alpha] * 3, axis=-1)
+            overlay_np = person_np * mask_3ch + person_np * 0.3 * (1 - mask_3ch)
+            overlay = Image.fromarray(overlay_np.astype(np.uint8), mode="RGB")
+            save_debug_image(
+                "09_mask_overlay",
+                overlay,
+                {
+                    "cloth_type": "lower",
+                    "source": source or "schp_human_parsing",
+                    "note": "SCHP lower overlay for preprocess_only QA",
+                },
+            )
+        logger.info("[SCHP] lower mask ready (coverage=%.3f, source=%s)", coverage, source)
         return mask
     except Exception as e:
         logger.warning("[SCHP] lower mask failed: %s", e)
@@ -797,13 +845,18 @@ def _make_cloth_mask_mediapipe(
         garment_img = garment_img.convert("RGB")
 
     # ── Lower: SCHP / human parsing first (pants + legs, exclude shoes/upper/face) ──
+    # Then MediaPipe body polygon (not rembg product silhouette — product cutouts
+    # are usually too skinny/short for the person's lower-body edit region).
     if cloth_type == "lower":
         schp_mask = _try_schp_lower_mask(person_img, debug_output_dir=debug_output_dir)
         if schp_mask is not None:
             return schp_mask
+        logger.info(
+            "[GARMENT-MASK] lower: skipping rembg product mapping; using MediaPipe body region"
+        )
 
-    # ── Step 0: 尝试 rembg 衣服精确分割（最高优先级）────────────
-    if garment_img is not None:
+    # ── Step 0: 尝试 rembg 衣服精确分割（上装/裙装优先；下装跳过）────────────
+    if garment_img is not None and cloth_type != "lower":
         # 先做姿态检测（rembg 衣服分割需要关键点来做映射）
         mp_pose_path = _get_pose_landmarker_model_path()
         landmarks = None
@@ -1162,44 +1215,89 @@ def _get_cloth_region_polygon(
         return pts
 
     elif cloth_type == "lower":
-        lh = pt(23)  # 左臀
-        rh = pt(24)  # 右臀
+        lh = pt(23)  # 人物左臀（正面照时通常在图像右侧）
+        rh = pt(24)  # 人物右臀（正面照时通常在图像左侧）
         la = pt(27)  # 左踝
         ra = pt(28)  # 右踝
         lk = pt(25)  # 左膝
         rk = pt(26)  # 右膝
+        ls = pt(11)
+        rs = pt(12)
 
         if not (lh and rh):
             return _lower_polygon_fallback(pw, ph)
 
-        hip_w = abs(rh[0] - lh[0])
-        pad = max(int(pw * 0.015), int(hip_w * 0.045))
+        # MediaPipe left/right 是人物自身坐标；外侧扩张必须按图像 x 向外，
+        # 否则正面照会把 padding 收到裆部，只剩一条细竖条。
+        if lh[0] <= rh[0]:
+            img_l_hip, img_r_hip = lh, rh
+            img_l_knee, img_r_knee = lk, rk
+            img_l_ankle, img_r_ankle = la, ra
+        else:
+            img_l_hip, img_r_hip = rh, lh
+            img_l_knee, img_r_knee = rk, lk
+            img_l_ankle, img_r_ankle = ra, la
 
-        def outer(p, side: int):
-            return (clamp(p[0] + side * pad, 0, pw), clamp(p[1], 0, ph))
+        hip_w = abs(img_r_hip[0] - img_l_hip[0])
+        shoulder_w = abs(rs[0] - ls[0]) if ls and rs else hip_w
+        pad = max(int(pw * 0.055), int(hip_w * 0.90), int(shoulder_w * 0.50))
+        ankle_pad = max(pad, int(pad * 1.40))
+        waist_lift = int(ph * 0.03)
 
-        # 左髋 -> 右髋 -> 右膝外侧 -> 右踝外侧 -> 左踝外侧 -> 左膝外侧
+        def outer_left(p, p_pad: int = pad):
+            return (clamp(p[0] - p_pad, 0, pw), clamp(p[1], 0, ph))
+
+        def outer_right(p, p_pad: int = pad):
+            return (clamp(p[0] + p_pad, 0, pw), clamp(p[1], 0, ph))
+
+        # 图像左髋 -> 图像右髋 -> 右膝外侧 -> 右踝外侧 -> 左踝外侧 -> 左膝外侧
         pts: list[tuple[int, int]] = []
-        pts.append(outer(lh, -1))
-        pts.append(outer(rh, 1))
-        if rk:
-            pts.append(outer(rk, 1))
-        elif ra:
-            mid = ((rh[0] + ra[0]) // 2, (rh[1] + ra[1]) // 2)
-            pts.append(outer(mid, 1))
-        if ra:
-            pts.append(outer((ra[0], max(0, ra[1] - int(ph * 0.01))), 1))
-        elif rk:
-            pts.append(outer((rk[0], min(ph - 1, rk[1] + int(ph * 0.18))), 1))
-        if la:
-            pts.append(outer((la[0], max(0, la[1] - int(ph * 0.01))), -1))
-        elif lk:
-            pts.append(outer((lk[0], min(ph - 1, lk[1] + int(ph * 0.18))), -1))
-        if lk:
-            pts.append(outer(lk, -1))
-        elif la:
-            mid = ((lh[0] + la[0]) // 2, (lh[1] + la[1]) // 2)
-            pts.append(outer(mid, -1))
+        pts.append(outer_left((img_l_hip[0], max(0, img_l_hip[1] - waist_lift))))
+        pts.append(outer_right((img_r_hip[0], max(0, img_r_hip[1] - waist_lift))))
+        if img_r_knee:
+            pts.append(outer_right(img_r_knee))
+        elif img_r_ankle:
+            mid = (
+                (img_r_hip[0] + img_r_ankle[0]) / 2,
+                (img_r_hip[1] + img_r_ankle[1]) / 2,
+            )
+            pts.append(outer_right(mid))
+        if img_r_ankle:
+            pts.append(
+                outer_right(
+                    (img_r_ankle[0], max(0, img_r_ankle[1] - int(ph * 0.01))),
+                    ankle_pad,
+                )
+            )
+        elif img_r_knee:
+            pts.append(
+                outer_right(
+                    (img_r_knee[0], min(ph - 1, img_r_knee[1] + int(ph * 0.18))),
+                    ankle_pad,
+                )
+            )
+        if img_l_ankle:
+            pts.append(
+                outer_left(
+                    (img_l_ankle[0], max(0, img_l_ankle[1] - int(ph * 0.01))),
+                    ankle_pad,
+                )
+            )
+        elif img_l_knee:
+            pts.append(
+                outer_left(
+                    (img_l_knee[0], min(ph - 1, img_l_knee[1] + int(ph * 0.18))),
+                    ankle_pad,
+                )
+            )
+        if img_l_knee:
+            pts.append(outer_left(img_l_knee))
+        elif img_l_ankle:
+            mid = (
+                (img_l_hip[0] + img_l_ankle[0]) / 2,
+                (img_l_hip[1] + img_l_ankle[1]) / 2,
+            )
+            pts.append(outer_left(mid))
 
         if len(pts) < 4:
             return _lower_polygon_fallback(pw, ph)
@@ -2522,6 +2620,39 @@ def main():
         # ── 预处理模式：直接返回遮罩结果 ───────────────────────────────
         if args.preprocess_only:
             debug_dir = get_debug_session_dir()
+            # Ensure overlay exists even when SCHP/rembg paths skipped pose debug.
+            try:
+                if debug_dir is not None:
+                    debug_path = Path(debug_dir)
+                    mask_path = debug_path / "03_mask.png"
+                    overlay_path = debug_path / "09_mask_overlay.png"
+                    person_path = debug_path / "01_input_person.jpg"
+                    if mask_path.is_file() and person_path.is_file() and not overlay_path.is_file():
+                        person_np = np.array(
+                            Image.open(person_path).convert("RGB")
+                        ).astype(np.float32)
+                        alpha = (
+                            np.array(Image.open(mask_path).convert("L")).astype(np.float32)
+                            / 255.0
+                        )
+                        if alpha.shape[:2] == person_np.shape[:2]:
+                            mask_3ch = np.stack([alpha] * 3, axis=-1)
+                            overlay_np = (
+                                person_np * mask_3ch + person_np * 0.3 * (1 - mask_3ch)
+                            )
+                            save_debug_image(
+                                "09_mask_overlay",
+                                Image.fromarray(overlay_np.astype(np.uint8), mode="RGB"),
+                                {
+                                    "cloth_type": args.type,
+                                    "note": "generated at preprocess_only exit",
+                                },
+                            )
+            except Exception as overlay_err:
+                logger.warning(
+                    "[PREPROCESS-ONLY] failed to synthesize 09_mask_overlay: %s",
+                    overlay_err,
+                )
             logger.info(f"[PREPROCESS-ONLY] 预处理完成，已保存中间产物到: {debug_dir}")
             if debug_dir:
                 print(f"PREPROCESS_ONLY:{debug_dir}")
