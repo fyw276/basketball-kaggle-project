@@ -3964,6 +3964,16 @@ async def tryon_v2_validate_input(
         "A",
         gate.passed,
     )
+    if not gate.passed:
+        logger.warning(
+            "[VALIDATE-INPUT] rejected: error_code=%s message=%s "
+            "category=%s scores=%s thresholds=%s",
+            gate.error_code,
+            gate.message,
+            garment_category,
+            gate.scores,
+            thresholds,
+        )
 
     return TryOnV2ValidateResponse(
         status="pass" if gate.passed else "fail",

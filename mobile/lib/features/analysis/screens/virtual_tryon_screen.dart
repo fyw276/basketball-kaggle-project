@@ -294,7 +294,9 @@ class _VirtualTryonScreenState extends State<VirtualTryonScreen> {
     setState(() {
       if (primary) {
         _standardizedGarmentUrl = url;
-        if (_garmentCategory != _GarmentCategoryChoice.outfit) {
+        // Only auto-fill category when user left it as「自动识别」.
+        // Manual 下装/上装 must not be overwritten by low-confidence CLIP (e.g. pants→裙子).
+        if (_garmentCategory == _GarmentCategoryChoice.auto) {
           _garmentCategory = _choiceFromTryonCategory(cat);
         }
       } else {

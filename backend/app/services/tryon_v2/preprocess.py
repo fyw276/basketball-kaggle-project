@@ -459,6 +459,21 @@ def preprocess_garment_image(
             logger.warning(f"[DEBUG] failed to save 01_original: {e}")
 
     cutout = cutout_garment_rgba(garment_image, cloth_type=cloth_type)
+    # Prefer cutout bbox aspect over the original canvas (often square white-bg).
+    try:
+        cw, ch = cutout.cropped.size
+        cutout_aspect = ch / max(cw, 1)
+        if cloth_type_hint is None and cutout_aspect >= 1.55 and cloth_type != "lower":
+            logger.info(
+                "[AUTO-PREPROCESS] cutout aspect %.2f suggests lower; "
+                "overriding cloth_type %r -> 'lower'",
+                cutout_aspect,
+                cloth_type,
+            )
+            cloth_type = "lower"
+    except Exception:
+        cutout_aspect = 0.0
+
     pants_shape = _looks_like_pants_shape(cutout.cropped)
     if pants_shape and cloth_type != "lower":
         logger.info(
@@ -533,7 +548,7 @@ def preprocess_garment_image(
                 f"[AUTO-PREPROCESS] Low-confidence accessory (conf={conf:.3f}) "
                 f"reclassified as 'bottom' based on aspect ratio ({aspect:.2f})"
             )
-    elif pants_shape and tryon_cat in {"top", "accessory", "unknown"}:
+    elif pants_shape and tryon_cat in {"top", "accessory", "unknown", "skirt"}:
         previous_tryon_cat = tryon_cat
         tryon_cat = "bottom"
         logger.info(
@@ -542,6 +557,19 @@ def preprocess_garment_image(
             previous_tryon_cat,
             raw_cat,
             conf,
+        )
+    elif tryon_cat == "skirt" and conf < 0.40 and (cloth_type == "lower" or cutout_aspect >= 1.55):
+        # CLIP often confuses long pants / jeans with 裙子 at low confidence.
+        previous_tryon_cat = tryon_cat
+        tryon_cat = "bottom"
+        logger.info(
+            "[AUTO-PREPROCESS] low-confidence skirt (conf=%.3f, cloth_type=%r, "
+            "cutout_aspect=%.2f) reclassified as 'bottom' (was %r, raw=%r)",
+            conf,
+            cloth_type,
+            cutout_aspect,
+            previous_tryon_cat,
+            raw_cat,
         )
     elif accessory_shape and tryon_cat in {"top", "unknown"}:
         tryon_cat = "accessory"

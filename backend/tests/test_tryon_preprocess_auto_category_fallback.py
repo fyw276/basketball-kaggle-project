@@ -64,14 +64,44 @@ def test_high_confidence_accessory_pants_silhouette_forces_bottom(monkeypatch):
     assert result.tryon_category == "bottom"
 
 
-def test_pants_shape_detector_requires_split_legs():
-    """Tall single-piece garments should not be treated as pants solely by aspect."""
+def test_low_confidence_skirt_with_pants_silhouette_forces_bottom(monkeypatch):
+    """Long pants mislabeled as 裙子 at low CLIP confidence must become bottom."""
 
-    dress = Image.new("RGBA", (260, 620), (255, 255, 255, 0))
-    px = dress.load()
-    for y in range(30, 575):
-        for x in range(85, 178):
-            px[x, y] = (80, 80, 120, 255)
+    garment = Image.new("RGB", (768, 768), (255, 255, 255))
+    rgba = _make_pants_rgba()
 
-    assert preprocess._looks_like_pants_shape(_make_pants_rgba()) is True
-    assert preprocess._looks_like_pants_shape(dress) is False
+    monkeypatch.setattr(
+        preprocess,
+        "cutout_garment_rgba",
+        lambda image, cloth_type="upper": SimpleNamespace(rgba=rgba, cropped=rgba),
+    )
+    monkeypatch.setattr(preprocess, "align_garment", lambda image, **_: image)
+    monkeypatch.setattr(preprocess, "_recognize_category", lambda _: ("裙子", 0.256))
+
+    result = preprocess.preprocess_garment_image(garment)
+
+    assert result.metadata["pants_shape"] is True
+    assert result.metadata["cloth_type_used"] == "lower"
+    assert result.tryon_category == "bottom"
+
+
+def test_low_confidence_skirt_tall_cutout_without_shape_still_bottom(monkeypatch):
+    """Tall lower cutout + weak skirt label should route to bottom even if crotch gap fails."""
+
+    garment = Image.new("RGB", (500, 900), (255, 255, 255))
+    # Solid tall panel (no crotch gap) — pants_shape False, but aspect says lower.
+    rgba = Image.new("RGBA", (160, 520), (30, 40, 80, 255))
+
+    monkeypatch.setattr(
+        preprocess,
+        "cutout_garment_rgba",
+        lambda image, cloth_type="upper": SimpleNamespace(rgba=rgba, cropped=rgba),
+    )
+    monkeypatch.setattr(preprocess, "align_garment", lambda image, **_: image)
+    monkeypatch.setattr(preprocess, "_recognize_category", lambda _: ("裙子", 0.22))
+    monkeypatch.setattr(preprocess, "_looks_like_pants_shape", lambda _img: False)
+
+    result = preprocess.preprocess_garment_image(garment)
+
+    assert result.metadata["cloth_type_used"] == "lower"
+    assert result.tryon_category == "bottom"
