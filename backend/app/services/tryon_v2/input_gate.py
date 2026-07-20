@@ -59,7 +59,8 @@ def _clamp01(v: float) -> float:
     return max(0.0, min(1.0, float(v)))
 
 
-def _score_full_body(person_image: Image.Image) -> float:
+def _score_full_body_aspect(person_image: Image.Image) -> float:
+    """Aspect-ratio heuristic. NOTE: after 3:4 CatVTON crop this tops out near 0.56."""
     w, h = person_image.size
     ratio = h / max(float(w), 1.0)
     if ratio >= 1.6:
@@ -67,6 +68,58 @@ def _score_full_body(person_image: Image.Image) -> float:
     if ratio <= 1.0:
         return 0.15
     return _clamp01((ratio - 1.0) / 0.6)
+
+
+def _score_full_body_pose_span(person_image: Image.Image) -> float | None:
+    """Pose-based full-body score from head/shoulder → ankle vertical span.
+
+    Returns None when pose is unavailable so callers can fall back to aspect ratio.
+    """
+    try:
+        from app.services.tryon_v2.pose_utils import detect_pose_keypoints
+
+        kpts = detect_pose_keypoints(person_image)
+    except Exception:
+        return None
+    if not kpts:
+        return None
+
+    top_ys: list[float] = []
+    for key in ("nose", "left_eye", "right_eye", "left_shoulder", "right_shoulder"):
+        pt = kpts.get(key)
+        if pt is not None:
+            top_ys.append(float(pt[1]))
+    ankle_ys: list[float] = []
+    for key in ("left_ankle", "right_ankle"):
+        pt = kpts.get(key)
+        if pt is not None:
+            ankle_ys.append(float(pt[1]))
+    if not top_ys or not ankle_ys:
+        return None
+
+    span = max(ankle_ys) - min(top_ys)
+    # Normalized keypoints: full standing body typically spans ~0.55–0.85 of frame.
+    if span >= 0.62:
+        return 1.0
+    if span >= 0.50:
+        return 0.85
+    if span >= 0.40:
+        return 0.70
+    return _clamp01(span / 0.40)
+
+
+def _score_full_body(person_image: Image.Image) -> float:
+    """Full-body score = max(aspect, pose span).
+
+    Critical: `/garment` normalizes people to 768x1024 (ratio≈1.333) before the
+    lower input gate. Pure aspect scoring then returns ≈0.556 and always fails
+    the pants threshold (0.65). Pose span recovers true full-body photos.
+    """
+    aspect = _score_full_body_aspect(person_image)
+    pose = _score_full_body_pose_span(person_image)
+    if pose is None:
+        return aspect
+    return max(aspect, pose)
 
 
 def _score_leg_visibility(person_image: Image.Image) -> float:
@@ -276,7 +329,36 @@ def evaluate_input_gate(
             scores=scores,
         )
 
-    if scores["garment_front_score"] < garment_front_min:
+    # White-bg pants product photos often letterbox to a small FG ratio after
+    # preprocess, which unfairly tanks garment_front_score. Prefer pants QC.
+    effective_garment_front_min = garment_front_min
+    if kind == "bottom" and scores["garment_bg_clean_score"] >= 0.70:
+        effective_garment_front_min = min(garment_front_min, 0.22)
+        try:
+            from app.services.tryon_v2.garment_struct import cutout_garment_rgba
+            from app.services.tryon_v2.preprocess import evaluate_lower_garment_qc
+
+            cutout = cutout_garment_rgba(garment_image, cloth_type="lower")
+            pants_qc = evaluate_lower_garment_qc(cutout.cropped)
+            scores["pants_qc_score"] = float(pants_qc.get("score") or 0.0)
+            if not pants_qc.get("passed"):
+                return GateResult(
+                    passed=False,
+                    error_code="TRYON_V2_GARMENT_NOT_FRONT_VIEW",
+                    message=str(
+                        pants_qc.get("message")
+                        or "请上传单条裤子的正面白底商品图，裤腰和裤脚需要完整入镜。"
+                    ),
+                    action_hint="请上传正面、裤腰和裤脚完整、背景干净的裤子商品图。",
+                    retryable=False,
+                    scores=scores,
+                )
+            # Pants silhouette looks valid on a clean background — skip weak FG ratio.
+            effective_garment_front_min = 0.0
+        except Exception:
+            pass
+
+    if scores["garment_front_score"] < effective_garment_front_min:
         message = (
             "请上传单条裤子的正面白底商品图，裤腰和裤脚需要完整入镜。"
             if kind == "bottom"
