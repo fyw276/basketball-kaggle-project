@@ -3965,14 +3965,26 @@ async def tryon_v2_validate_input(
         gate.passed,
     )
     if not gate.passed:
+        applied = {
+            k: gate.scores.get(k)
+            for k in (
+                "full_body_min",
+                "leg_visibility_min",
+                "front_pose_min",
+                "garment_front_min",
+                "lower_pose_min",
+            )
+            if k in gate.scores
+        }
         logger.warning(
             "[VALIDATE-INPUT] rejected: error_code=%s message=%s "
-            "category=%s scores=%s thresholds=%s",
+            "category=%s scores=%s base_thresholds=%s applied_thresholds=%s",
             gate.error_code,
             gate.message,
             garment_category,
-            gate.scores,
+            {k: v for k, v in gate.scores.items() if not k.endswith("_min")},
             thresholds,
+            applied or thresholds,
         )
 
     return TryOnV2ValidateResponse(

@@ -122,12 +122,28 @@ def _score_full_body(person_image: Image.Image) -> float:
     return max(aspect, pose)
 
 
-def _score_leg_visibility(person_image: Image.Image) -> float:
+def _score_leg_visibility_std(person_image: Image.Image) -> float:
+    """Lower-half grayscale variance heuristic (weak on plain clothes / 3:4 crops)."""
     arr = np.asarray(person_image.convert("L"), dtype=np.float32)
     h = arr.shape[0]
     lower = arr[int(h * 0.55) :, :]
     std = float(lower.std())
     return _clamp01(std / 55.0)
+
+
+def _score_leg_visibility(person_image: Image.Image) -> float:
+    """Leg visibility = max(std heuristic, lower-body pose completeness).
+
+    MediaPipe often finds hips/knees/ankles on a valid standing photo even when
+    the std heuristic is low (dark pants, uniform lighting, 3:4 letterbox).
+    Without the pose recovery, pants gate rejects photos that already have
+    lower_pose_score=1.0 — see TRYON_V2_PERSON_LEG_NOT_VISIBLE false positives.
+    """
+    heuristic = _score_leg_visibility_std(person_image)
+    pose = _score_lower_pose_keypoints(person_image)
+    if pose < 0.0:
+        return heuristic
+    return max(heuristic, pose)
 
 
 def _score_front_pose(person_image: Image.Image) -> float:
@@ -238,17 +254,29 @@ def evaluate_input_gate(
         full_body_min = max(full_body_min, 0.65 if strict else 0.55)
         leg_visibility_min = max(leg_visibility_min, 0.55 if strict else 0.45)
 
+    lower_pose = (
+        _score_lower_pose_keypoints(person_image) if kind in {"bottom", "skirt", "outfit"} else 1.0
+    )
+    # Prefer pose recovery for legs when available; avoid double MediaPipe calls
+    # by reusing lower_pose for bottom/skirt/outfit.
+    if kind in {"bottom", "skirt", "outfit"} and lower_pose >= 0.0:
+        leg_visibility = max(_score_leg_visibility_std(person_image), lower_pose)
+    else:
+        leg_visibility = _score_leg_visibility(person_image)
+
     scores = {
         "full_body_score": _score_full_body(person_image),
-        "leg_visibility_score": _score_leg_visibility(person_image),
+        "leg_visibility_score": leg_visibility,
         "front_pose_score": _score_front_pose(person_image),
         "garment_front_score": _score_garment_front(garment_image),
         "garment_bg_clean_score": _score_garment_background_cleanliness(garment_image),
-        "lower_pose_score": (
-            _score_lower_pose_keypoints(person_image)
-            if kind in {"bottom", "skirt", "outfit"}
-            else 1.0
-        ),
+        "lower_pose_score": lower_pose,
+        # Effective mins after category bumps (for reject logs / debugging).
+        "full_body_min": full_body_min,
+        "leg_visibility_min": leg_visibility_min,
+        "front_pose_min": front_pose_min,
+        "garment_front_min": garment_front_min,
+        "lower_pose_min": lower_pose_min,
     }
 
     if kind == "accessory":

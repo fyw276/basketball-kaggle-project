@@ -41,18 +41,56 @@ def test_aspect_score_on_34_canvas_is_below_lower_threshold():
     assert aspect < 0.65
 
 
-def test_full_body_score_recovers_via_pose_or_is_not_aspect_limited():
+def test_full_body_score_recovers_via_pose_or_is_not_aspect_limited(monkeypatch):
     """After 3:4 crop, full_body must not be stuck at ~0.56 when body is standing."""
+    import app.services.tryon_v2.input_gate as gate
+
+    # Avoid real MediaPipe in unit tests (can AV on Windows).
+    monkeypatch.setattr(gate, "_score_full_body_pose_span", lambda _img: 0.90)
     person = _make_34_person()
-    score = _score_full_body(person)
-    # Pose may be unavailable in CI; then we still assert aspect alone is the known bug value.
-    # When pose works, score must clear the pants threshold.
     aspect = _score_full_body_aspect(person)
-    if score > aspect + 0.01:
-        assert score >= 0.65
-    else:
-        # Document the historical failure mode when pose is missing.
-        assert 0.50 <= aspect <= 0.60
+    assert aspect < 0.65
+    assert _score_full_body(person) >= 0.65
+
+
+def test_lower_gate_passes_when_pose_confirms_legs_despite_weak_std(monkeypatch):
+    """User failure: leg_visibility std≈0.36 but lower_pose=1.0 must still pass."""
+    import app.services.tryon_v2.input_gate as gate
+
+    monkeypatch.setattr(gate, "_score_full_body_pose_span", lambda _img: 1.0)
+    monkeypatch.setattr(gate, "_score_lower_pose_keypoints", lambda _img: 1.0)
+    monkeypatch.setattr(gate, "_score_leg_visibility_std", lambda _img: 0.36)
+    monkeypatch.setattr(gate, "_score_front_pose", lambda _img: 0.88)
+    monkeypatch.setattr(gate, "_score_garment_front", lambda _img: 0.66)
+    monkeypatch.setattr(gate, "_score_garment_background_cleanliness", lambda _img: 1.0)
+
+    class _Cutout:
+        cropped = _make_white_pants().convert("RGBA")
+
+    monkeypatch.setattr(
+        "app.services.tryon_v2.garment_struct.cutout_garment_rgba",
+        lambda *_a, **_k: _Cutout(),
+    )
+    monkeypatch.setattr(
+        "app.services.tryon_v2.preprocess.evaluate_lower_garment_qc",
+        lambda _rgba: {"passed": True, "score": 0.8, "message": None},
+    )
+
+    result = evaluate_input_gate(
+        person_image=_make_34_person(),
+        garment_image=_make_white_pants(),
+        garment_category="下装",
+        strict=False,
+        thresholds={
+            "full_body": 0.45,
+            "leg_visibility": 0.35,
+            "front_pose": 0.25,
+            "garment_front": 0.35,
+        },
+    )
+    assert result.passed, (result.error_code, result.message, result.scores)
+    assert result.scores["leg_visibility_score"] >= 1.0
+    assert result.scores["leg_visibility_min"] == 0.45
 
 
 def test_lower_gate_does_not_fail_solely_on_34_aspect(monkeypatch):
@@ -61,7 +99,7 @@ def test_lower_gate_does_not_fail_solely_on_34_aspect(monkeypatch):
 
     monkeypatch.setattr(gate, "_score_full_body_pose_span", lambda _img: 0.90)
     monkeypatch.setattr(gate, "_score_lower_pose_keypoints", lambda _img: 1.0)
-    monkeypatch.setattr(gate, "_score_leg_visibility", lambda _img: 0.80)
+    monkeypatch.setattr(gate, "_score_leg_visibility_std", lambda _img: 0.80)
     monkeypatch.setattr(gate, "_score_front_pose", lambda _img: 0.90)
     # Clean white-bg pants: skip weak FG-ratio via pants QC path.
     monkeypatch.setattr(gate, "_score_garment_front", lambda _img: 0.30)
