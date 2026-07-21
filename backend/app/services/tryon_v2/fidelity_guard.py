@@ -290,6 +290,39 @@ def evaluate_raw_catvton_quality(
     artifact_score = _region_artifact_score(raw_arr, raw_mask)
     artifact_passed = artifact_score <= 0.34
 
+    from app.services.tryon_v2.category_utils import is_lower_garment_category
+
+    # Flat color-block paste is a lower-try-on failure mode (pose-box mask →
+    # CatVTON fills a rectangle). Do not apply to upper/overall synthetic cases.
+    gray_raw = cv2.cvtColor(raw_arr.astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32)
+    gray_src = cv2.cvtColor(garment_arr.astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32)
+    source_std = float(gray_src[source_mask].std()) if source_mask.any() else 0.0
+    ys, xs = np.where(raw_mask)
+    rect_fill = 0.0
+    interior_std = 999.0
+    if xs.size > 0:
+        bbox_area = float(
+            max(1, (int(xs.max()) - int(xs.min()) + 1) * (int(ys.max()) - int(ys.min()) + 1))
+        )
+        rect_fill = float(xs.size) / bbox_area
+        mask_u8 = raw_mask.astype(np.uint8) * 255
+        eroded = cv2.erode(mask_u8, np.ones((15, 15), np.uint8), iterations=1)
+        interior = eroded > 0
+        if interior.any():
+            interior_std = float(gray_raw[interior].std())
+        else:
+            interior_std = float(gray_raw[raw_mask].std())
+    flat_color_block = bool(
+        is_lower_garment_category(garment_category)
+        and raw_mask.any()
+        and interior_std < max(12.0, source_std * 0.45)
+        and rect_fill >= 0.82
+        and float(raw_mask.mean()) >= 0.04
+    )
+    if flat_color_block:
+        artifact_passed = False
+        artifact_score = max(artifact_score, 0.85)
+
     white_light_pattern = (
         source_value_mean > 0.76
         and source_sat_median < 0.16
@@ -308,6 +341,9 @@ def evaluate_raw_catvton_quality(
     if color_passed and pattern_passed and artifact_passed:
         decision = "raw"
         reason = "raw_color_pattern_artifacts_passed"
+    elif flat_color_block:
+        decision = "strong_spatial"
+        reason = "flat_color_block_mask_paste"
     elif color_passed and pattern_passed:
         decision = "artifact_only"
         reason = (

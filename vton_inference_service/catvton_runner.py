@@ -181,7 +181,15 @@ def _try_schp_lower_mask(
             )
             return None
 
-        for attr in ("face", "upper_clothes", "left_shoe", "right_shoe", "hair"):
+        for attr in (
+            "face",
+            "hair",
+            "torso_upper",
+            "left_arm",
+            "right_arm",
+            "left_shoe",
+            "right_shoe",
+        ):
             part = None
             if hasattr(parsed, attr):
                 part = getattr(parsed, attr)
@@ -213,6 +221,34 @@ def _try_schp_lower_mask(
                 return None
 
         mask = Image.fromarray(mask_np, mode="L")
+        # Wide pants mislabeled as dress may include some torso. Keep edit region
+        # from roughly the hip line downward using pose when available.
+        try:
+            from app.services.tryon_v2.pose_utils import detect_pose_keypoints
+
+            kpts = detect_pose_keypoints(person_img)
+            hip_ys = []
+            if kpts:
+                for key in ("left_hip", "right_hip"):
+                    pt = kpts.get(key)
+                    if pt is not None:
+                        hip_ys.append(float(pt[1]))
+            if hip_ys:
+                ph = mask_np.shape[0]
+                # Slightly above hip so waistband remains editable.
+                y_cut = max(0, int(min(hip_ys) * ph) - int(0.03 * ph))
+                mask_np[:y_cut, :] = 0
+                mask = Image.fromarray(mask_np, mode="L")
+                coverage = float(mask_np.mean()) / 255.0
+                if coverage < 0.02:
+                    logger.warning(
+                        "[SCHP] lower mask empty after hip crop (coverage=%.3f); falling back",
+                        coverage,
+                    )
+                    return None
+        except Exception as hip_err:
+            logger.debug("[SCHP] hip crop skipped: %s", hip_err)
+
         mask = _refine_garment_mask_boundary(mask)
         if _debug_output_dir is None and debug_output_dir is not None:
             init_debug_session(debug_output_dir)

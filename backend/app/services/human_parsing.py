@@ -66,8 +66,13 @@ LIP_LABELS = [
 ]
 
 # Label indices relevant to try-on
-_UPPER_CLOTHES_IDX = {5, 6, 7}  # upper_clothes, dress, coat
-_LOWER_GARMENT_IDX = {9, 12}  # pants, skirt
+# NOTE: LIP often mislabels wide-leg / light pants as "dress". Dress/jumpsuits must
+# count as lower edit regions for pants try-on, and must NOT be subtracted via
+# upper_clothes when building the lower mask.
+_TORSO_UPPER_IDX = {5, 7}  # upper_clothes, coat (true tops)
+_DRESS_LIKE_IDX = {6, 10}  # dress, jumpsuits
+_UPPER_CLOTHES_IDX = {5, 6, 7}  # torso + dress-like (overall / upper dress paths)
+_LOWER_GARMENT_IDX = {6, 9, 10, 12}  # dress, pants, jumpsuits, skirt
 _LEFT_ARM_IDX = {14}
 _RIGHT_ARM_IDX = {15}
 _LEFT_LEG_IDX = {16}  # left_leg only (exclude shoes for lower try-on)
@@ -101,6 +106,11 @@ class SCHPResult:
     @property
     def upper_clothes(self) -> np.ndarray:
         return self.get_mask(*_UPPER_CLOTHES_IDX)
+
+    @property
+    def torso_upper(self) -> np.ndarray:
+        """True tops only (excludes dress/jumpsuit mislabels used for lower edit)."""
+        return self.get_mask(*_TORSO_UPPER_IDX)
 
     @property
     def left_arm(self) -> np.ndarray:
