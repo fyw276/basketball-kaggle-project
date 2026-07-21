@@ -60,7 +60,85 @@ def test_pants_shape_and_qc_on_synthetic_pants():
     assert _looks_like_pants_shape(img) is True
     qc = evaluate_lower_garment_qc(img)
     assert qc["pants_shape"] is True
+    assert qc["passed"] is True
     assert "score" in qc
+
+
+def test_filled_crotch_tall_pants_cutout_passes_qc():
+    """Regression: SAM/GrabCut often fills the crotch; old QC rejected score≈0.59."""
+    img = Image.new("RGBA", (340, 760), (255, 255, 255, 0))
+    draw = ImageDraw.Draw(img)
+    # Tall pants-like polygon without crotch hole (fill ~0.7–0.85 like real cutouts).
+    draw.polygon(
+        [
+            (90, 30),
+            (250, 30),
+            (280, 120),
+            (300, 720),
+            (210, 730),
+            (170, 400),
+            (130, 730),
+            (40, 720),
+            (60, 120),
+        ],
+        fill=(45, 40, 38, 255),
+    )
+    assert _looks_like_pants_shape(img) is True
+    qc = evaluate_lower_garment_qc(img)
+    assert qc["passed"] is True, qc
+    assert qc["score"] >= 0.50
+
+
+def test_user_preview_white_pants_passes_qc_and_gate(monkeypatch):
+    """End-to-end against the saved preview that previously failed validate-input."""
+    from pathlib import Path
+
+    import app.services.tryon_v2.input_gate as gate
+    from app.services.tryon_v2.garment_struct import cutout_garment_rgba
+    from app.services.tryon_v2.input_gate import evaluate_input_gate
+
+    preview = (
+        Path(__file__).resolve().parents[1]
+        / "uploads"
+        / "preprocess"
+        / "preview_white_83742509acdb1cf24621.jpg"
+    )
+    if not preview.is_file():
+        import pytest
+
+        pytest.skip(f"missing fixture preview: {preview}")
+
+    garment = Image.open(preview).convert("RGB")
+    cut = cutout_garment_rgba(garment, cloth_type="lower")
+    qc = evaluate_lower_garment_qc(cut.cropped)
+    assert qc["passed"] is True, qc
+
+    person = Image.new("RGB", (768, 1024), (220, 220, 220))
+    d = ImageDraw.Draw(person)
+    d.ellipse((334, 60, 434, 160), fill=(200, 170, 150))
+    d.rectangle((300, 160, 468, 480), fill=(90, 120, 180))
+    d.rectangle((310, 480, 380, 960), fill=(40, 40, 90))
+    d.rectangle((388, 480, 458, 960), fill=(40, 40, 90))
+
+    monkeypatch.setattr(gate, "_score_full_body", lambda _img: 1.0)
+    monkeypatch.setattr(gate, "_score_leg_visibility_std", lambda _img: 0.36)
+    monkeypatch.setattr(gate, "_score_lower_pose_keypoints", lambda _img: 1.0)
+    monkeypatch.setattr(gate, "_score_front_pose", lambda _img: 0.88)
+
+    result = evaluate_input_gate(
+        person_image=person,
+        garment_image=garment,
+        garment_category="下装",
+        strict=False,
+        thresholds={
+            "full_body": 0.45,
+            "leg_visibility": 0.35,
+            "front_pose": 0.25,
+            "garment_front": 0.35,
+        },
+    )
+    assert result.passed, (result.error_code, result.message, result.scores)
+    assert result.scores.get("pants_qc_score", 0) >= 0.50
 
 
 def test_lower_body_polygon_covers_legs_not_face():

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import numpy as np
 from PIL import Image
 
 from app.services.tryon_v2.category_utils import LOWER_KEYWORDS, SKIRT_KEYWORDS, TOP_KEYWORDS
+
+logger = logging.getLogger(__name__)
 
 _BOTTOM_KEYWORDS = LOWER_KEYWORDS
 
@@ -369,19 +372,38 @@ def evaluate_input_gate(
             cutout = cutout_garment_rgba(garment_image, cloth_type="lower")
             pants_qc = evaluate_lower_garment_qc(cutout.cropped)
             scores["pants_qc_score"] = float(pants_qc.get("score") or 0.0)
+            reasons = list(pants_qc.get("reasons") or [])
             if not pants_qc.get("passed"):
-                return GateResult(
-                    passed=False,
-                    error_code="TRYON_V2_GARMENT_NOT_FRONT_VIEW",
-                    message=str(
-                        pants_qc.get("message")
-                        or "请上传单条裤子的正面白底商品图，裤腰和裤脚需要完整入镜。"
-                    ),
-                    action_hint="请上传正面、裤腰和裤脚完整、背景干净的裤子商品图。",
-                    retryable=False,
-                    scores=scores,
+                # Hard-fail only on truly unusable product photos. Silhouette-only
+                # misses (filled crotch after SAM) must not block declared 下装.
+                hard_reasons = {
+                    "foreground_too_small",
+                    "background_not_clean",
+                    "too_short_or_cropped",
+                    "possible_poster_or_solid_block",
+                }
+                blocking = set(reasons) & hard_reasons
+                if blocking or scores["pants_qc_score"] < 0.40:
+                    return GateResult(
+                        passed=False,
+                        error_code="TRYON_V2_GARMENT_NOT_FRONT_VIEW",
+                        message=str(
+                            pants_qc.get("message")
+                            or "请上传单条裤子的正面白底商品图，裤腰和裤脚需要完整入镜。"
+                        ),
+                        action_hint=(
+                            "请上传正面、裤腰和裤脚完整、背景干净的裤子商品图。"
+                            f" QC原因: {','.join(reasons) if reasons else 'unknown'}"
+                        ),
+                        retryable=False,
+                        scores=scores,
+                    )
+                logger.info(
+                    "[INPUT-GATE] pants_qc soft-pass (reasons=%s score=%.3f)",
+                    reasons,
+                    scores["pants_qc_score"],
                 )
-            # Pants silhouette looks valid on a clean background — skip weak FG ratio.
+            # Pants product usable for lower try-on — skip weak FG-ratio check.
             effective_garment_front_min = 0.0
         except Exception:
             pass

@@ -282,27 +282,21 @@ def _looks_like_scarf_or_accessory_shape(rgba: Image.Image) -> bool:
     return (aspect >= 2.6 and fill <= 0.30) or (aspect >= 3.2 and fill <= 0.42)
 
 
-def _looks_like_pants_shape(rgba: Image.Image) -> bool:
-    """Detect pants from the cutout silhouette.
-
-    Product-photo classifiers often confuse light jeans on a white square canvas with
-    shoes/boots. The pants silhouette is more reliable: tall garment, visible left
-    and right leg mass, and a vertical center gap through the lower half.
-    """
+def _pants_silhouette_metrics(rgba: Image.Image) -> dict[str, float | bool] | None:
+    """Shared geometry for pants silhouette / QC (bbox, fill, crotch split)."""
     im = rgba.convert("RGBA")
     arr = np.asarray(im, dtype=np.uint8)
     if arr.size == 0:
-        return False
+        return None
     rgb = arr[:, :, :3]
     a = arr[:, :, 3]
 
     alpha_mask = a > 10
     gray = rgb.mean(axis=2)
     chroma = rgb.max(axis=2) - rgb.min(axis=2)
-    # For pants detection, low-chroma gray shadow in the crotch gap should behave
-    # like background; otherwise light jeans become one solid rectangle. Keep dark
-    # low-chroma garments as foreground via the brightness branch.
-    color_mask = (chroma > 22) | (gray < 150)
+    # Mid-gray / brown pants often sit near gray≈50–180 with moderate chroma.
+    # Keep low-chroma crotch shadows as background when alpha still fills the gap.
+    color_mask = (chroma > 18) | (gray < 175)
     if float(color_mask.mean()) > 0.08:
         fg_mask = alpha_mask & color_mask
     elif float(alpha_mask.mean()) > 0.98 and float(color_mask.mean()) > 0.02:
@@ -312,20 +306,17 @@ def _looks_like_pants_shape(rgba: Image.Image) -> bool:
 
     ys, xs = np.where(fg_mask)
     if xs.size < 100:
-        return False
+        return None
 
     x0, x1 = int(xs.min()), int(xs.max()) + 1
     y0, y1 = int(ys.min()), int(ys.max()) + 1
     mask = fg_mask[y0:y1, x0:x1]
     bh, bw = mask.shape
     if bw < 20 or bh < 40:
-        return False
+        return None
 
     aspect = bh / max(bw, 1)
     fill = float(mask.mean())
-    if aspect < 1.25 or fill < 0.25 or fill > 0.94:
-        return False
-
     left = mask[:, : bw // 2]
     right = mask[:, bw // 2 :]
     center = mask[:, int(bw * 0.43) : max(int(bw * 0.57), int(bw * 0.43) + 1)]
@@ -340,16 +331,63 @@ def _looks_like_pants_shape(rgba: Image.Image) -> bool:
         left_fg = float(left[y].mean()) if left.shape[1] else 0.0
         right_fg = float(right[y].mean()) if right.shape[1] else 0.0
         center_fg = float(center[y].mean()) if center.shape[1] else 1.0
-        if left_fg > 0.10 and right_fg > 0.10 and center_fg < 0.38:
+        # Real cutouts often leave only a thin crotch notch; 0.55 catches that.
+        if left_fg > 0.10 and right_fg > 0.10 and center_fg < 0.55:
             split_rows += 1
 
-    if sampled < 8:
-        return False
-
-    split_ratio = split_rows / max(sampled, 1)
+    split_ratio = split_rows / max(sampled, 1) if sampled else 0.0
     top_band = mask[: max(1, int(bh * 0.22))]
     top_connected = float(top_band.mean()) > 0.18
-    return bool(split_ratio >= 0.28 and top_connected)
+    # Bilateral leg mass even when SAM fills the crotch gap solid.
+    lower = mask[int(bh * 0.40) :, :]
+    left_leg = float(lower[:, : max(1, bw // 2)].mean()) if lower.size else 0.0
+    right_leg = float(lower[:, bw // 2 :].mean()) if lower.size else 0.0
+    return {
+        "aspect": float(aspect),
+        "fill": float(fill),
+        "sampled": float(sampled),
+        "split_ratio": float(split_ratio),
+        "top_connected": bool(top_connected),
+        "left_leg": float(left_leg),
+        "right_leg": float(right_leg),
+    }
+
+
+def _looks_like_pants_shape(rgba: Image.Image) -> bool:
+    """Detect pants from the cutout silhouette.
+
+    Product-photo classifiers often confuse light jeans on a white square canvas with
+    shoes/boots. Prefer crotch-gap detection, but also accept tall bilateral cutouts
+    where GrabCut/SAM filled the gap between legs (common on wide-leg product photos).
+    """
+    metrics = _pants_silhouette_metrics(rgba)
+    if metrics is None:
+        return False
+
+    aspect = float(metrics["aspect"])
+    fill = float(metrics["fill"])
+    if aspect < 1.25 or fill < 0.25 or fill > 0.94:
+        return False
+    if int(metrics["sampled"]) < 8:
+        return False
+    if not bool(metrics["top_connected"]):
+        return False
+
+    split_ratio = float(metrics["split_ratio"])
+    if split_ratio >= 0.18:
+        return True
+
+    # Filled-crotch fallback: tall product cutout with mass on both legs.
+    # Does NOT use the old hard 0.28 crotch ratio — SAM often erases the gap.
+    left_leg = float(metrics["left_leg"])
+    right_leg = float(metrics["right_leg"])
+    return bool(
+        aspect >= 1.70
+        and 0.45 <= fill <= 0.90
+        and left_leg >= 0.28
+        and right_leg >= 0.28
+        and min(left_leg, right_leg) / max(max(left_leg, right_leg), 1e-6) >= 0.45
+    )
 
 
 def evaluate_lower_garment_qc(rgba: Image.Image) -> dict[str, Any]:
@@ -368,6 +406,7 @@ def evaluate_lower_garment_qc(rgba: Image.Image) -> dict[str, Any]:
     ys, xs = np.where(a > 10)
     fill_score = 0.0
     aspect_score = 0.0
+    aspect = 0.0
     if xs.size >= 50:
         x0, x1 = int(xs.min()), int(xs.max()) + 1
         y0, y1 = int(ys.min()), int(ys.max()) + 1
@@ -398,12 +437,27 @@ def evaluate_lower_garment_qc(rgba: Image.Image) -> dict[str, Any]:
         0.0,
         min(1.0, 0.45 * shape_score + 0.25 * aspect_score + 0.15 * fill_score + 0.15 * bg_score),
     )
-    passed = bool(pants_shape and score >= 0.45 and "foreground_too_small" not in reasons)
+    # Soft geometric pass: tall clean product cutouts often lose the crotch gap after
+    # GrabCut/SAM, which previously forced passed=False at score≈0.59 (user regression).
+    tall_clean_product = (
+        "foreground_too_small" not in reasons
+        and "background_not_clean" not in reasons
+        and "too_short_or_cropped" not in reasons
+        and 1.35 <= aspect <= 3.6
+        and 0.35 <= fill_score <= 0.92
+        and bg_score >= 0.45
+        and score >= 0.50
+    )
+    passed = bool(
+        "foreground_too_small" not in reasons
+        and ((pants_shape and score >= 0.45) or tall_clean_product)
+    )
     return {
         "passed": passed,
         "score": round(float(score), 3),
         "pants_shape": bool(pants_shape),
         "bg_clean_score": round(float(bg_score), 3),
+        "soft_geometry_pass": bool(tall_clean_product and not pants_shape),
         "reasons": reasons,
         "message": (None if passed else "请上传单条裤子的正面白底商品图，裤腰和裤脚需要完整入镜。"),
     }
