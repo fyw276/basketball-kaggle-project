@@ -2911,7 +2911,7 @@ def tryon_lower_structure_preserve(
             person_image=person_image,
             garment_image=garment_image,
             alpha_feather_ratio=0.0045 if structured_pattern_lower else 0.0075,
-            use_knee_split=False,
+            use_knee_split=True,
             include_waistband=not denim_like,
             top_extend_ratio=top_extend_ratio,
             bottom_extend_ratio=bottom_extend_ratio,

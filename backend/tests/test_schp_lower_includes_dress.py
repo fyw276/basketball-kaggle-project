@@ -24,7 +24,8 @@ def test_bottom_region_includes_dress_and_excludes_from_torso_upper():
     assert float(torso[10:35, 8:22].mean()) < 0.1
 
 
-def test_flat_color_block_raw_is_rejected():
+def test_solid_leg_blob_raw_is_rejected_for_lower():
+    """CatVTON often paints a skirt-like solid panel; must not pass as raw."""
     from PIL import Image, ImageDraw
 
     from app.services.tryon_v2.fidelity_guard import (
@@ -32,17 +33,27 @@ def test_flat_color_block_raw_is_rejected():
         extract_engine_decision_features,
     )
 
-    person = Image.new("RGB", (256, 384), (220, 220, 220))
-    ImageDraw.Draw(person).rectangle((90, 40, 166, 360), fill=(180, 160, 150))
+    person = Image.new("RGB", (256, 384), (230, 230, 230))
+    ImageDraw.Draw(person).rectangle((100, 40, 156, 360), fill=(190, 170, 160))
 
-    garment = Image.new("RGB", (200, 360), (255, 255, 255))
-    ImageDraw.Draw(garment).rectangle((40, 20, 160, 340), fill=(60, 40, 30))
+    garment = Image.new("RGB", (180, 320), (255, 255, 255))
+    d = ImageDraw.Draw(garment)
+    # Pants with visible fold contrast so source texture score is non-trivial.
+    d.rectangle((40, 20, 140, 300), fill=(55, 40, 32))
+    for y in range(40, 290, 12):
+        d.line((50, y, 130, y + 4), fill=(90, 70, 55), width=2)
 
-    # Simulate CatVTON color-block paste: solid rectangle over legs.
     raw = person.copy()
-    ImageDraw.Draw(raw).rectangle((80, 140, 176, 330), fill=(60, 40, 30))
+    # Solid panel over both legs — no crotch split.
+    ImageDraw.Draw(raw).polygon(
+        [(95, 150), (165, 150), (170, 340), (90, 340)],
+        fill=(55, 40, 32),
+    )
     mask = Image.new("L", (256, 384), 0)
-    ImageDraw.Draw(mask).rectangle((80, 140, 176, 330), fill=255)
+    ImageDraw.Draw(mask).polygon(
+        [(95, 150), (165, 150), (170, 340), (90, 340)],
+        fill=255,
+    )
 
     q = evaluate_raw_catvton_quality(
         raw_result=raw,
@@ -52,5 +63,14 @@ def test_flat_color_block_raw_is_rejected():
         features=extract_engine_decision_features(garment),
         raw_mask_image=mask,
     )
-    assert q.decision != "raw"
-    assert "flat_color_block" in q.reason or q.artifact_passed is False
+    assert q.decision == "strong_spatial", (q.decision, q.reason)
+    assert q.artifact_passed is False
+    assert any(
+        k in q.reason
+        for k in (
+            "solid_leg_blob",
+            "texture_collapsed",
+            "flat_color_block",
+            "lower_",
+        )
+    )

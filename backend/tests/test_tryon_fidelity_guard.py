@@ -374,9 +374,17 @@ def test_force_lower_structured_pattern_recovery_for_borderline_raw_pass():
     assert quality.decision in {"raw", "pattern_only", "strong_spatial"}
     assert quality.source_pattern_score >= 0.75
     if quality.decision == "strong_spatial":
-        # Flat pose-box paste is caught earlier; structured recovery still applies
-        # via the strong_spatial branch in tryon_v2.
-        assert "flat_color_block" in quality.reason
+        # Flat pose-box paste / solid leg blob is caught earlier; structured recovery
+        # still applies via the strong_spatial branch in tryon_v2.
+        assert any(
+            k in quality.reason
+            for k in (
+                "flat_color_block",
+                "solid_leg_blob",
+                "texture_collapsed",
+                "lower_",
+            )
+        )
     else:
         assert quality.raw_pattern_signal <= max(0.47, quality.source_pattern_score * 0.49)
         assert (

@@ -198,6 +198,62 @@ def _hue_entropy(hsv_pixels: np.ndarray) -> float:
     return float(-(prob * np.log2(prob)).sum())
 
 
+def _fabric_texture_score(arr: np.ndarray, mask: np.ndarray) -> float:
+    """Laplacian-based fabric fold/texture score in [0, 1]."""
+    if not mask.any():
+        return 0.0
+    gray = cv2.cvtColor(arr.astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32)
+    lap = np.abs(cv2.Laplacian(gray, cv2.CV_32F))
+    return float(min(1.0, float(np.percentile(lap[mask], 88)) / 48.0))
+
+
+def _lower_result_is_solid_leg_blob(arr: np.ndarray, mask: np.ndarray) -> bool:
+    """True when lower edit region has no crotch gap and looks like one flat panel."""
+    ys, xs = np.where(mask)
+    if xs.size < 200:
+        return False
+    y0, y1 = int(ys.min()), int(ys.max())
+    x0, x1 = int(xs.min()), int(xs.max())
+    h = max(1, y1 - y0)
+    w = max(1, x1 - x0)
+    mid_y0 = y0 + int(0.38 * h)
+    mid_y1 = y0 + int(0.82 * h)
+    mid_x = (x0 + x1) // 2
+    cw = max(2, int(0.07 * w))
+    center = mask[mid_y0:mid_y1, max(0, mid_x - cw) : mid_x + cw]
+    left = mask[mid_y0:mid_y1, x0 + int(0.12 * w) : x0 + int(0.32 * w)]
+    right = mask[mid_y0:mid_y1, x0 + int(0.68 * w) : x0 + int(0.88 * w)]
+    if center.size < 30 or left.size < 30 or right.size < 30:
+        return False
+    # Real pants usually leave some empty pixels between thighs in the mask or
+    # at least a darker / different center strip after generation.
+    center_fill = float(center.mean())
+    if center_fill < 0.80:
+        return False
+
+    tex = _fabric_texture_score(arr, mask)
+    # No crotch gap + weak fabric folds ⇒ skirt/panel blob (CatVTON solid fill).
+    if tex <= 0.14:
+        return True
+
+    def _mean_rgb(region_mask: np.ndarray, y_a: int, y_b: int, x_a: int, x_b: int) -> np.ndarray:
+        patch = arr[y_a:y_b, x_a:x_b]
+        m = region_mask
+        if m.shape != patch.shape[:2]:
+            return np.zeros(3, dtype=np.float32)
+        pix = patch[m]
+        if pix.size == 0:
+            return np.zeros(3, dtype=np.float32)
+        return pix.mean(axis=0)
+
+    c_rgb = _mean_rgb(center, mid_y0, mid_y1, max(0, mid_x - cw), mid_x + cw)
+    l_rgb = _mean_rgb(left, mid_y0, mid_y1, x0 + int(0.12 * w), x0 + int(0.32 * w))
+    r_rgb = _mean_rgb(right, mid_y0, mid_y1, x0 + int(0.68 * w), x0 + int(0.88 * w))
+    dist_l = float(np.linalg.norm(c_rgb - l_rgb))
+    dist_r = float(np.linalg.norm(c_rgb - r_rgb))
+    return dist_l < 28.0 and dist_r < 28.0
+
+
 def _region_artifact_score(arr: np.ndarray, mask: np.ndarray) -> float:
     if not mask.any():
         return 1.0
@@ -292,14 +348,15 @@ def evaluate_raw_catvton_quality(
 
     from app.services.tryon_v2.category_utils import is_lower_garment_category
 
-    # Flat color-block paste is a lower-try-on failure mode (pose-box mask →
-    # CatVTON fills a rectangle). Do not apply to upper/overall synthetic cases.
+    # Detect CatVTON "solid pant panel": outer silhouette OK but no crotch split /
+    # fabric folds. Saturated solids used to score pattern_signal≈1.0 via chroma.
     gray_raw = cv2.cvtColor(raw_arr.astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32)
     gray_src = cv2.cvtColor(garment_arr.astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32)
     source_std = float(gray_src[source_mask].std()) if source_mask.any() else 0.0
     ys, xs = np.where(raw_mask)
     rect_fill = 0.0
     interior_std = 999.0
+    interior = raw_mask
     if xs.size > 0:
         bbox_area = float(
             max(1, (int(xs.max()) - int(xs.min()) + 1) * (int(ys.max()) - int(ys.min()) + 1))
@@ -312,16 +369,31 @@ def evaluate_raw_catvton_quality(
             interior_std = float(gray_raw[interior].std())
         else:
             interior_std = float(gray_raw[raw_mask].std())
+            interior = raw_mask
+
+    is_lower = is_lower_garment_category(garment_category)
+    src_tex = _fabric_texture_score(garment_arr, source_mask)
+    raw_tex = _fabric_texture_score(raw_arr, interior if interior.any() else raw_mask)
+    texture_collapsed = bool(
+        is_lower and src_tex >= 0.08 and raw_tex <= max(0.09, src_tex * 0.95) and raw_tex < 0.12
+    )
+    solid_leg_blob = bool(is_lower and _lower_result_is_solid_leg_blob(raw_arr, raw_mask))
     flat_color_block = bool(
-        is_lower_garment_category(garment_category)
+        is_lower
         and raw_mask.any()
-        and interior_std < max(12.0, source_std * 0.45)
-        and rect_fill >= 0.82
         and float(raw_mask.mean()) >= 0.04
+        and (
+            (interior_std < max(12.0, source_std * 0.45) and rect_fill >= 0.82)
+            or texture_collapsed
+            or solid_leg_blob
+        )
     )
     if flat_color_block:
         artifact_passed = False
         artifact_score = max(artifact_score, 0.85)
+        if texture_collapsed or solid_leg_blob:
+            # Prefer a specific reason below for routing to pants warp.
+            pass
 
     white_light_pattern = (
         source_value_mean > 0.76
@@ -343,7 +415,14 @@ def evaluate_raw_catvton_quality(
         reason = "raw_color_pattern_artifacts_passed"
     elif flat_color_block:
         decision = "strong_spatial"
-        reason = "flat_color_block_mask_paste"
+        if solid_leg_blob and texture_collapsed:
+            reason = "lower_solid_blob_texture_collapsed"
+        elif solid_leg_blob:
+            reason = "lower_solid_leg_blob_no_crotch"
+        elif texture_collapsed:
+            reason = "lower_fabric_texture_collapsed"
+        else:
+            reason = "flat_color_block_mask_paste"
     elif color_passed and pattern_passed:
         decision = "artifact_only"
         reason = (

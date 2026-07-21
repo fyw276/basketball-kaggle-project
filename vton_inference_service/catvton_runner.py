@@ -112,6 +112,60 @@ def _get_schp_parser():
         return None
 
 
+def _carve_pose_crotch_gap(
+    mask_np: np.ndarray,
+    kpts: dict | None,
+    person_size: tuple[int, int],
+) -> np.ndarray:
+    """Zero a center crotch wedge so lower masks are two-legged, not a skirt panel."""
+    if not kpts or mask_np.size == 0:
+        return mask_np
+    pw, ph = person_size
+    lh = kpts.get("left_hip")
+    rh = kpts.get("right_hip")
+    lk = kpts.get("left_knee")
+    rk = kpts.get("right_knee")
+    la = kpts.get("left_ankle")
+    ra = kpts.get("right_ankle")
+    if not (lh and rh):
+        return mask_np
+
+    def _px(pt: tuple[float, float]) -> tuple[int, int]:
+        return (
+            int(max(0, min(pw - 1, float(pt[0]) * pw))),
+            int(max(0, min(ph - 1, float(pt[1]) * ph))),
+        )
+
+    hip_l, hip_r = _px(lh), _px(rh)
+    crotch = ((hip_l[0] + hip_r[0]) // 2, (hip_l[1] + hip_r[1]) // 2)
+    # Prefer knees; fall back to ankles / hip+offset.
+    if lk and rk:
+        mid = _px(((lk[0] + rk[0]) / 2.0, (lk[1] + rk[1]) / 2.0))
+    elif la and ra:
+        mid = _px(((la[0] + ra[0]) / 2.0, (la[1] + ra[1]) / 2.0 * 0.72 + crotch[1] * 0.28))
+    else:
+        mid = (crotch[0], min(ph - 1, crotch[1] + int(0.28 * ph)))
+
+    hip_w = max(8, abs(hip_r[0] - hip_l[0]))
+    top_half = max(2, int(hip_w * 0.10))
+    bot_half = max(3, int(hip_w * 0.16))
+    # Wedge from just below crotch toward mid-thigh/knee.
+    y0 = min(crotch[1] + int(0.02 * ph), mid[1])
+    y1 = max(y0 + 4, mid[1])
+    poly = np.array(
+        [
+            [crotch[0] - top_half, y0],
+            [crotch[0] + top_half, y0],
+            [mid[0] + bot_half, y1],
+            [mid[0] - bot_half, y1],
+        ],
+        dtype=np.int32,
+    )
+    out = mask_np.copy()
+    cv2.fillPoly(out, [poly], 0)
+    return out
+
+
 def _try_schp_lower_mask(
     person_img: "Image.Image",
     debug_output_dir: Path | None = None,
@@ -246,6 +300,10 @@ def _try_schp_lower_mask(
                         coverage,
                     )
                     return None
+            # Carve a crotch notch so CatVTON sees two legs instead of a skirt panel.
+            mask_np = _carve_pose_crotch_gap(mask_np, kpts, person_img.size)
+            mask = Image.fromarray(mask_np, mode="L")
+            coverage = float(mask_np.mean()) / 255.0
         except Exception as hip_err:
             logger.debug("[SCHP] hip crop skipped: %s", hip_err)
 
