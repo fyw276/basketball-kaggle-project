@@ -2878,10 +2878,11 @@ def tryon_lower_warp_primary(
     drape_alpha: float = 0.18,
     debug_session_dir: str | None = None,
 ) -> tuple[Image.Image, dict]:
-    """Lower-only try-on: geometric knee-split warp + light body shading.
+    """Lower-only try-on: continuous left/right leg warp + light body shading.
 
-    Does NOT call CatVTON. Preserves uploaded pants color/texture by compositing
-    the warped garment pixels directly. Upper try-on must not use this path.
+    Does NOT call CatVTON. Does NOT use knee-split (avoids 2x2 tile seams).
+    Preserves uploaded pants color/texture by compositing warped garment pixels.
+    Upper try-on must not use this path.
     """
     try:
         denim_like = _is_denim_like_garment(garment_image)
@@ -2890,7 +2891,8 @@ def tryon_lower_warp_primary(
             person_image=person_image,
             garment_image=garment_image,
             alpha_feather_ratio=0.006 if pattern_strength >= 0.55 else 0.009,
-            use_knee_split=True,
+            # Continuous whole-leg warp — knee-split creates visible 2x2 tiles.
+            use_knee_split=False,
             include_waistband=not denim_like,
             protect_upper_body=True,
         )
@@ -2919,7 +2921,7 @@ def tryon_lower_warp_primary(
         meta = {
             "engine": "lower_warp_primary",
             "catvton_used": False,
-            "use_knee_split": True,
+            "use_knee_split": False,
             "include_waistband": not denim_like,
             "denim_like": bool(denim_like),
             "pattern_strength": round(float(pattern_strength), 4),
@@ -2951,17 +2953,17 @@ def tryon_lower_warp_primary(
         return out, meta
     except Exception as e:
         logger.warning("tryon_lower_warp_primary failed: %s", e)
-        # Last resort: plain knee-split paste.
+        # Last resort: continuous whole-leg paste (still no knee-split tiles).
         out, warp_meta = tryon_pants_warp(
             person_image,
             garment_image,
-            use_knee_split=True,
+            use_knee_split=False,
             include_waistband=True,
         )
         return out, {
             "engine": "lower_warp_primary_fallback",
             "catvton_used": False,
-            "use_knee_split": True,
+            "use_knee_split": False,
             "error": str(e),
             "waistband_box": list(warp_meta.waistband_box),
             "left_leg_box": list(warp_meta.left_leg_box),

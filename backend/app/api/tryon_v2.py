@@ -910,7 +910,7 @@ async def tryon_garment_v2(
     garment_jpg = _pil_image_to_jpeg_bytes(garment_image, quality=95)
     person_jpg = _pil_image_to_jpeg_bytes(person_image, quality=95)
 
-    # Lower-only: geometric knee-split warp. Must run before detail_fidelity/hybrid
+    # Lower-only: continuous whole-leg geometric warp. Must run before detail_fidelity/hybrid
     # so upper CatVTON paths stay completely unchanged.
     _cloth_type_early = map_to_catvton_cloth_type(garment_category)
     if mode in {"detail_fidelity", "hybrid"} and (
@@ -929,7 +929,7 @@ async def tryon_garment_v2(
         )
         result = {
             "status": "success",
-            "message": "下装几何试衣完成（膝部分段 warp，颜色纹理保真，未调用 CatVTON）",
+            "message": "下装几何试衣完成（左右整腿连续 warp，颜色纹理保真，未调用 CatVTON）",
             "result_image": result_img,
             "qc_scores": {
                 "fidelity_score": 0.92,
@@ -939,7 +939,7 @@ async def tryon_garment_v2(
                 "pipeline": "LOWER_WARP_PRIMARY",
                 "mode": mode,
                 "catvton_category": _cloth_type_early,
-                "method": "knee_split_warp_primary",
+                "method": "whole_leg_warp_primary",
                 **warp_meta,
             },
         }
@@ -1574,14 +1574,14 @@ async def tryon_garment_v2(
             )
             result = {
                 "status": "success",
-                "message": "下装几何试衣完成（膝部分段 warp，颜色纹理保真，未调用 CatVTON）",
+                "message": "下装几何试衣完成（左右整腿连续 warp，颜色纹理保真，未调用 CatVTON）",
                 "result_image": result_img,
                 "qc_scores": {"fidelity_score": 0.92, "realism_score": 0.78},
                 "metadata": {
                     "pipeline": "LOWER_WARP_PRIMARY",
                     "mode": "detail_fidelity",
                     "catvton_category": cloth_type,
-                    "method": "knee_split_warp_primary",
+                    "method": "whole_leg_warp_primary",
                     "safety_reroute": True,
                     **warp_meta,
                 },
@@ -4178,7 +4178,7 @@ async def tryon_v2_model_status(
         "enabled": bool(getattr(settings, "TRYON_V2_ENABLED", True)),
         "strict_identity_default": bool(getattr(settings, "TRYON_V2_STRICT_IDENTITY", True)),
         "auto_preprocess": bool(getattr(settings, "TRYON_V2_AUTO_PREPROCESS", True)),
-        # Lower uses geometric knee-split warp (no CatVTON). Upper still uses CatVTON.
+        # Lower uses continuous whole-leg warp (no CatVTON). Upper still uses CatVTON.
         "lower_body_engine": "lower_warp_primary",
         "lower_default_mode": "detail_fidelity",
         "lower_skips_catvton": True,

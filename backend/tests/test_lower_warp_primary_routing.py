@@ -35,7 +35,7 @@ async def test_detail_fidelity_lower_skips_catvton(monkeypatch):
     warp_meta = {
         "engine": "lower_warp_primary",
         "catvton_used": False,
-        "use_knee_split": True,
+        "use_knee_split": False,
         "waistband_box": [0, 0, 1, 1],
         "left_leg_box": [0, 0, 1, 1],
         "right_leg_box": [0, 0, 1, 1],
@@ -128,7 +128,7 @@ def test_tryon_lower_warp_primary_preserves_dark_tone():
     out, meta = tryon_lower_warp_primary(person, garment)
     assert out.size == person.size
     assert meta.get("catvton_used") is False
-    assert meta.get("use_knee_split") is True
+    assert meta.get("use_knee_split") is False
     # Mean lower-half should stay relatively dark (not washed to taupe/beige).
     import numpy as np
 
