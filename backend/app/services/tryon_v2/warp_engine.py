@@ -2625,9 +2625,18 @@ def _build_pants_warp_layer(
     include_waistband: bool = False,
     top_extend_ratio: float = 0.0,
     bottom_extend_ratio: float = 0.0,
+    waist_raise_ratio: float = 0.0,
+    skip_waistband_trim: bool = False,
     protect_upper_body: bool = True,
 ) -> tuple[Image.Image, WarpMetadata]:
-    """Build an RGBA pants warp layer that can be reused by stage-1 and step-12."""
+    """Build an RGBA pants warp layer that can be reused by stage-1 and step-12.
+
+    waist_raise_ratio: optional upward shift of the waistband (fraction of image height).
+    Used by lower_warp_primary to cover high-waist original pants; default 0 keeps
+    other callers unchanged.
+    skip_waistband_trim: when True, keep the raised waistband (body-curve trim would
+    otherwise erase the high-waist coverage we just added).
+    """
     pw, ph = person_image.size
 
     cutout = cutout_garment_rgba(garment_image)
@@ -2689,6 +2698,33 @@ def _build_pants_warp_layer(
                 right_leg_box[2],
                 _clamp_int(right_leg_box[3] + extend_px, right_leg_box[1] + 2, ph),
             )
+
+    if waist_raise_ratio > 0:
+        raise_px = max(0, int(round(ph * float(waist_raise_ratio))))
+        if raise_px:
+            # Stay below upper-body protect band (~0.30ph).
+            min_wy0 = _clamp_int(int(ph * 0.32), 0, ph - 4)
+            wx0, wy0, wx1, wy1 = waistband_box
+            band_h = max(2, wy1 - wy0)
+            # Shift the band up; keep height so waist texture is not vertically smeared.
+            new_wy0 = _clamp_int(wy0 - raise_px, min_wy0, ph - band_h - 2)
+            new_wy1 = _clamp_int(new_wy0 + band_h, new_wy0 + 2, ph)
+            waistband_box = (wx0, new_wy0, wx1, new_wy1)
+            # Attach leg tops under the raised band.
+            leg_y0 = _clamp_int(new_wy1 - max(2, int(ph * 0.006)), 0, ph - 2)
+            left_leg_box = (
+                left_leg_box[0],
+                leg_y0,
+                left_leg_box[2],
+                left_leg_box[3],
+            )
+            right_leg_box = (
+                right_leg_box[0],
+                leg_y0,
+                right_leg_box[2],
+                right_leg_box[3],
+            )
+
     logger.info(
         "pants_warp_layer: flare_ratio=%.3f wide_leg=%s boxes waist=%s left=%s right=%s",
         flare_ratio,
@@ -2802,7 +2838,7 @@ def _build_pants_warp_layer(
 
     merged = Image.alpha_composite(Image.alpha_composite(layer_left, layer_right), layer_waist)
     waistband_trim_meta: dict | None = None
-    if include_waistband and visible_waistband_box != (0, 0, 0, 0):
+    if include_waistband and visible_waistband_box != (0, 0, 0, 0) and not skip_waistband_trim:
         guides = _estimate_lower_structure_guides(person_image)
         merged, waistband_trim_meta = _trim_lower_waistband_to_body_curve(
             merged,
@@ -2811,6 +2847,9 @@ def _build_pants_warp_layer(
             right_leg_box=right_leg_box,
             guides=guides,
         )
+    elif skip_waistband_trim and include_waistband:
+        waistband_trim_meta = {"applied": False, "reason": "skipped_for_waist_raise"}
+        logger.info("pants_warp_layer: waistband trim skipped (preserve raised waist)")
 
     feather_px = _clamp_int(int(max(pw, ph) * float(alpha_feather_ratio)), 1, 12)
     if wide_leg:
@@ -2838,6 +2877,59 @@ def _build_pants_warp_layer(
     if waistband_trim_meta:
         logger.info("pants_warp_layer: waistband trim meta=%s", waistband_trim_meta)
     return merged, meta
+
+
+def _lower_warp_primary_box_extends(
+    person_image: Image.Image,
+) -> tuple[float, float, dict]:
+    """Compute waist-raise / hem-extend ratios for lower_warp_primary only.
+
+    Default pose boxes stop at the ankle joint and natural waist; high-waist
+    long pants need the warp target raised and extended toward the shoe line.
+    """
+    pw, ph = person_image.size
+    kpts = detect_pose_keypoints(person_image)
+    bounds = get_body_bounds_from_keypoints(kpts, pw, ph, "bottom") if kpts else {"valid": False}
+
+    waist_raise = 0.07
+    hem_extend = 0.10
+    ankle_y = int(bounds.get("ankle_y", int(ph * 0.81))) if bounds.get("valid") else int(ph * 0.81)
+    x0 = int(bounds.get("x0", int(pw * 0.28))) if bounds.get("valid") else int(pw * 0.28)
+    x1 = int(bounds.get("x1", int(pw * 0.72))) if bounds.get("valid") else int(pw * 0.72)
+    x0 = _clamp_int(x0, 0, pw - 2)
+    x1 = _clamp_int(x1, x0 + 2, pw)
+
+    # Look below the ankle for remaining bright original pant fabric before shoes/floor.
+    arr = np.asarray(person_image.convert("RGB"), dtype=np.float32)
+    search_y1 = _clamp_int(ankle_y + int(ph * 0.18), ankle_y + 1, ph)
+    detected_hem_y = None
+    if search_y1 > ankle_y + 2:
+        roi = arr[ankle_y:search_y1, x0:x1]
+        if roi.size:
+            lum = roi.mean(axis=2)
+            # White / light pants stay bright; stop before dim shoe/floor rows.
+            bright_frac = (lum > 155).mean(axis=1)
+            good = np.where(bright_frac > 0.10)[0]
+            if good.size:
+                detected_hem_y = ankle_y + int(good.max())
+                needed = (detected_hem_y - ankle_y + max(4, int(ph * 0.012))) / float(ph)
+                hem_extend = max(hem_extend, float(needed))
+
+    # Leave a little room above the image bottom so sneakers stay visible.
+    max_hem = max(0.04, (ph - 4 - ankle_y) / float(ph) - 0.025)
+    hem_extend = float(np.clip(hem_extend, 0.05, min(0.15, max_hem)))
+    # Cover high-waist originals without entering the upper protect zone.
+    waist_raise = float(np.clip(waist_raise, 0.05, 0.09))
+
+    meta = {
+        "waist_raise_ratio": round(waist_raise, 4),
+        "hem_extend_ratio": round(hem_extend, 4),
+        "ankle_y": int(ankle_y),
+        "detected_hem_y": int(detected_hem_y) if detected_hem_y is not None else None,
+        "box_x0": int(x0),
+        "box_x1": int(x1),
+    }
+    return waist_raise, hem_extend, meta
 
 
 def tryon_pants_warp(
@@ -2881,12 +2973,20 @@ def tryon_lower_warp_primary(
     """Lower-only try-on: continuous left/right leg warp + light body shading.
 
     Does NOT call CatVTON. Does NOT use knee-split (avoids 2x2 tile seams).
+    Raises the waist target and extends hems past the ankle toward the shoe line.
     Preserves uploaded pants color/texture by compositing warped garment pixels.
     Upper try-on must not use this path.
     """
     try:
         denim_like = _is_denim_like_garment(garment_image)
         pattern_strength = _detect_pattern_strength(garment_image)
+        waist_raise, hem_extend, box_ext_meta = _lower_warp_primary_box_extends(person_image)
+        logger.info(
+            "lower_warp_primary box extends: waist_raise=%.3f hem_extend=%.3f meta=%s",
+            waist_raise,
+            hem_extend,
+            box_ext_meta,
+        )
         layer, warp_meta = _build_pants_warp_layer(
             person_image=person_image,
             garment_image=garment_image,
@@ -2894,6 +2994,10 @@ def tryon_lower_warp_primary(
             # Continuous whole-leg warp — knee-split creates visible 2x2 tiles.
             use_knee_split=False,
             include_waistband=not denim_like,
+            bottom_extend_ratio=hem_extend,
+            waist_raise_ratio=waist_raise,
+            # Body-curve trim would erase the raised high-waist coverage.
+            skip_waistband_trim=True,
             protect_upper_body=True,
         )
 
@@ -2926,6 +3030,9 @@ def tryon_lower_warp_primary(
             "denim_like": bool(denim_like),
             "pattern_strength": round(float(pattern_strength), 4),
             "drape_alpha": float(drape_alpha),
+            "waist_raise_ratio": round(float(waist_raise), 4),
+            "hem_extend_ratio": round(float(hem_extend), 4),
+            "box_extends": box_ext_meta,
             "waistband_box": list(warp_meta.waistband_box),
             "left_leg_box": list(warp_meta.left_leg_box),
             "right_leg_box": list(warp_meta.right_leg_box),

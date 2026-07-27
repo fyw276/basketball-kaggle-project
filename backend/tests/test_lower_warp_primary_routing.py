@@ -129,6 +129,8 @@ def test_tryon_lower_warp_primary_preserves_dark_tone():
     assert out.size == person.size
     assert meta.get("catvton_used") is False
     assert meta.get("use_knee_split") is False
+    assert float(meta.get("waist_raise_ratio") or 0) > 0
+    assert float(meta.get("hem_extend_ratio") or 0) > 0
     # Mean lower-half should stay relatively dark (not washed to taupe/beige).
     import numpy as np
 
@@ -137,3 +139,31 @@ def test_tryon_lower_warp_primary_preserves_dark_tone():
     # Where garment likely landed: darker than light gray person bg.
     dark_ratio = float((lower.mean(axis=2) < 100).mean())
     assert dark_ratio > 0.02 or meta.get("engine") == "lower_warp_primary_fallback"
+
+
+def test_lower_warp_primary_boxes_cover_high_waist_and_hem():
+    """Waist raises and hem extends past ankle vs default pose boxes."""
+    from app.services.tryon_v2.pose_utils import (
+        detect_pose_keypoints,
+        get_body_bounds_from_keypoints,
+    )
+    from app.services.tryon_v2.warp_engine import tryon_lower_warp_primary
+
+    person = _fake_person(size=(384, 512))
+    garment = _fake_pants()
+    out, meta = tryon_lower_warp_primary(person, garment)
+    assert out.size == person.size
+
+    wb = meta["waistband_box"]
+    left = meta["left_leg_box"]
+    right = meta["right_leg_box"]
+    assert wb[1] < int(person.size[1] * 0.50)  # raised toward high waist
+    # Legs should end below default ankle (~0.81ph) when extend applied.
+    assert max(left[3], right[3]) > int(person.size[1] * 0.84)
+
+    kpts = detect_pose_keypoints(person)
+    if kpts:
+        bounds = get_body_bounds_from_keypoints(kpts, *person.size, "bottom")
+        if bounds.get("valid"):
+            assert max(left[3], right[3]) >= int(bounds["ankle_y"]) + 8
+            assert wb[1] <= int(bounds["waist_y"])
