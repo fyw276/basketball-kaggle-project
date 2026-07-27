@@ -2761,6 +2761,11 @@ def _build_pants_warp_layer(
         upper_box = (x0, y0_full, x1, knee_y_clamped)
         lower_box = (x0, knee_y_clamped, x1, y1_full)
 
+        # Overlap at the knee so upper/lower halves don't leave a bright seam.
+        overlap = _clamp_int(int((y1_full - y0_full) * 0.04), 6, 28)
+        upper_box = (x0, y0_full, x1, _clamp_int(knee_y_clamped + overlap, y0_full + 2, y1_full))
+        lower_box = (x0, _clamp_int(knee_y_clamped - overlap, y0_full, y1_full - 2), x1, y1_full)
+
         canvas = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
         upper_layer = _warp_into_box(src_upper, upper_box)
         canvas = Image.alpha_composite(canvas, upper_layer)
@@ -2864,6 +2869,104 @@ def tryon_pants_warp(
     )
     out = Image.alpha_composite(base, merged).convert("RGB")
     return out, meta
+
+
+def tryon_lower_warp_primary(
+    person_image: Image.Image,
+    garment_image: Image.Image,
+    *,
+    drape_alpha: float = 0.18,
+    debug_session_dir: str | None = None,
+) -> tuple[Image.Image, dict]:
+    """Lower-only try-on: geometric knee-split warp + light body shading.
+
+    Does NOT call CatVTON. Preserves uploaded pants color/texture by compositing
+    the warped garment pixels directly. Upper try-on must not use this path.
+    """
+    try:
+        denim_like = _is_denim_like_garment(garment_image)
+        pattern_strength = _detect_pattern_strength(garment_image)
+        layer, warp_meta = _build_pants_warp_layer(
+            person_image=person_image,
+            garment_image=garment_image,
+            alpha_feather_ratio=0.006 if pattern_strength >= 0.55 else 0.009,
+            use_knee_split=True,
+            include_waistband=not denim_like,
+            protect_upper_body=True,
+        )
+
+        person_rgba = person_image.convert("RGBA")
+        person_np = np.asarray(person_rgba, dtype=np.float32)
+        layer_np = np.asarray(layer.convert("RGBA"), dtype=np.float32)
+        alpha = np.clip(layer_np[:, :, 3:4] / 255.0, 0.0, 1.0)
+
+        # Gentle body shading from the person photo (keeps dark browns dark).
+        if float(drape_alpha) > 0 and float(alpha.mean()) > 0:
+            person_y = person_np[:, :, :3].mean(axis=2, keepdims=True)
+            gar_y = np.maximum(layer_np[:, :, :3].mean(axis=2, keepdims=True), 1.0)
+            # Only modulate where garment is opaque.
+            shade = np.clip(person_y / 180.0, 0.55, 1.15)
+            strength = float(np.clip(drape_alpha, 0.0, 0.45))
+            shaded_rgb = layer_np[:, :, :3] * ((1.0 - strength) + strength * shade)
+            # Avoid washing out very dark garments.
+            dark_keep = np.clip(gar_y / 80.0, 0.35, 1.0)
+            shaded_rgb = layer_np[:, :, :3] * (1.0 - dark_keep) + shaded_rgb * dark_keep
+            layer_np[:, :, :3] = np.clip(shaded_rgb, 0, 255)
+
+        merged = Image.fromarray(layer_np.astype(np.uint8), mode="RGBA")
+        out = Image.alpha_composite(person_rgba, merged).convert("RGB")
+
+        meta = {
+            "engine": "lower_warp_primary",
+            "catvton_used": False,
+            "use_knee_split": True,
+            "include_waistband": not denim_like,
+            "denim_like": bool(denim_like),
+            "pattern_strength": round(float(pattern_strength), 4),
+            "drape_alpha": float(drape_alpha),
+            "waistband_box": list(warp_meta.waistband_box),
+            "left_leg_box": list(warp_meta.left_leg_box),
+            "right_leg_box": list(warp_meta.right_leg_box),
+            "alpha_feather_px": int(warp_meta.alpha_feather_px),
+            "alpha_coverage": round(float(alpha.mean()), 4),
+        }
+        if debug_session_dir:
+            try:
+                from app.services.tryon_debug_utils import save_debug_stage_image
+
+                save_debug_stage_image(
+                    debug_session_dir=debug_session_dir,
+                    filename="11_lower_warp_primary_layer.png",
+                    image=merged,
+                    metadata={"stage": "lower_warp_primary_layer", **meta},
+                )
+                save_debug_stage_image(
+                    debug_session_dir=debug_session_dir,
+                    filename="12_lower_warp_primary_result.jpg",
+                    image=out,
+                    metadata={"stage": "lower_warp_primary_result", **meta},
+                )
+            except Exception:
+                pass
+        return out, meta
+    except Exception as e:
+        logger.warning("tryon_lower_warp_primary failed: %s", e)
+        # Last resort: plain knee-split paste.
+        out, warp_meta = tryon_pants_warp(
+            person_image,
+            garment_image,
+            use_knee_split=True,
+            include_waistband=True,
+        )
+        return out, {
+            "engine": "lower_warp_primary_fallback",
+            "catvton_used": False,
+            "use_knee_split": True,
+            "error": str(e),
+            "waistband_box": list(warp_meta.waistband_box),
+            "left_leg_box": list(warp_meta.left_leg_box),
+            "right_leg_box": list(warp_meta.right_leg_box),
+        }
 
 
 def tryon_lower_structure_preserve(

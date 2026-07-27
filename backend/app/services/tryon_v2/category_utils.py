@@ -99,9 +99,11 @@ def prefer_high_quality_mode_for_lower(
     *,
     preferred: str = "detail_fidelity",
 ) -> str:
-    """Force pants/lower away from warp-only / low-quality modes.
+    """Force pants/lower away from paste / low-quality modes.
 
-    Prefer detail_fidelity (or hybrid) so CatVTON lower is used by default.
+    Prefer detail_fidelity (or hybrid). For lower garments those modes are
+    handled by lower_warp_primary (geometric knee-split), not CatVTON.
+    Upper garments are never altered by this helper.
     """
     if not is_lower_garment_category(garment_category):
         return mode

@@ -859,8 +859,8 @@ async def tryon_garment_v2(
         )
         pre_meta["auto_preprocess_2"] = pre_meta2
 
-    # Pants / lower garments must not default to warp-only / paste paths.
-    # Upgrade to CatVTON detail_fidelity unless the client already chose hybrid.
+    # Pants / lower: upgrade low-quality modes to detail_fidelity/hybrid.
+    # Those modes for lower use lower_warp_primary (no CatVTON); upper unchanged.
     requested_mode = mode
     mode = prefer_high_quality_mode_for_lower(garment_category, mode)
     if mode != requested_mode:
@@ -910,7 +910,40 @@ async def tryon_garment_v2(
     garment_jpg = _pil_image_to_jpeg_bytes(garment_image, quality=95)
     person_jpg = _pil_image_to_jpeg_bytes(person_image, quality=95)
 
-    if mode == "stable_fast":
+    # Lower-only: geometric knee-split warp. Must run before detail_fidelity/hybrid
+    # so upper CatVTON paths stay completely unchanged.
+    _cloth_type_early = map_to_catvton_cloth_type(garment_category)
+    if mode in {"detail_fidelity", "hybrid"} and (
+        is_lower_garment_category(garment_category) or _cloth_type_early == "lower"
+    ):
+        from app.services.tryon_v2.warp_engine import tryon_lower_warp_primary
+
+        logger.info(
+            "[%s] lower garment → lower_warp_primary (skip CatVTON)",
+            mode,
+        )
+        result_img, warp_meta = tryon_lower_warp_primary(
+            person_image=person_image,
+            garment_image=garment_image,
+            debug_session_dir=debug_session_dir,
+        )
+        result = {
+            "status": "success",
+            "message": "下装几何试衣完成（膝部分段 warp，颜色纹理保真，未调用 CatVTON）",
+            "result_image": result_img,
+            "qc_scores": {
+                "fidelity_score": 0.92,
+                "realism_score": 0.78,
+            },
+            "metadata": {
+                "pipeline": "LOWER_WARP_PRIMARY",
+                "mode": mode,
+                "catvton_category": _cloth_type_early,
+                "method": "knee_split_warp_primary",
+                **warp_meta,
+            },
+        }
+    elif mode == "stable_fast":
         from app.services.bailian_tryon_client import _bailian_configured, call_bailian_tryon
         from app.services.tryon_v2.catvton_engine_client import (
             _catvton_configured,
@@ -1527,454 +1560,481 @@ async def tryon_garment_v2(
             cloth_type,
         )
 
-        # Lower garments require CatVTON; do not silently fall back to warp paste.
-        if cloth_type == "lower" and not _catvton_configured():
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "message": "裤装高质量试衣需要 CatVTON，但当前未配置。",
-                    "error_code": "CATVTON_NOT_CONFIGURED",
-                    "retryable": True,
-                    "action_hint": "请启用 CATVTON_ENABLED=true，并配置 CATVTON_PATH",
+        # Lower is handled by lower_warp_primary early-route. Safety net only.
+        if is_lower_garment_category(garment_category) or cloth_type == "lower":
+            from app.services.tryon_v2.warp_engine import tryon_lower_warp_primary
+
+            logger.warning(
+                "[detail_fidelity] safety re-route: lower → lower_warp_primary (skip CatVTON)"
+            )
+            result_img, warp_meta = tryon_lower_warp_primary(
+                person_image=person_image,
+                garment_image=garment_image,
+                debug_session_dir=debug_session_dir,
+            )
+            result = {
+                "status": "success",
+                "message": "下装几何试衣完成（膝部分段 warp，颜色纹理保真，未调用 CatVTON）",
+                "result_image": result_img,
+                "qc_scores": {"fidelity_score": 0.92, "realism_score": 0.78},
+                "metadata": {
+                    "pipeline": "LOWER_WARP_PRIMARY",
+                    "mode": "detail_fidelity",
+                    "catvton_category": cloth_type,
+                    "method": "knee_split_warp_primary",
+                    "safety_reroute": True,
+                    **warp_meta,
                 },
-            )
+            }
+        else:
+            # ── CatVTON 调用：最多重试 2 次（瞬时错误 / VRAM OOM / CUDA 抖动）───
+            max_retries = 2
+            last_upstream = None
+            last_err_reason = None
 
-        # ── CatVTON 调用：最多重试 2 次（瞬时错误 / VRAM OOM / CUDA 抖动）───
-        max_retries = 2
-        last_upstream = None
-        last_err_reason = None
+            for attempt in range(max_retries + 1):
+                if attempt > 0:
+                    wait_s = 2 ** (attempt - 1)
+                    logger.warning(
+                        f"Realistic mode: CatVTON attempt {attempt}/{max_retries} failed, "
+                        f"retrying in {wait_s}s..."
+                    )
+                    await asyncio.sleep(wait_s)
 
-        for attempt in range(max_retries + 1):
-            if attempt > 0:
-                wait_s = 2 ** (attempt - 1)
-                logger.warning(
-                    f"Realistic mode: CatVTON attempt {attempt}/{max_retries} failed, "
-                    f"retrying in {wait_s}s..."
+                upstream = await call_local_catvton(
+                    garment_bytes=garment_jpg,
+                    person_bytes=person_jpg,
+                    garment_category=cloth_type,
+                    debug_dir=debug_session_dir,
+                    preprocess_only=(debug_mode == "preprocess_only"),
                 )
-                await asyncio.sleep(wait_s)
+                last_upstream = upstream
 
-            upstream = await call_local_catvton(
-                garment_bytes=garment_jpg,
-                person_bytes=person_jpg,
-                garment_category=cloth_type,
-                debug_dir=debug_session_dir,
-                preprocess_only=(debug_mode == "preprocess_only"),
-            )
-            last_upstream = upstream
+                # ─── 预处理模式：直接返回中间产物 ─────────────────────────
+                if debug_mode == "preprocess_only" and isinstance(upstream, dict):
+                    upstream_meta = upstream.get("metadata") or {}
+                    record_tryon_v2_success(int((time.perf_counter() - started) * 1000))
+                    return TryOnV2Response(
+                        status="preprocess_only_success",
+                        message="预处理完成（diffusion 未运行）。"
+                        "请查看 debug_session_dir 中的 03_mask.png 和 04_pose_keypoints.jpg 验证质量。",
+                        pipeline="REALISTIC",
+                        result_image_url=None,
+                        error_code=None,
+                        retryable=False,
+                        action_hint="检查 03_mask.png 是否覆盖了正确的衣服区域。"
+                        "检查 04_pose_keypoints.jpg 关键点是否准确。",
+                        qc_scores=upstream.get("qc_scores") or {},
+                        metadata={
+                            **upstream_meta,
+                            "mode": "preprocess_only",
+                            "engine": "catvton",
+                            "catvton_category": cloth_type,
+                        },
+                        debug_session_dir=debug_session_dir,
+                    )
 
-            # ─── 预处理模式：直接返回中间产物 ─────────────────────────
-            if debug_mode == "preprocess_only" and isinstance(upstream, dict):
-                upstream_meta = upstream.get("metadata") or {}
-                record_tryon_v2_success(int((time.perf_counter() - started) * 1000))
-                return TryOnV2Response(
-                    status="preprocess_only_success",
-                    message="预处理完成（diffusion 未运行）。"
-                    "请查看 debug_session_dir 中的 03_mask.png 和 04_pose_keypoints.jpg 验证质量。",
-                    pipeline="REALISTIC",
-                    result_image_url=None,
-                    error_code=None,
-                    retryable=False,
-                    action_hint="检查 03_mask.png 是否覆盖了正确的衣服区域。"
-                    "检查 04_pose_keypoints.jpg 关键点是否准确。",
-                    qc_scores=upstream.get("qc_scores") or {},
-                    metadata={
-                        **upstream_meta,
-                        "mode": "preprocess_only",
-                        "engine": "catvton",
-                        "catvton_category": cloth_type,
-                    },
-                    debug_session_dir=debug_session_dir,
-                )
-
-            # 检查 CatVTON 成功条件
-            if (
-                isinstance(upstream, dict)
-                and str(upstream.get("status") or "").lower() == "success"
-                and upstream.get("result_image") is not None
-            ):
-                result_img = upstream.get("result_image")
-                upstream_meta = upstream.get("metadata") or {}
-                upstream_debug_session_dir = upstream_meta.get("debug_session_dir")
-                if upstream_debug_session_dir:
-                    if upstream_debug_session_dir != debug_session_dir:
-                        logger.info(
-                            "[DEBUG] Using CatVTON subprocess debug directory for "
-                            "post-CatVTON stages: %s",
-                            upstream_debug_session_dir,
-                        )
-                    debug_session_dir = upstream_debug_session_dir
-
-                # ── 衣服颜色保真增强（启用）───────────────────────────────────────
-                # CatVTON 会重新生成衣服的颜色/图案，可能与原衣服差异较大。
-                # catvton_color_fidelity_enhance 在保留 CatVTON 光影/阴影的前提下，
-                # 用原衣服的颜色修正衣服区域，实现"真实贴合 + 颜色保真"。
-                # 仅对彩色/有图案的衣服生效（高饱和度检测），纯白/纯黑衣服跳过。
-                pattern_score = 0.0
-                pattern_injected = False
-                color_fidelity_stage_saved = False
-                fidelity_strength = float(
-                    getattr(settings, "TRYON_V2_COLOR_FIDELITY_STRENGTH", 0.75) or 0.75
-                )
-                enable_color_fidelity = bool(
-                    getattr(settings, "TRYON_V2_COLOR_FIDELITY_ENABLED", True)
-                )
-                raw_quality = None
-                raw_quality_decision = "unassessed"
-                skip_catvton_safe_postprocess = False
-                skip_pattern_enhance = False
-
-                if enable_color_fidelity and fidelity_strength > 0.0:
-                    try:
-                        from app.services.tryon_v2.warp_engine import (
-                            catvton_color_fidelity_enhance,
-                            catvton_color_fidelity_spatial,
-                            catvton_lab_chroma_color_correct,
-                            catvton_lower_color_rescue,
-                            tryon_lower_structure_preserve,
-                        )
-
-                        arr_check = np.array(original_garment_image.convert("RGB"))
-                        hsv_check = cv2.cvtColor(arr_check, cv2.COLOR_RGB2HSV).astype(np.float32)
-                        sat_check = hsv_check[:, :, 1]
-                        v_check = hsv_check[:, :, 2]
-
-                        # ── 改进的饱和度检测 ──────────────────────────────────────
-                        # 方案1: 排除极亮(白色)和极暗(黑色)像素，只保留可能是彩色衣服的区域
-                        # 白色背景通常 v>240 且 s<20
-                        # 黑色区域通常 v<15
-                        # 中等亮度区域 v∈[15,240] 才可能是衣服
-                        brightness_mask = (v_check >= 15) & (v_check <= 240)
-                        # 排除纯白背景 (高亮度 + 低饱和度)
-                        white_bg_mask = (v_check > 220) & (sat_check < 30)
-                        # 综合前景掩码
-                        fg_mask_check = brightness_mask & ~white_bg_mask
-                        fg_sat_check = sat_check[fg_mask_check]
-
-                        if len(fg_sat_check) >= 30:
-                            sat_mean = float(fg_sat_check.mean()) / 255.0
-                            sat_max = float(fg_sat_check.max()) / 255.0
-                            has_color = sat_max > 0.15
-                            v_fg = v_check[fg_mask_check]
-                            bright_mean = float(v_fg.mean()) / 255.0 if len(v_fg) > 0 else 0.0
-                            is_white_garment = bright_mean > 0.78 and sat_mean < 0.08
-                        else:
-                            sat_mean = 0.0
-                            sat_max = 0.0
-                            has_color = False
-                            is_white_garment = True
-
-                        anomaly, cutout_qc, features = _build_fidelity_guard_context(
-                            original_garment_image
-                        )
-                        raw_mask_image = None
-                        if debug_session_dir:
-                            try:
-                                from pathlib import Path
-
-                                mask_candidates = []
-                                debug_path = Path(debug_session_dir)
-                                mask_candidates.append(debug_path / "08_mask_resized.png")
-                                if not debug_path.is_absolute():
-                                    mask_candidates.append(
-                                        Path.cwd() / debug_path / "08_mask_resized.png"
-                                    )
-                                    mask_candidates.append(
-                                        Path.cwd().parent / debug_path / "08_mask_resized.png"
-                                    )
-                                for mask_path in mask_candidates:
-                                    if mask_path.exists():
-                                        raw_mask_image = Image.open(mask_path).convert("L")
-                                        logger.info(
-                                            "Realistic: using CatVTON resized mask "
-                                            "for raw quality gate: %s",
-                                            mask_path,
-                                        )
-                                        break
-                            except Exception as mask_err:
-                                logger.info(
-                                    "Realistic mode: CatVTON resized mask "
-                                    "unavailable for raw quality gate: %s",
-                                    mask_err,
-                                )
-
-                        raw_quality = evaluate_raw_catvton_quality(
-                            raw_result=result_img,
-                            original_garment=original_garment_image,
-                            person_image=person_image,
-                            garment_category=gc or "top",
-                            features=features,
-                            raw_mask_image=raw_mask_image,
-                        )
-                        raw_quality_decision = raw_quality.decision
-                        raw_quality_meta = {
-                            "decision": raw_quality.decision,
-                            "reason": raw_quality.reason,
-                            "color_passed": raw_quality.color_passed,
-                            "pattern_passed": raw_quality.pattern_passed,
-                            "artifact_passed": raw_quality.artifact_passed,
-                            "color_delta": round(raw_quality.color_delta, 3),
-                            "source_value_mean": round(raw_quality.source_value_mean, 4),
-                            "raw_value_mean": round(raw_quality.raw_value_mean, 4),
-                            "source_pattern_score": round(raw_quality.source_pattern_score, 4),
-                            "raw_pattern_signal": round(raw_quality.raw_pattern_signal, 4),
-                            "artifact_score": round(raw_quality.artifact_score, 4),
-                            "garment_coverage": round(raw_quality.garment_coverage, 4),
-                            "source_hue_entropy": round(
-                                getattr(raw_quality, "source_hue_entropy", 0.0),
-                                4,
-                            ),
-                            "raw_hue_entropy": round(
-                                getattr(raw_quality, "raw_hue_entropy", 0.0),
-                                4,
-                            ),
-                        }
-                        protect_upper_raw_detail = (
-                            cloth_type == "upper"
-                            and raw_quality.decision == "color_only"
-                            and raw_quality.pattern_passed
-                            and raw_quality.source_pattern_score >= 0.55
-                            and raw_quality.raw_pattern_signal
-                            >= max(0.16, raw_quality.source_pattern_score * 0.55)
-                        )
-                        sat_mean = features.sat_mean
-                        sat_max = features.sat_max
-                        bright_mean = features.bright_mean
-                        has_color = features.has_color
-                        is_white_garment = features.is_white_garment
-                        if features.pattern_score >= 0.25:
-                            has_color = True
-                        preflight_qc_enabled = bool(
-                            getattr(settings, "TRYON_V2_PREFLIGHT_QC_ENABLED", True)
-                        )
-                        engine_decision, _engine_reason = decide_color_fidelity_engine(
-                            features=features,
-                            cutout_passed=(cutout_qc.passed or not preflight_qc_enabled),
-                            input_anomaly_passed=(anomaly.passed or not preflight_qc_enabled),
-                        )
-                        structured_lower_pattern_recovery = bool(
-                            any(k in (gc or "") for k in ("bottom", "下装"))
-                            and raw_quality.decision == "pattern_only"
-                            and raw_quality.source_pattern_score >= 0.78
-                            and raw_quality.raw_pattern_signal
-                            <= max(0.24, raw_quality.source_pattern_score * 0.32)
-                        )
-                        forced_lower_pattern_recovery = (
-                            should_force_lower_structured_pattern_recovery(
-                                garment_category=gc or "",
-                                raw_quality=raw_quality,
-                            )
-                        )
-                        if forced_lower_pattern_recovery:
-                            structured_lower_pattern_recovery = True
-                            raw_quality_meta["forced_lower_pattern_recovery"] = True
-                            raw_quality_meta["forced_lower_pattern_recovery_reason"] = (
-                                "strong_structured_lower_pattern_under_recovered"
-                            )
-                        if preflight_qc_enabled and engine_decision == "skip":
-                            is_white_garment = True
-                            has_color = False
-                            sat_mean = 0.0
-                            sat_max = 0.0
-
-                        color_threshold = 0.05  # 降低阈值：原 0.08 太严格
-                        if (
-                            raw_quality.decision == "raw" and not forced_lower_pattern_recovery
-                        ) or protect_upper_raw_detail:
+                # 检查 CatVTON 成功条件
+                if (
+                    isinstance(upstream, dict)
+                    and str(upstream.get("status") or "").lower() == "success"
+                    and upstream.get("result_image") is not None
+                ):
+                    result_img = upstream.get("result_image")
+                    upstream_meta = upstream.get("metadata") or {}
+                    upstream_debug_session_dir = upstream_meta.get("debug_session_dir")
+                    if upstream_debug_session_dir:
+                        if upstream_debug_session_dir != debug_session_dir:
                             logger.info(
-                                "Realistic mode: preserving raw CatVTON output; "
-                                "returning step-9 output directly (%s)%s",
-                                raw_quality.reason,
-                                " [upper_detail_protected]" if protect_upper_raw_detail else "",
+                                "[DEBUG] Using CatVTON subprocess debug directory for "
+                                "post-CatVTON stages: %s",
+                                upstream_debug_session_dir,
                             )
-                            upstream["metadata"] = {
-                                **(upstream.get("metadata") or {}),
-                                "color_fidelity_applied": False,
-                                "raw_quality_gate": raw_quality_meta,
-                                "postprocess_skip_reason": (
-                                    "upper_pattern_preserved_after_raw_gate"
-                                    if protect_upper_raw_detail
-                                    else "raw_quality_passed"
+                        debug_session_dir = upstream_debug_session_dir
+
+                    # ── 衣服颜色保真增强（启用）───────────────────────────────────────
+                    # CatVTON 会重新生成衣服的颜色/图案，可能与原衣服差异较大。
+                    # catvton_color_fidelity_enhance 在保留 CatVTON 光影/阴影的前提下，
+                    # 用原衣服的颜色修正衣服区域，实现"真实贴合 + 颜色保真"。
+                    # 仅对彩色/有图案的衣服生效（高饱和度检测），纯白/纯黑衣服跳过。
+                    pattern_score = 0.0
+                    pattern_injected = False
+                    color_fidelity_stage_saved = False
+                    fidelity_strength = float(
+                        getattr(settings, "TRYON_V2_COLOR_FIDELITY_STRENGTH", 0.75) or 0.75
+                    )
+                    enable_color_fidelity = bool(
+                        getattr(settings, "TRYON_V2_COLOR_FIDELITY_ENABLED", True)
+                    )
+                    raw_quality = None
+                    raw_quality_decision = "unassessed"
+                    skip_catvton_safe_postprocess = False
+                    skip_pattern_enhance = False
+
+                    if enable_color_fidelity and fidelity_strength > 0.0:
+                        try:
+                            from app.services.tryon_v2.warp_engine import (
+                                catvton_color_fidelity_enhance,
+                                catvton_color_fidelity_spatial,
+                                catvton_lab_chroma_color_correct,
+                                catvton_lower_color_rescue,
+                                tryon_lower_structure_preserve,
+                            )
+
+                            arr_check = np.array(original_garment_image.convert("RGB"))
+                            hsv_check = cv2.cvtColor(arr_check, cv2.COLOR_RGB2HSV).astype(
+                                np.float32
+                            )
+                            sat_check = hsv_check[:, :, 1]
+                            v_check = hsv_check[:, :, 2]
+
+                            # ── 改进的饱和度检测 ──────────────────────────────────────
+                            # 方案1: 排除极亮(白色)和极暗(黑色)像素，只保留可能是彩色衣服的区域
+                            # 白色背景通常 v>240 且 s<20
+                            # 黑色区域通常 v<15
+                            # 中等亮度区域 v∈[15,240] 才可能是衣服
+                            brightness_mask = (v_check >= 15) & (v_check <= 240)
+                            # 排除纯白背景 (高亮度 + 低饱和度)
+                            white_bg_mask = (v_check > 220) & (sat_check < 30)
+                            # 综合前景掩码
+                            fg_mask_check = brightness_mask & ~white_bg_mask
+                            fg_sat_check = sat_check[fg_mask_check]
+
+                            if len(fg_sat_check) >= 30:
+                                sat_mean = float(fg_sat_check.mean()) / 255.0
+                                sat_max = float(fg_sat_check.max()) / 255.0
+                                has_color = sat_max > 0.15
+                                v_fg = v_check[fg_mask_check]
+                                bright_mean = float(v_fg.mean()) / 255.0 if len(v_fg) > 0 else 0.0
+                                is_white_garment = bright_mean > 0.78 and sat_mean < 0.08
+                            else:
+                                sat_mean = 0.0
+                                sat_max = 0.0
+                                has_color = False
+                                is_white_garment = True
+
+                            anomaly, cutout_qc, features = _build_fidelity_guard_context(
+                                original_garment_image
+                            )
+                            raw_mask_image = None
+                            if debug_session_dir:
+                                try:
+                                    from pathlib import Path
+
+                                    mask_candidates = []
+                                    debug_path = Path(debug_session_dir)
+                                    mask_candidates.append(debug_path / "08_mask_resized.png")
+                                    if not debug_path.is_absolute():
+                                        mask_candidates.append(
+                                            Path.cwd() / debug_path / "08_mask_resized.png"
+                                        )
+                                        mask_candidates.append(
+                                            Path.cwd().parent / debug_path / "08_mask_resized.png"
+                                        )
+                                    for mask_path in mask_candidates:
+                                        if mask_path.exists():
+                                            raw_mask_image = Image.open(mask_path).convert("L")
+                                            logger.info(
+                                                "Realistic: using CatVTON resized mask "
+                                                "for raw quality gate: %s",
+                                                mask_path,
+                                            )
+                                            break
+                                except Exception as mask_err:
+                                    logger.info(
+                                        "Realistic mode: CatVTON resized mask "
+                                        "unavailable for raw quality gate: %s",
+                                        mask_err,
+                                    )
+
+                            raw_quality = evaluate_raw_catvton_quality(
+                                raw_result=result_img,
+                                original_garment=original_garment_image,
+                                person_image=person_image,
+                                garment_category=gc or "top",
+                                features=features,
+                                raw_mask_image=raw_mask_image,
+                            )
+                            raw_quality_decision = raw_quality.decision
+                            raw_quality_meta = {
+                                "decision": raw_quality.decision,
+                                "reason": raw_quality.reason,
+                                "color_passed": raw_quality.color_passed,
+                                "pattern_passed": raw_quality.pattern_passed,
+                                "artifact_passed": raw_quality.artifact_passed,
+                                "color_delta": round(raw_quality.color_delta, 3),
+                                "source_value_mean": round(raw_quality.source_value_mean, 4),
+                                "raw_value_mean": round(raw_quality.raw_value_mean, 4),
+                                "source_pattern_score": round(raw_quality.source_pattern_score, 4),
+                                "raw_pattern_signal": round(raw_quality.raw_pattern_signal, 4),
+                                "artifact_score": round(raw_quality.artifact_score, 4),
+                                "garment_coverage": round(raw_quality.garment_coverage, 4),
+                                "source_hue_entropy": round(
+                                    getattr(raw_quality, "source_hue_entropy", 0.0),
+                                    4,
                                 ),
-                                "upper_detail_protected": protect_upper_raw_detail,
+                                "raw_hue_entropy": round(
+                                    getattr(raw_quality, "raw_hue_entropy", 0.0),
+                                    4,
+                                ),
                             }
-                            skip_catvton_safe_postprocess = True
-                            skip_pattern_enhance = True
-                            save_debug_stage_image(
-                                debug_session_dir=debug_session_dir,
-                                filename="12_after_color_fidelity.jpg",
-                                image=result_img,
-                                metadata={
-                                    "stage": "after_color_fidelity",
+                            protect_upper_raw_detail = (
+                                cloth_type == "upper"
+                                and raw_quality.decision == "color_only"
+                                and raw_quality.pattern_passed
+                                and raw_quality.source_pattern_score >= 0.55
+                                and raw_quality.raw_pattern_signal
+                                >= max(0.16, raw_quality.source_pattern_score * 0.55)
+                            )
+                            sat_mean = features.sat_mean
+                            sat_max = features.sat_max
+                            bright_mean = features.bright_mean
+                            has_color = features.has_color
+                            is_white_garment = features.is_white_garment
+                            if features.pattern_score >= 0.25:
+                                has_color = True
+                            preflight_qc_enabled = bool(
+                                getattr(settings, "TRYON_V2_PREFLIGHT_QC_ENABLED", True)
+                            )
+                            engine_decision, _engine_reason = decide_color_fidelity_engine(
+                                features=features,
+                                cutout_passed=(cutout_qc.passed or not preflight_qc_enabled),
+                                input_anomaly_passed=(anomaly.passed or not preflight_qc_enabled),
+                            )
+                            structured_lower_pattern_recovery = bool(
+                                any(k in (gc or "") for k in ("bottom", "下装"))
+                                and raw_quality.decision == "pattern_only"
+                                and raw_quality.source_pattern_score >= 0.78
+                                and raw_quality.raw_pattern_signal
+                                <= max(0.24, raw_quality.source_pattern_score * 0.32)
+                            )
+                            forced_lower_pattern_recovery = (
+                                should_force_lower_structured_pattern_recovery(
+                                    garment_category=gc or "",
+                                    raw_quality=raw_quality,
+                                )
+                            )
+                            if forced_lower_pattern_recovery:
+                                structured_lower_pattern_recovery = True
+                                raw_quality_meta["forced_lower_pattern_recovery"] = True
+                                raw_quality_meta["forced_lower_pattern_recovery_reason"] = (
+                                    "strong_structured_lower_pattern_under_recovered"
+                                )
+                            if preflight_qc_enabled and engine_decision == "skip":
+                                is_white_garment = True
+                                has_color = False
+                                sat_mean = 0.0
+                                sat_max = 0.0
+
+                            color_threshold = 0.05  # 降低阈值：原 0.08 太严格
+                            if (
+                                raw_quality.decision == "raw" and not forced_lower_pattern_recovery
+                            ) or protect_upper_raw_detail:
+                                logger.info(
+                                    "Realistic mode: preserving raw CatVTON output; "
+                                    "returning step-9 output directly (%s)%s",
+                                    raw_quality.reason,
+                                    " [upper_detail_protected]" if protect_upper_raw_detail else "",
+                                )
+                                upstream["metadata"] = {
+                                    **(upstream.get("metadata") or {}),
                                     "color_fidelity_applied": False,
-                                    "reason": (
+                                    "raw_quality_gate": raw_quality_meta,
+                                    "postprocess_skip_reason": (
                                         "upper_pattern_preserved_after_raw_gate"
                                         if protect_upper_raw_detail
                                         else "raw_quality_passed"
                                     ),
                                     "upper_detail_protected": protect_upper_raw_detail,
-                                    "raw_quality_gate": raw_quality_meta,
-                                },
-                            )
-                            color_fidelity_stage_saved = True
-                        elif raw_quality.decision == "artifact_only":
-                            logger.info(
-                                "Realistic: raw color/pattern passed but artifacts detected; "
-                                "applying conservative raw artifact repair only (%s)",
-                                raw_quality.reason,
-                            )
-                            result_img, repair_meta = repair_raw_catvton_artifacts(
-                                raw_result=result_img,
-                                person_image=person_image,
-                                garment_category=gc or "top",
-                                raw_mask_image=raw_mask_image,
-                            )
-                            upstream["metadata"] = {
-                                **(upstream.get("metadata") or {}),
-                                **repair_meta,
-                                "color_fidelity_applied": False,
-                                "raw_quality_gate": raw_quality_meta,
-                                "postprocess_skip_reason": "artifact_only_raw_gate",
-                            }
-                            skip_catvton_safe_postprocess = True
-                            skip_pattern_enhance = True
-                            save_debug_stage_image(
-                                debug_session_dir=debug_session_dir,
-                                filename="12_after_color_fidelity.jpg",
-                                image=result_img,
-                                metadata={
-                                    "stage": "after_color_fidelity",
-                                    "color_fidelity_applied": False,
-                                    "reason": "artifact_only_raw_gate",
-                                    "raw_quality_gate": raw_quality_meta,
+                                }
+                                skip_catvton_safe_postprocess = True
+                                skip_pattern_enhance = True
+                                save_debug_stage_image(
+                                    debug_session_dir=debug_session_dir,
+                                    filename="12_after_color_fidelity.jpg",
+                                    image=result_img,
+                                    metadata={
+                                        "stage": "after_color_fidelity",
+                                        "color_fidelity_applied": False,
+                                        "reason": (
+                                            "upper_pattern_preserved_after_raw_gate"
+                                            if protect_upper_raw_detail
+                                            else "raw_quality_passed"
+                                        ),
+                                        "upper_detail_protected": protect_upper_raw_detail,
+                                        "raw_quality_gate": raw_quality_meta,
+                                    },
+                                )
+                                color_fidelity_stage_saved = True
+                            elif raw_quality.decision == "artifact_only":
+                                logger.info(
+                                    "Realistic: raw color/pattern passed but artifacts detected; "
+                                    "applying conservative raw artifact repair only (%s)",
+                                    raw_quality.reason,
+                                )
+                                result_img, repair_meta = repair_raw_catvton_artifacts(
+                                    raw_result=result_img,
+                                    person_image=person_image,
+                                    garment_category=gc or "top",
+                                    raw_mask_image=raw_mask_image,
+                                )
+                                upstream["metadata"] = {
+                                    **(upstream.get("metadata") or {}),
                                     **repair_meta,
-                                },
-                            )
-                            color_fidelity_stage_saved = True
-                        elif raw_quality.decision == "color_only":
-                            logger.info(
-                                "Realistic mode: raw pattern is OK but color is missing; "
-                                "applying LAB/chroma color correction only"
-                            )
-                            skip_catvton_safe_postprocess = True
-                            skip_pattern_enhance = True
-                            result_img, cf_meta = catvton_lab_chroma_color_correct(
-                                catvton_result=result_img,
-                                original_garment=original_garment_image,
-                                person_image=person_image,
-                                garment_category=gc or "top",
-                                raw_mask_image=raw_mask_image,
-                                fidelity_strength=fidelity_strength,
-                            )
-                            pattern_injected = False
-                            pattern_score = 0.0
-                            upstream["metadata"] = {
-                                **(upstream.get("metadata") or {}),
-                                **cf_meta,
-                                "color_fidelity_applied": True,
-                                "raw_quality_gate": raw_quality_meta,
-                                "postprocess_skip_reason": "minimal_raw_gate_branch",
-                            }
-                            save_debug_stage_image(
-                                debug_session_dir=debug_session_dir,
-                                filename="12_after_color_fidelity.jpg",
-                                image=result_img,
-                                metadata={
-                                    "stage": "after_color_fidelity",
-                                    "pattern_score": round(pattern_score, 3),
-                                    "engine": cf_meta.get("engine", "unknown"),
-                                    "garment_region": cf_meta.get("garment_region"),
+                                    "color_fidelity_applied": False,
                                     "raw_quality_gate": raw_quality_meta,
-                                },
-                            )
-                            color_fidelity_stage_saved = True
-                        elif raw_quality.decision == "strong_spatial" and any(
-                            k in (gc or "").strip().lower()
-                            for k in (
-                                "bottom",
-                                "下装",
-                                "裤",
-                                "裤装",
-                                "短裤",
-                                "pants",
-                                "长裤",
-                                "lower",
-                            )
-                        ):
-                            logger.info(
-                                "Realistic mode: lower garment failed raw color/pattern; "
-                                "using structure-preserve pants warp instead of spatial repaint"
-                            )
-                            skip_catvton_safe_postprocess = True
-                            skip_pattern_enhance = True
-                            result_img, cf_meta = tryon_lower_structure_preserve(
-                                person_image=person_image,
-                                garment_image=original_garment_image,
-                                catvton_result=result_img,
-                                raw_mask_image=raw_mask_image,
-                                drape_alpha=0.22,
-                                debug_session_dir=debug_session_dir,
-                            )
-                            if cf_meta.get("fallback_recommended") == "spatial":
-                                result_img, cf_meta = catvton_lower_color_rescue(
+                                    "postprocess_skip_reason": "artifact_only_raw_gate",
+                                }
+                                skip_catvton_safe_postprocess = True
+                                skip_pattern_enhance = True
+                                save_debug_stage_image(
+                                    debug_session_dir=debug_session_dir,
+                                    filename="12_after_color_fidelity.jpg",
+                                    image=result_img,
+                                    metadata={
+                                        "stage": "after_color_fidelity",
+                                        "color_fidelity_applied": False,
+                                        "reason": "artifact_only_raw_gate",
+                                        "raw_quality_gate": raw_quality_meta,
+                                        **repair_meta,
+                                    },
+                                )
+                                color_fidelity_stage_saved = True
+                            elif raw_quality.decision == "color_only":
+                                logger.info(
+                                    "Realistic mode: raw pattern is OK but color is missing; "
+                                    "applying LAB/chroma color correction only"
+                                )
+                                skip_catvton_safe_postprocess = True
+                                skip_pattern_enhance = True
+                                result_img, cf_meta = catvton_lab_chroma_color_correct(
                                     catvton_result=result_img,
                                     original_garment=original_garment_image,
                                     person_image=person_image,
-                                    fidelity_strength=min(fidelity_strength, 0.82),
-                                    debug_session_dir=debug_session_dir,
+                                    garment_category=gc or "top",
+                                    raw_mask_image=raw_mask_image,
+                                    fidelity_strength=fidelity_strength,
                                 )
-                            pattern_injected = True
-                            pattern_score = min(0.95, sat_mean + 0.3)
-                            upstream["metadata"] = {
-                                **(upstream.get("metadata") or {}),
-                                **cf_meta,
-                                "color_fidelity_applied": True,
-                                "raw_quality_gate": raw_quality_meta,
-                                "postprocess_skip_reason": "lower_structure_preserve_raw_gate",
-                            }
-                            save_debug_stage_image(
-                                debug_session_dir=debug_session_dir,
-                                filename="12_after_color_fidelity.jpg",
-                                image=result_img,
-                                metadata={
-                                    "stage": "after_color_fidelity",
-                                    "pattern_score": round(pattern_score, 3),
-                                    "engine": cf_meta.get("engine", "unknown"),
-                                    "garment_region": cf_meta.get("garment_region"),
+                                pattern_injected = False
+                                pattern_score = 0.0
+                                upstream["metadata"] = {
+                                    **(upstream.get("metadata") or {}),
+                                    **cf_meta,
+                                    "color_fidelity_applied": True,
                                     "raw_quality_gate": raw_quality_meta,
-                                    "lower_warp_qc": cf_meta.get("lower_warp_qc"),
-                                    "lower_denim_like": cf_meta.get("lower_denim_like"),
-                                },
-                            )
-                            color_fidelity_stage_saved = True
-                        elif (
-                            raw_quality.decision == "pattern_only" or forced_lower_pattern_recovery
-                        ):
-                            logger.info(
-                                "Realistic mode: raw color is OK but motif is missing%s; "
-                                "applying localized motif recovery only",
-                                (
-                                    " [forced lower structured recovery]"
-                                    if forced_lower_pattern_recovery
-                                    else ""
-                                ),
-                            )
-                            skip_catvton_safe_postprocess = True
-                            skip_pattern_enhance = True
-                            if structured_lower_pattern_recovery:
-                                logger.info(
-                                    "Realistic mode: lower structured pattern is under-recovered; "
-                                    "using structure-preserve pants warp instead of "
-                                    "motif-only spatial recovery"
+                                    "postprocess_skip_reason": "minimal_raw_gate_branch",
+                                }
+                                save_debug_stage_image(
+                                    debug_session_dir=debug_session_dir,
+                                    filename="12_after_color_fidelity.jpg",
+                                    image=result_img,
+                                    metadata={
+                                        "stage": "after_color_fidelity",
+                                        "pattern_score": round(pattern_score, 3),
+                                        "engine": cf_meta.get("engine", "unknown"),
+                                        "garment_region": cf_meta.get("garment_region"),
+                                        "raw_quality_gate": raw_quality_meta,
+                                    },
                                 )
+                                color_fidelity_stage_saved = True
+                            elif raw_quality.decision == "strong_spatial" and any(
+                                k in (gc or "").strip().lower()
+                                for k in (
+                                    "bottom",
+                                    "下装",
+                                    "裤",
+                                    "裤装",
+                                    "短裤",
+                                    "pants",
+                                    "长裤",
+                                    "lower",
+                                )
+                            ):
+                                logger.info(
+                                    "Realistic mode: lower garment failed raw color/pattern; "
+                                    "using structure-preserve pants warp instead of spatial repaint"
+                                )
+                                skip_catvton_safe_postprocess = True
+                                skip_pattern_enhance = True
                                 result_img, cf_meta = tryon_lower_structure_preserve(
                                     person_image=person_image,
                                     garment_image=original_garment_image,
                                     catvton_result=result_img,
                                     raw_mask_image=raw_mask_image,
-                                    drape_alpha=0.42,
+                                    drape_alpha=0.22,
                                     debug_session_dir=debug_session_dir,
                                 )
                                 if cf_meta.get("fallback_recommended") == "spatial":
+                                    result_img, cf_meta = catvton_lower_color_rescue(
+                                        catvton_result=result_img,
+                                        original_garment=original_garment_image,
+                                        person_image=person_image,
+                                        fidelity_strength=min(fidelity_strength, 0.82),
+                                        debug_session_dir=debug_session_dir,
+                                    )
+                                pattern_injected = True
+                                pattern_score = min(0.95, sat_mean + 0.3)
+                                upstream["metadata"] = {
+                                    **(upstream.get("metadata") or {}),
+                                    **cf_meta,
+                                    "color_fidelity_applied": True,
+                                    "raw_quality_gate": raw_quality_meta,
+                                    "postprocess_skip_reason": "lower_structure_preserve_raw_gate",
+                                }
+                                save_debug_stage_image(
+                                    debug_session_dir=debug_session_dir,
+                                    filename="12_after_color_fidelity.jpg",
+                                    image=result_img,
+                                    metadata={
+                                        "stage": "after_color_fidelity",
+                                        "pattern_score": round(pattern_score, 3),
+                                        "engine": cf_meta.get("engine", "unknown"),
+                                        "garment_region": cf_meta.get("garment_region"),
+                                        "raw_quality_gate": raw_quality_meta,
+                                        "lower_warp_qc": cf_meta.get("lower_warp_qc"),
+                                        "lower_denim_like": cf_meta.get("lower_denim_like"),
+                                    },
+                                )
+                                color_fidelity_stage_saved = True
+                            elif (
+                                raw_quality.decision == "pattern_only"
+                                or forced_lower_pattern_recovery
+                            ):
+                                logger.info(
+                                    "Realistic mode: raw color is OK but motif is missing%s; "
+                                    "applying localized motif recovery only",
+                                    (
+                                        " [forced lower structured recovery]"
+                                        if forced_lower_pattern_recovery
+                                        else ""
+                                    ),
+                                )
+                                skip_catvton_safe_postprocess = True
+                                skip_pattern_enhance = True
+                                if structured_lower_pattern_recovery:
+                                    logger.info(
+                                        "Realistic mode: lower structured pattern "
+                                        "is under-recovered; using structure-preserve "
+                                        "pants warp instead of motif-only spatial recovery"
+                                    )
+                                    result_img, cf_meta = tryon_lower_structure_preserve(
+                                        person_image=person_image,
+                                        garment_image=original_garment_image,
+                                        catvton_result=result_img,
+                                        raw_mask_image=raw_mask_image,
+                                        drape_alpha=0.42,
+                                        debug_session_dir=debug_session_dir,
+                                    )
+                                    if cf_meta.get("fallback_recommended") == "spatial":
+                                        result_img, cf_meta = catvton_color_fidelity_spatial(
+                                            catvton_result=result_img,
+                                            original_garment=original_garment_image,
+                                            person_image=person_image,
+                                            garment_category=gc or "top",
+                                            fidelity_strength=min(fidelity_strength, 0.62),
+                                            debug_session_dir=debug_session_dir,
+                                        )
+                                else:
                                     result_img, cf_meta = catvton_color_fidelity_spatial(
                                         catvton_result=result_img,
                                         original_garment=original_garment_image,
@@ -1983,338 +2043,337 @@ async def tryon_garment_v2(
                                         fidelity_strength=min(fidelity_strength, 0.62),
                                         debug_session_dir=debug_session_dir,
                                     )
-                            else:
-                                result_img, cf_meta = catvton_color_fidelity_spatial(
-                                    catvton_result=result_img,
-                                    original_garment=original_garment_image,
-                                    person_image=person_image,
-                                    garment_category=gc or "top",
-                                    fidelity_strength=min(fidelity_strength, 0.62),
-                                    debug_session_dir=debug_session_dir,
-                                )
-                            pattern_injected = True
-                            pattern_score = min(0.95, sat_mean + 0.3)
-                            upstream["metadata"] = {
-                                **(upstream.get("metadata") or {}),
-                                **cf_meta,
-                                "color_fidelity_applied": True,
-                                "raw_quality_gate": raw_quality_meta,
-                                "structured_lower_pattern_recovery": (
-                                    structured_lower_pattern_recovery
-                                ),
-                                "postprocess_skip_reason": (
-                                    "lower_structure_preserve_pattern_gate"
-                                    if structured_lower_pattern_recovery
-                                    else "minimal_raw_gate_branch"
-                                ),
-                            }
-                            save_debug_stage_image(
-                                debug_session_dir=debug_session_dir,
-                                filename="12_after_color_fidelity.jpg",
-                                image=result_img,
-                                metadata={
-                                    "stage": "after_color_fidelity",
-                                    "pattern_score": round(pattern_score, 3),
-                                    "engine": cf_meta.get("engine", "unknown"),
-                                    "garment_region": cf_meta.get("garment_region"),
+                                pattern_injected = True
+                                pattern_score = min(0.95, sat_mean + 0.3)
+                                upstream["metadata"] = {
+                                    **(upstream.get("metadata") or {}),
+                                    **cf_meta,
+                                    "color_fidelity_applied": True,
                                     "raw_quality_gate": raw_quality_meta,
                                     "structured_lower_pattern_recovery": (
                                         structured_lower_pattern_recovery
                                     ),
-                                },
-                            )
-                            color_fidelity_stage_saved = True
-                        elif is_white_garment:
-                            logger.info(
-                                "Realistic mode: skipping color fidelity "
-                                "(is_white_garment=True, bright_mean=%.3f, sat_mean=%.3f, "
-                                "white garment looks correct from CatVTON - preserve purity)",
-                                bright_mean,
-                                sat_mean,
-                            )
-                        elif sat_mean > color_threshold or has_color:
-                            # 高对比度图案（格子/条纹/彩色印花）使用空间感知保真
-                            # 均匀 LAB 混合会把蓝白格子变成褐色——必须用像素级替换
-                            # 使用 max 饱和度判断是否需要 spatial 保真
-                            if engine_decision == "spatial" and not (
-                                0.38 <= features.pattern_score <= 0.45
-                            ):
-                                # 图案衣服（格子/条纹/密集印花）：使用 catvton_color_fidelity_spatial
-                                # catvton_color_fidelity_enhance（LAB均匀混合）会把格子变褐色，
-                                # spatial 版本做像素级 warp 叠加，原图案空间分布100%保留。
-                                # TPS warp 有 bug 时会 fallback 到 Quad 透视变形（更鲁棒）。
-                                logger.info(
-                                    "Realistic: spatial CF for patterned garment "
-                                    "(sat_mean=%.3f, sat_max=%.3f) — warp original onto result",
-                                    sat_mean,
-                                    sat_max,
-                                )
-                                result_img, cf_meta = catvton_color_fidelity_spatial(
-                                    catvton_result=result_img,
-                                    original_garment=original_garment_image,
-                                    person_image=person_image,
-                                    garment_category=gc or "top",
-                                    fidelity_strength=fidelity_strength,
+                                    "postprocess_skip_reason": (
+                                        "lower_structure_preserve_pattern_gate"
+                                        if structured_lower_pattern_recovery
+                                        else "minimal_raw_gate_branch"
+                                    ),
+                                }
+                                save_debug_stage_image(
                                     debug_session_dir=debug_session_dir,
+                                    filename="12_after_color_fidelity.jpg",
+                                    image=result_img,
+                                    metadata={
+                                        "stage": "after_color_fidelity",
+                                        "pattern_score": round(pattern_score, 3),
+                                        "engine": cf_meta.get("engine", "unknown"),
+                                        "garment_region": cf_meta.get("garment_region"),
+                                        "raw_quality_gate": raw_quality_meta,
+                                        "structured_lower_pattern_recovery": (
+                                            structured_lower_pattern_recovery
+                                        ),
+                                    },
                                 )
-                            elif sat_mean >= 0.05:
+                                color_fidelity_stage_saved = True
+                            elif is_white_garment:
                                 logger.info(
-                                    "Realistic mode: applying uniform color fidelity "
-                                    "(saturation=%.3f, solid garment)",
+                                    "Realistic mode: skipping color fidelity "
+                                    "(is_white_garment=True, bright_mean=%.3f, sat_mean=%.3f, "
+                                    "white garment looks correct from CatVTON - preserve purity)",
+                                    bright_mean,
                                     sat_mean,
                                 )
-                                result_img, cf_meta = catvton_color_fidelity_enhance(
-                                    catvton_result=result_img,
-                                    original_garment=original_garment_image,
-                                    person_image=person_image,
-                                    garment_category=gc or "top",
-                                    fidelity_strength=fidelity_strength,
+                            elif sat_mean > color_threshold or has_color:
+                                # 高对比度图案（格子/条纹/彩色印花）使用空间感知保真
+                                # 均匀 LAB 混合会把蓝白格子变成褐色——必须用像素级替换
+                                # 使用 max 饱和度判断是否需要 spatial 保真
+                                if engine_decision == "spatial" and not (
+                                    0.38 <= features.pattern_score <= 0.45
+                                ):
+                                    # 图案衣服（格子/条纹/密集印花）：使用 catvton_color_fidelity_spatial
+                                    # catvton_color_fidelity_enhance（LAB均匀混合）会把格子变褐色，
+                                    # spatial 版本做像素级 warp 叠加，原图案空间分布100%保留。
+                                    # TPS warp 有 bug 时会 fallback 到 Quad 透视变形（更鲁棒）。
+                                    logger.info(
+                                        "Realistic: spatial CF for patterned garment "
+                                        "(sat_mean=%.3f, sat_max=%.3f) — warp original onto result",
+                                        sat_mean,
+                                        sat_max,
+                                    )
+                                    result_img, cf_meta = catvton_color_fidelity_spatial(
+                                        catvton_result=result_img,
+                                        original_garment=original_garment_image,
+                                        person_image=person_image,
+                                        garment_category=gc or "top",
+                                        fidelity_strength=fidelity_strength,
+                                        debug_session_dir=debug_session_dir,
+                                    )
+                                elif sat_mean >= 0.05:
+                                    logger.info(
+                                        "Realistic mode: applying uniform color fidelity "
+                                        "(saturation=%.3f, solid garment)",
+                                        sat_mean,
+                                    )
+                                    result_img, cf_meta = catvton_color_fidelity_enhance(
+                                        catvton_result=result_img,
+                                        original_garment=original_garment_image,
+                                        person_image=person_image,
+                                        garment_category=gc or "top",
+                                        fidelity_strength=fidelity_strength,
+                                    )
+                                pattern_injected = True
+                                pattern_score = min(0.95, sat_mean + 0.3)
+                                upstream["metadata"] = {
+                                    **(upstream.get("metadata") or {}),
+                                    **cf_meta,
+                                    "color_fidelity_applied": True,
+                                    "raw_quality_gate": raw_quality_meta,
+                                    "postprocess_skip_reason": (
+                                        "minimal_raw_gate_branch"
+                                        if skip_catvton_safe_postprocess
+                                        else None
+                                    ),
+                                }
+                                logger.info(
+                                    "Realistic mode: color fidelity applied "
+                                    "(pattern_score=%.3f, engine=%s)",
+                                    pattern_score,
+                                    cf_meta.get("engine", "unknown"),
                                 )
-                            pattern_injected = True
-                            pattern_score = min(0.95, sat_mean + 0.3)
-                            upstream["metadata"] = {
-                                **(upstream.get("metadata") or {}),
-                                **cf_meta,
-                                "color_fidelity_applied": True,
-                                "raw_quality_gate": raw_quality_meta,
-                                "postprocess_skip_reason": (
-                                    "minimal_raw_gate_branch"
-                                    if skip_catvton_safe_postprocess
-                                    else None
+                                save_debug_stage_image(
+                                    debug_session_dir=debug_session_dir,
+                                    filename="12_after_color_fidelity.jpg",
+                                    image=result_img,
+                                    metadata={
+                                        "stage": "after_color_fidelity",
+                                        "pattern_score": round(pattern_score, 3),
+                                        "engine": cf_meta.get("engine", "unknown"),
+                                        "garment_region": cf_meta.get("garment_region"),
+                                        "cutout_qc": {
+                                            "passed": cutout_qc.passed,
+                                            "alpha_coverage": round(cutout_qc.alpha_coverage, 4),
+                                            "component_count": cutout_qc.alpha_component_count,
+                                            "bbox_fill_ratio": round(cutout_qc.bbox_fill_ratio, 4),
+                                            "edge_touch_ratio": round(
+                                                cutout_qc.edge_touch_ratio, 4
+                                            ),
+                                            "background_leak_ratio": round(
+                                                cutout_qc.background_leak_ratio, 4
+                                            ),
+                                        },
+                                        "engine_decision_features": {
+                                            "sat_mean": round(features.sat_mean, 4),
+                                            "sat_max": round(features.sat_max, 4),
+                                            "pattern_score": round(features.pattern_score, 4),
+                                            "pattern_confidence": round(
+                                                features.pattern_confidence, 4
+                                            ),
+                                            "mirror_ghost_score": round(
+                                                anomaly.mirror_ghost_score, 4
+                                            ),
+                                        },
+                                        "raw_quality_gate": raw_quality_meta,
+                                    },
+                                )
+                                color_fidelity_stage_saved = True
+                            else:
+                                logger.info(
+                                    "Realistic mode: skipping color fidelity "
+                                    "(saturation=%.3f < 0.08, likely solid garment)",
+                                    sat_mean,
+                                )
+                        except Exception as cf_err:
+                            logger.warning(
+                                "Realistic mode: color fidelity failed (continuing): %s",
+                                cf_err,
+                            )
+                    else:
+                        logger.info(
+                            "Realistic mode: color fidelity disabled " "(enable=%s, strength=%.2f)",
+                            enable_color_fidelity,
+                            fidelity_strength,
+                        )
+
+                    # ── 后处理增强（消除拼接痕迹）──────────────────────────────
+                    # 注意：CatVTON 输出尺寸 (512x768 或 768x1024) 与原始人物图尺寸不同。
+                    # enhance_tryon_result 需要 result 和 person 尺寸一致，需要先对齐。
+                    if not color_fidelity_stage_saved:
+                        save_debug_stage_image(
+                            debug_session_dir=debug_session_dir,
+                            filename="12_after_color_fidelity.jpg",
+                            image=result_img,
+                            metadata={
+                                "stage": "after_color_fidelity",
+                                "color_fidelity_applied": False,
+                                "reason": (
+                                    "disabled_or_skipped_or_failed"
+                                    if enable_color_fidelity
+                                    else "disabled"
                                 ),
-                            }
+                                "fidelity_strength": fidelity_strength,
+                                "fallback_reason": "disabled_or_skipped_or_failed",
+                            },
+                        )
+
+                    try:
+                        from app.services.tryon_v2.postprocess import catvton_safe_enhance
+
+                        # 将 CatVTON 输出 resize 到原始人物图尺寸（保持宽高比，填充白边）
+                        pw, ph = person_image.size
+                        if result_img.size != (pw, ph):
+                            result_img_resized = result_img.resize((pw, ph), Image.LANCZOS)
                             logger.info(
-                                "Realistic mode: color fidelity applied "
-                                "(pattern_score=%.3f, engine=%s)",
-                                pattern_score,
-                                cf_meta.get("engine", "unknown"),
+                                "Realistic mode: resizing CatVTON result from %sx%s to %sx%s "
+                                "for post-processing compatibility",
+                                result_img.size[0],
+                                result_img.size[1],
+                                pw,
+                                ph,
+                            )
+                        else:
+                            result_img_resized = result_img
+                        save_debug_stage_image(
+                            debug_session_dir=debug_session_dir,
+                            filename="13_after_resize_for_postprocess.jpg",
+                            image=result_img_resized,
+                            metadata={
+                                "stage": "after_resize_for_postprocess",
+                                "size": list(result_img_resized.size),
+                            },
+                        )
+
+                        # CatVTON-safe: denoise + seam removal + sharpen (no blending)
+                        if skip_catvton_safe_postprocess:
+                            result_img = result_img_resized
+                            logger.info(
+                                "Realistic mode: skipping CatVTON-safe post-processing "
+                                "(raw_quality_decision=%s)",
+                                raw_quality_decision,
                             )
                             save_debug_stage_image(
                                 debug_session_dir=debug_session_dir,
-                                filename="12_after_color_fidelity.jpg",
+                                filename="14_after_catvton_safe_enhance.jpg",
                                 image=result_img,
                                 metadata={
-                                    "stage": "after_color_fidelity",
-                                    "pattern_score": round(pattern_score, 3),
-                                    "engine": cf_meta.get("engine", "unknown"),
-                                    "garment_region": cf_meta.get("garment_region"),
-                                    "cutout_qc": {
-                                        "passed": cutout_qc.passed,
-                                        "alpha_coverage": round(cutout_qc.alpha_coverage, 4),
-                                        "component_count": cutout_qc.alpha_component_count,
-                                        "bbox_fill_ratio": round(cutout_qc.bbox_fill_ratio, 4),
-                                        "edge_touch_ratio": round(cutout_qc.edge_touch_ratio, 4),
-                                        "background_leak_ratio": round(
-                                            cutout_qc.background_leak_ratio, 4
-                                        ),
-                                    },
-                                    "engine_decision_features": {
-                                        "sat_mean": round(features.sat_mean, 4),
-                                        "sat_max": round(features.sat_max, 4),
-                                        "pattern_score": round(features.pattern_score, 4),
-                                        "pattern_confidence": round(features.pattern_confidence, 4),
-                                        "mirror_ghost_score": round(anomaly.mirror_ghost_score, 4),
-                                    },
-                                    "raw_quality_gate": raw_quality_meta,
+                                    "stage": "after_catvton_safe_motif_restore",
+                                    "applied": False,
+                                    "reason": "raw_quality_gate_skip",
+                                    "raw_quality_decision": raw_quality_decision,
                                 },
                             )
-                            color_fidelity_stage_saved = True
                         else:
-                            logger.info(
-                                "Realistic mode: skipping color fidelity "
-                                "(saturation=%.3f < 0.08, likely solid garment)",
-                                sat_mean,
+                            pre_safe_enhance_img = result_img_resized.copy()
+                            result_img = catvton_safe_enhance(
+                                result=result_img_resized,
+                                person=person_image,
                             )
-                    except Exception as cf_err:
+                            logger.info("Realistic mode: CatVTON-safe post-processing applied")
+                            save_debug_stage_image(
+                                debug_session_dir=debug_session_dir,
+                                filename="14a_after_catvton_safe_enhance_raw.jpg",
+                                image=result_img,
+                                metadata={"stage": "after_catvton_safe_enhance_raw"},
+                            )
+                            result_img, motif_restore_meta = (
+                                _restore_catvton_motif_after_postprocess(
+                                    pre_postprocess_image=pre_safe_enhance_img,
+                                    postprocess_image=result_img,
+                                    debug_session_dir=debug_session_dir,
+                                )
+                            )
+                            if motif_restore_meta.get("applied"):
+                                logger.info(
+                                    "Realistic mode: restored motif details after safe enhance "
+                                    "(coverage=%.4f, alpha=%.2f)",
+                                    float(motif_restore_meta.get("restore_coverage", 0.0)),
+                                    float(motif_restore_meta.get("restore_alpha_max", 0.0)),
+                                )
+                            save_debug_stage_image(
+                                debug_session_dir=debug_session_dir,
+                                filename="14_after_catvton_safe_enhance.jpg",
+                                image=result_img,
+                                metadata=motif_restore_meta,
+                            )
+                    except Exception as pp_err:
                         logger.warning(
-                            "Realistic mode: color fidelity failed (continuing): %s",
-                            cf_err,
+                            "Realistic mode: post-processing failed (continuing): %s",
+                            pp_err,
                         )
+
+                    result = {
+                        "status": "success",
+                        "message": "CatVTON 深度学习试衣完成（真实贴合 + 细节保真 + 后处理增强）",
+                        "result_image": result_img,
+                        "qc_scores": {
+                            "fidelity_score": 0.85 if not pattern_injected else 0.95,
+                            "realism_score": 0.90,
+                        },
+                        "metadata": {
+                            "pipeline": "REALISTIC",
+                            "engine": "catvton",
+                            "catvton_category": cloth_type,
+                            "method": "deep_learning",
+                            "attempts": attempt + 1,
+                            "pattern_protected": pattern_injected,
+                            "pattern_score": round(pattern_score, 3),
+                            "postprocess_applied": not skip_catvton_safe_postprocess,
+                            "raw_quality_decision": raw_quality_decision,
+                            "skip_pattern_enhance": skip_pattern_enhance,
+                        },
+                    }
+                    logger.info(f"Realistic mode: CatVTON succeeded on attempt {attempt + 1}")
+                    break
+
+                # 记录失败原因用于诊断
+                if isinstance(upstream, dict):
+                    last_err_reason = (
+                        f"status={upstream.get('status')}, "
+                        f"message={upstream.get('message')}, "
+                        f"reason={upstream.get('metadata', {}).get('reason', 'unknown')}"
+                    )
                 else:
-                    logger.info(
-                        "Realistic mode: color fidelity disabled " "(enable=%s, strength=%.2f)",
-                        enable_color_fidelity,
-                        fidelity_strength,
-                    )
+                    last_err_reason = f"unexpected upstream type: {type(upstream).__name__}"
 
-                # ── 后处理增强（消除拼接痕迹）──────────────────────────────
-                # 注意：CatVTON 输出尺寸 (512x768 或 768x1024) 与原始人物图尺寸不同。
-                # enhance_tryon_result 需要 result 和 person 尺寸一致，需要先对齐。
-                if not color_fidelity_stage_saved:
-                    save_debug_stage_image(
-                        debug_session_dir=debug_session_dir,
-                        filename="12_after_color_fidelity.jpg",
-                        image=result_img,
-                        metadata={
-                            "stage": "after_color_fidelity",
-                            "color_fidelity_applied": False,
-                            "reason": (
-                                "disabled_or_skipped_or_failed"
-                                if enable_color_fidelity
-                                else "disabled"
-                            ),
-                            "fidelity_strength": fidelity_strength,
-                            "fallback_reason": "disabled_or_skipped_or_failed",
-                        },
-                    )
-
-                try:
-                    from app.services.tryon_v2.postprocess import catvton_safe_enhance
-
-                    # 将 CatVTON 输出 resize 到原始人物图尺寸（保持宽高比，填充白边）
-                    pw, ph = person_image.size
-                    if result_img.size != (pw, ph):
-                        result_img_resized = result_img.resize((pw, ph), Image.LANCZOS)
-                        logger.info(
-                            "Realistic mode: resizing CatVTON result from %sx%s to %sx%s "
-                            "for post-processing compatibility",
-                            result_img.size[0],
-                            result_img.size[1],
-                            pw,
-                            ph,
-                        )
-                    else:
-                        result_img_resized = result_img
-                    save_debug_stage_image(
-                        debug_session_dir=debug_session_dir,
-                        filename="13_after_resize_for_postprocess.jpg",
-                        image=result_img_resized,
-                        metadata={
-                            "stage": "after_resize_for_postprocess",
-                            "size": list(result_img_resized.size),
-                        },
-                    )
-
-                    # CatVTON-safe: denoise + seam removal + sharpen (no blending)
-                    if skip_catvton_safe_postprocess:
-                        result_img = result_img_resized
-                        logger.info(
-                            "Realistic mode: skipping CatVTON-safe post-processing "
-                            "(raw_quality_decision=%s)",
-                            raw_quality_decision,
-                        )
-                        save_debug_stage_image(
-                            debug_session_dir=debug_session_dir,
-                            filename="14_after_catvton_safe_enhance.jpg",
-                            image=result_img,
-                            metadata={
-                                "stage": "after_catvton_safe_motif_restore",
-                                "applied": False,
-                                "reason": "raw_quality_gate_skip",
-                                "raw_quality_decision": raw_quality_decision,
-                            },
-                        )
-                    else:
-                        pre_safe_enhance_img = result_img_resized.copy()
-                        result_img = catvton_safe_enhance(
-                            result=result_img_resized,
-                            person=person_image,
-                        )
-                        logger.info("Realistic mode: CatVTON-safe post-processing applied")
-                        save_debug_stage_image(
-                            debug_session_dir=debug_session_dir,
-                            filename="14a_after_catvton_safe_enhance_raw.jpg",
-                            image=result_img,
-                            metadata={"stage": "after_catvton_safe_enhance_raw"},
-                        )
-                        result_img, motif_restore_meta = _restore_catvton_motif_after_postprocess(
-                            pre_postprocess_image=pre_safe_enhance_img,
-                            postprocess_image=result_img,
-                            debug_session_dir=debug_session_dir,
-                        )
-                        if motif_restore_meta.get("applied"):
-                            logger.info(
-                                "Realistic mode: restored motif details after safe enhance "
-                                "(coverage=%.4f, alpha=%.2f)",
-                                float(motif_restore_meta.get("restore_coverage", 0.0)),
-                                float(motif_restore_meta.get("restore_alpha_max", 0.0)),
-                            )
-                        save_debug_stage_image(
-                            debug_session_dir=debug_session_dir,
-                            filename="14_after_catvton_safe_enhance.jpg",
-                            image=result_img,
-                            metadata=motif_restore_meta,
-                        )
-                except Exception as pp_err:
-                    logger.warning(
-                        "Realistic mode: post-processing failed (continuing): %s",
-                        pp_err,
-                    )
-
-                result = {
-                    "status": "success",
-                    "message": "CatVTON 深度学习试衣完成（真实贴合 + 细节保真 + 后处理增强）",
-                    "result_image": result_img,
-                    "qc_scores": {
-                        "fidelity_score": 0.85 if not pattern_injected else 0.95,
-                        "realism_score": 0.90,
-                    },
-                    "metadata": {
-                        "pipeline": "REALISTIC",
-                        "engine": "catvton",
-                        "catvton_category": cloth_type,
-                        "method": "deep_learning",
-                        "attempts": attempt + 1,
-                        "pattern_protected": pattern_injected,
-                        "pattern_score": round(pattern_score, 3),
-                        "postprocess_applied": not skip_catvton_safe_postprocess,
-                        "raw_quality_decision": raw_quality_decision,
-                        "skip_pattern_enhance": skip_pattern_enhance,
-                    },
-                }
-                logger.info(f"Realistic mode: CatVTON succeeded on attempt {attempt + 1}")
-                break
-
-            # 记录失败原因用于诊断
-            if isinstance(upstream, dict):
-                last_err_reason = (
-                    f"status={upstream.get('status')}, "
-                    f"message={upstream.get('message')}, "
-                    f"reason={upstream.get('metadata', {}).get('reason', 'unknown')}"
+                logger.warning(
+                    f"Realistic mode: CatVTON attempt {attempt + 1} returned: {last_err_reason}"
                 )
+
+                # 永久性错误（不需要重试）
+                if isinstance(upstream, dict):
+                    reason = upstream.get("metadata", {}).get("reason", "")
+                    if reason in (
+                        "not_configured",
+                        "path_not_found",
+                        "catvton_not_available",
+                    ):
+                        logger.error(
+                            f"Realistic mode: permanent CatVTON error ({reason}), not retrying"
+                        )
+                        break
+                    if upstream.get("status") == "timeout":
+                        logger.error("Realistic mode: CatVTON timeout, not retrying")
+                        break
             else:
-                last_err_reason = f"unexpected upstream type: {type(upstream).__name__}"
-
-            logger.warning(
-                f"Realistic mode: CatVTON attempt {attempt + 1} returned: {last_err_reason}"
-            )
-
-            # 永久性错误（不需要重试）
-            if isinstance(upstream, dict):
-                reason = upstream.get("metadata", {}).get("reason", "")
-                if reason in (
-                    "not_configured",
-                    "path_not_found",
-                    "catvton_not_available",
-                ):
-                    logger.error(
-                        f"Realistic mode: permanent CatVTON error ({reason}), not retrying"
-                    )
-                    break
-                if upstream.get("status") == "timeout":
-                    logger.error("Realistic mode: CatVTON timeout, not retrying")
-                    break
-        else:
-            # 所有重试均失败
-            upstream = last_upstream
-            upstream_status = (
-                upstream.get("status") if isinstance(upstream, dict) else str(upstream)
-            )
-            upstream_msg = upstream.get("message") if isinstance(upstream, dict) else ""
-            upstream_meta = upstream.get("metadata", {}) if isinstance(upstream, dict) else {}
-            debug_session = upstream_meta.get("debug_session_dir") or debug_session_dir or ""
-            print(
-                f"[REALISTIC-MODE-ERROR] CatVTON failed after {max_retries + 1} attempts: "
-                f"status={upstream_status}, message={upstream_msg}, last_reason={last_err_reason}. "  # noqa: E501
-                f"Debug dir: {debug_session}",
-                flush=True,
-            )
-            raise RuntimeError(
-                f"Realistic 模式失败: CatVTON 多次重试后仍不可用 "
-                f"(status={upstream_status}, message={upstream_msg}). "
-                f"请检查 {debug_session} 下的中间产物或运行预处理模式 debug。 "
-                f"如需降级到 warp 试衣，请使用 mode=warp。"
-            )
+                # 所有重试均失败
+                upstream = last_upstream
+                upstream_status = (
+                    upstream.get("status") if isinstance(upstream, dict) else str(upstream)
+                )
+                upstream_msg = upstream.get("message") if isinstance(upstream, dict) else ""
+                upstream_meta = upstream.get("metadata", {}) if isinstance(upstream, dict) else {}
+                debug_session = upstream_meta.get("debug_session_dir") or debug_session_dir or ""
+                print(
+                    f"[REALISTIC-MODE-ERROR] CatVTON failed after {max_retries + 1} attempts: "
+                    f"status={upstream_status}, message={upstream_msg}, last_reason={last_err_reason}. "  # noqa: E501
+                    f"Debug dir: {debug_session}",
+                    flush=True,
+                )
+                raise RuntimeError(
+                    f"Realistic 模式失败: CatVTON 多次重试后仍不可用 "
+                    f"(status={upstream_status}, message={upstream_msg}). "
+                    f"请检查 {debug_session} 下的中间产物或运行预处理模式 debug。 "
+                    f"如需降级到 warp 试衣，请使用 mode=warp。"
+                )
     elif mode == "professional":
         # ── Professional Mode: 使用 CatVTON + 后处理 ────────────────────────────
         # 优先使用 CatVTON 深度学习模型
@@ -3448,13 +3507,24 @@ async def tryon_garment_v2(
         result.get("metadata", {}).get("engine") == "catvton"
         or result.get("metadata", {}).get("model") == "catvton_local"
     )
+    is_lower_warp_primary = str(
+        (result.get("metadata") or {}).get("pipeline") or ""
+    ) == "LOWER_WARP_PRIMARY" or str((result.get("metadata") or {}).get("engine") or "").startswith(
+        "lower_warp_primary"
+    )
     result_img = result.get("result_image")
 
     skip_pattern_enhance_by_gate = bool(
         result.get("metadata", {}).get("skip_pattern_enhance")
         or result.get("metadata", {}).get("postprocess_skip_reason") == "raw_quality_passed"
+        or is_lower_warp_primary
     )
-    if is_catvton_output and result_img is not None and not skip_pattern_enhance_by_gate:
+    if (
+        is_catvton_output
+        and result_img is not None
+        and not skip_pattern_enhance_by_gate
+        and not is_lower_warp_primary
+    ):
         # 对所有 CatVTON 输出应用频率分离锐化（增强图案/褶皱清晰度）。
         # 纯图像操作，无混合，无贴纸效果。安全，对所有 CatVTON 结果都有益。
         try:
@@ -3538,6 +3608,25 @@ async def tryon_garment_v2(
                 "raw_quality_decision": result.get("metadata", {}).get("raw_quality_decision"),
             },
         )
+    elif str((result.get("metadata") or {}).get("pipeline") or "") == "LOWER_WARP_PRIMARY":
+        # Lower warp-primary already composites real garment pixels; skip blend-like
+        # postprocess that can wash dark browns into taupe.
+        logger.info(
+            "Post-processing skipped for LOWER_WARP_PRIMARY (preserve garment color/texture)"
+        )
+        if result_img is not None and debug_session_dir:
+            save_debug_stage_image(
+                debug_session_dir=debug_session_dir,
+                filename="17_after_safe_postprocess.jpg",
+                image=result_img,
+                metadata={
+                    "stage": "after_safe_postprocess",
+                    "mode": mode,
+                    "pipeline": "LOWER_WARP_PRIMARY",
+                    "postprocess_applied": False,
+                    "reason": "lower_warp_primary_skip",
+                },
+            )
     else:
         try:
             if result_img is not None:
@@ -4089,8 +4178,10 @@ async def tryon_v2_model_status(
         "enabled": bool(getattr(settings, "TRYON_V2_ENABLED", True)),
         "strict_identity_default": bool(getattr(settings, "TRYON_V2_STRICT_IDENTITY", True)),
         "auto_preprocess": bool(getattr(settings, "TRYON_V2_AUTO_PREPROCESS", True)),
-        "lower_body_engine": "catvton_lower",
+        # Lower uses geometric knee-split warp (no CatVTON). Upper still uses CatVTON.
+        "lower_body_engine": "lower_warp_primary",
         "lower_default_mode": "detail_fidelity",
+        "lower_skips_catvton": True,
         "replace_allow_local_diffusion": bool(
             getattr(settings, "TRYON_V2_REPLACE_ALLOW_LOCAL_DIFFUSION", False)
         ),
