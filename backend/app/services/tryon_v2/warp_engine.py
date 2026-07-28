@@ -2882,54 +2882,217 @@ def _build_pants_warp_layer(
 def _lower_warp_primary_box_extends(
     person_image: Image.Image,
 ) -> tuple[float, float, dict]:
-    """Compute waist-raise / hem-extend ratios for lower_warp_primary only.
+    """Person-adaptive waist-raise / hem-extend for lower_warp_primary only.
 
-    Default pose boxes stop at the ankle joint and natural waist; high-waist
-    long pants need the warp target raised and extended toward the shoe line.
+    Waist and hem are derived from *this* person's pose + currently worn lower
+    garment silhouette, not fixed ratios. Different uploads → different targets.
     """
     pw, ph = person_image.size
     kpts = detect_pose_keypoints(person_image)
     bounds = get_body_bounds_from_keypoints(kpts, pw, ph, "bottom") if kpts else {"valid": False}
 
-    waist_raise = 0.07
-    hem_extend = 0.10
+    default_waist_y = int(bounds["waist_y"]) if bounds.get("valid") else int(ph * 0.43)
     ankle_y = int(bounds.get("ankle_y", int(ph * 0.81))) if bounds.get("valid") else int(ph * 0.81)
     x0 = int(bounds.get("x0", int(pw * 0.28))) if bounds.get("valid") else int(pw * 0.28)
     x1 = int(bounds.get("x1", int(pw * 0.72))) if bounds.get("valid") else int(pw * 0.72)
     x0 = _clamp_int(x0, 0, pw - 2)
     x1 = _clamp_int(x1, x0 + 2, pw)
 
-    # Look below the ankle for remaining bright original pant fabric before shoes/floor.
-    arr = np.asarray(person_image.convert("RGB"), dtype=np.float32)
-    search_y1 = _clamp_int(ankle_y + int(ph * 0.18), ankle_y + 1, ph)
-    detected_hem_y = None
-    if search_y1 > ankle_y + 2:
-        roi = arr[ankle_y:search_y1, x0:x1]
-        if roi.size:
-            lum = roi.mean(axis=2)
-            # White / light pants stay bright; stop before dim shoe/floor rows.
-            bright_frac = (lum > 155).mean(axis=1)
-            good = np.where(bright_frac > 0.10)[0]
-            if good.size:
-                detected_hem_y = ankle_y + int(good.max())
-                needed = (detected_hem_y - ankle_y + max(4, int(ph * 0.012))) / float(ph)
-                hem_extend = max(hem_extend, float(needed))
+    hip_y = default_waist_y + int(ph * 0.04)
+    shoulder_y = int(ph * 0.28)
+    if kpts:
+        lh, rh = kpts.get("left_hip"), kpts.get("right_hip")
+        ls, rs = kpts.get("left_shoulder"), kpts.get("right_shoulder")
+        if lh and rh:
+            hip_y = int(round(0.5 * (lh[1] + rh[1]) * ph))
+        if ls and rs:
+            shoulder_y = int(round(0.5 * (ls[1] + rs[1]) * ph))
 
-    # Leave a little room above the image bottom so sneakers stay visible.
-    max_hem = max(0.04, (ph - 4 - ankle_y) / float(ph) - 0.025)
-    hem_extend = float(np.clip(hem_extend, 0.05, min(0.15, max_hem)))
-    # Cover high-waist originals without entering the upper protect zone.
-    waist_raise = float(np.clip(waist_raise, 0.05, 0.09))
+    arr = np.asarray(person_image.convert("RGB"), dtype=np.float32)
+    person_waist_y = _detect_person_pants_waist_y(
+        arr,
+        x0=x0,
+        x1=x1,
+        hip_y=hip_y,
+        shoulder_y=shoulder_y,
+        ph=ph,
+    )
+    # Raise so the default pose waist lands on this person's worn waistline.
+    waist_raise = (float(default_waist_y) - float(person_waist_y)) / float(ph)
+
+    leg_len = max(8, int(ankle_y) - int(hip_y))
+    # Longer legs → larger absolute hem extension (proportional to that body).
+    hem_extend = (leg_len * 0.14) / float(ph)
+    detected_hem_y = _detect_person_pant_hem_y(
+        arr,
+        x0=x0,
+        x1=x1,
+        ankle_y=ankle_y,
+        ph=ph,
+    )
+    if detected_hem_y is not None:
+        needed = (detected_hem_y - ankle_y + max(4, int(ph * 0.010))) / float(ph)
+        hem_extend = max(hem_extend, float(needed))
+
+    max_hem = max(0.03, (ph - 4 - ankle_y) / float(ph) - 0.02)
+    hem_extend = float(np.clip(hem_extend, 0.03, min(0.16, max_hem)))
+    # Keep raised waist below upper-body protect (~0.30ph).
+    max_raise = max(0.02, (default_waist_y - int(ph * 0.33)) / float(ph))
+    waist_raise = float(np.clip(waist_raise, 0.02, min(0.12, max_raise)))
 
     meta = {
+        "adaptive": True,
         "waist_raise_ratio": round(waist_raise, 4),
         "hem_extend_ratio": round(hem_extend, 4),
+        "default_waist_y": int(default_waist_y),
+        "person_waist_y": int(person_waist_y),
+        "hip_y": int(hip_y),
+        "shoulder_y": int(shoulder_y),
         "ankle_y": int(ankle_y),
+        "leg_len_px": int(leg_len),
         "detected_hem_y": int(detected_hem_y) if detected_hem_y is not None else None,
         "box_x0": int(x0),
         "box_x1": int(x1),
     }
     return waist_raise, hem_extend, meta
+
+
+def _detect_person_pants_waist_y(
+    arr: np.ndarray,
+    *,
+    x0: int,
+    x1: int,
+    hip_y: int,
+    shoulder_y: int,
+    ph: int,
+) -> int:
+    """Find the top of the pants currently worn by this person (pixel y)."""
+    h, w = arr.shape[:2]
+    hip_y = _clamp_int(hip_y, 0, h - 1)
+    # Search from hips up toward mid-torso (high-waist / mid-rise / low-rise).
+    top = _clamp_int(
+        max(int(ph * 0.30), int(shoulder_y + 0.40 * max(1, hip_y - shoulder_y))),
+        0,
+        hip_y - 2,
+    )
+    roi = arr[top : hip_y + 1, x0:x1]
+    if roi.size == 0:
+        return _clamp_int(hip_y - int(ph * 0.06), int(ph * 0.32), hip_y)
+
+    lum = roi.mean(axis=2)
+    # Pants vs upper: large chroma or bright/dark clothing (not bare skin mid-tones).
+    chroma = roi.max(axis=2) - roi.min(axis=2)
+    skinish = (lum > 95) & (lum < 200) & (chroma < 28)
+    pantish = (~skinish) & ((lum > 150) | (lum < 110) | (chroma > 22))
+    frac = pantish.mean(axis=1)
+    # Walk upward from hip; keep rows that look like pants, stop at torso.
+    local = frac[::-1]  # hip -> top
+    keep: list[int] = []
+    for i, f in enumerate(local):
+        if f >= 0.12:
+            keep.append(i)
+        elif keep and i > 3:
+            break
+    if keep:
+        # Highest pants row (smallest y).
+        y = hip_y - int(keep[-1])
+        return _clamp_int(y, int(ph * 0.30), hip_y)
+    return _clamp_int(hip_y - int(ph * 0.06), int(ph * 0.32), hip_y)
+
+
+def _detect_person_pant_hem_y(
+    arr: np.ndarray,
+    *,
+    x0: int,
+    x1: int,
+    ankle_y: int,
+    ph: int,
+) -> int | None:
+    """Find hem of currently worn pants below the ankle (before shoes/floor)."""
+    h, w = arr.shape[:2]
+    ankle_y = _clamp_int(ankle_y, 0, h - 2)
+    search_y1 = _clamp_int(ankle_y + int(ph * 0.20), ankle_y + 1, h)
+    roi = arr[ankle_y:search_y1, x0:x1]
+    if roi.size == 0:
+        return None
+    lum = roi.mean(axis=2)
+    chroma = roi.max(axis=2) - roi.min(axis=2)
+    # Clothing below ankle: bright pants or dark pants; exclude wood-floor mid brown.
+    cloth = ((lum > 145) & (chroma < 55)) | ((lum < 100) & (chroma < 60))
+    frac = cloth.mean(axis=1)
+    good = np.where(frac > 0.08)[0]
+    if not good.size:
+        return None
+    return ankle_y + int(good.max())
+
+
+def _soft_fit_lower_warp_to_person(
+    layer_rgba: Image.Image,
+    person_image: Image.Image,
+    *,
+    person_waist_y: int,
+    hem_y: int,
+) -> tuple[Image.Image, dict]:
+    """Soft-clip warp layer to this person's lower-body silhouette for better fit."""
+    pw, ph = person_image.size
+    if layer_rgba.mode != "RGBA":
+        layer_rgba = layer_rgba.convert("RGBA")
+    kpts = detect_pose_keypoints(person_image)
+    fit_meta: dict = {"applied": False}
+    if not kpts:
+        return layer_rgba, {**fit_meta, "reason": "no_pose"}
+
+    try:
+        from app.services.body_mask import create_lower_body_polygon_mask
+
+        # Slightly roomy pad so wide-leg pants are not cropped too tight.
+        mask = create_lower_body_polygon_mask(
+            kpts,
+            pw,
+            ph,
+            feather_radius=0,
+            outer_pad_ratio=1.15,
+        )
+    except Exception as e:
+        return layer_rgba, {**fit_meta, "reason": f"mask_failed:{e}"}
+
+    mask_f = mask.astype(np.float32) / 255.0
+    # Expand vertically to this person's adaptive waist/hem (polygon often ends at ankle).
+    y0 = _clamp_int(person_waist_y - int(ph * 0.01), 0, ph - 1)
+    y1 = _clamp_int(hem_y + int(ph * 0.01), y0 + 1, ph)
+    band = np.zeros_like(mask_f)
+    # Horizontal span from pose hips/ankles with padding.
+    xs = []
+    for name in ("left_hip", "right_hip", "left_ankle", "right_ankle", "left_knee", "right_knee"):
+        pt = kpts.get(name)
+        if pt:
+            xs.append(pt[0] * pw)
+    if xs:
+        pad = max(18.0, 0.12 * (max(xs) - min(xs)))
+        x0 = _clamp_int(int(min(xs) - pad), 0, pw - 1)
+        x1 = _clamp_int(int(max(xs) + pad), x0 + 1, pw)
+    else:
+        x0, x1 = int(pw * 0.22), int(pw * 0.78)
+    band[y0:y1, x0:x1] = 1.0
+    # Union polygon with adaptive vertical band, then feather.
+    union = np.maximum(mask_f, band)
+    k = max(5, int(min(pw, ph) * 0.012) | 1)
+    if k % 2 == 0:
+        k += 1
+    soft = cv2.GaussianBlur(union, (k, k), 0)
+    soft = np.clip(soft, 0.0, 1.0)
+
+    arr = np.asarray(layer_rgba, dtype=np.float32)
+    arr[:, :, 3] *= soft
+    out = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), mode="RGBA")
+    return out, {
+        "applied": True,
+        "person_waist_y": int(person_waist_y),
+        "hem_y": int(hem_y),
+        "x0": int(x0),
+        "x1": int(x1),
+        "blur_k": int(k),
+    }
 
 
 def tryon_pants_warp(
@@ -2973,7 +3136,7 @@ def tryon_lower_warp_primary(
     """Lower-only try-on: continuous left/right leg warp + light body shading.
 
     Does NOT call CatVTON. Does NOT use knee-split (avoids 2x2 tile seams).
-    Raises the waist target and extends hems past the ankle toward the shoe line.
+    Waistline and hem adapt to the uploaded person's pose and worn silhouette.
     Preserves uploaded pants color/texture by compositing warped garment pixels.
     Upper try-on must not use this path.
     """
@@ -3000,6 +3163,22 @@ def tryon_lower_warp_primary(
             skip_waistband_trim=True,
             protect_upper_body=True,
         )
+
+        person_waist_y = int(box_ext_meta.get("person_waist_y") or warp_meta.waistband_box[1])
+        hem_y = int(
+            max(
+                warp_meta.left_leg_box[3],
+                warp_meta.right_leg_box[3],
+                int(box_ext_meta.get("detected_hem_y") or 0),
+            )
+        )
+        layer, fit_meta = _soft_fit_lower_warp_to_person(
+            layer,
+            person_image,
+            person_waist_y=person_waist_y,
+            hem_y=hem_y,
+        )
+        logger.info("lower_warp_primary person fit: %s", fit_meta)
 
         person_rgba = person_image.convert("RGBA")
         person_np = np.asarray(person_rgba, dtype=np.float32)
@@ -3033,6 +3212,7 @@ def tryon_lower_warp_primary(
             "waist_raise_ratio": round(float(waist_raise), 4),
             "hem_extend_ratio": round(float(hem_extend), 4),
             "box_extends": box_ext_meta,
+            "person_fit": fit_meta,
             "waistband_box": list(warp_meta.waistband_box),
             "left_leg_box": list(warp_meta.left_leg_box),
             "right_leg_box": list(warp_meta.right_leg_box),

@@ -167,3 +167,22 @@ def test_lower_warp_primary_boxes_cover_high_waist_and_hem():
         if bounds.get("valid"):
             assert max(left[3], right[3]) >= int(bounds["ankle_y"]) + 8
             assert wb[1] <= int(bounds["waist_y"])
+
+
+def test_lower_warp_primary_adapts_to_different_person_proportions():
+    """Taller/longer-leg person should get a different hem/waist adapt meta."""
+    from app.services.tryon_v2.warp_engine import _lower_warp_primary_box_extends
+
+    short = _fake_person(size=(320, 400))
+    tall = _fake_person(size=(320, 640))
+    # Paint high-waist bright pants on tall person so waist detection rises.
+    from PIL import ImageDraw
+
+    d = ImageDraw.Draw(tall)
+    d.rectangle((110, 210, 210, 600), fill=(230, 230, 230))
+    wr_s, he_s, meta_s = _lower_warp_primary_box_extends(short)
+    wr_t, he_t, meta_t = _lower_warp_primary_box_extends(tall)
+    assert meta_t.get("adaptive") is True
+    assert meta_s.get("leg_len_px", 0) != meta_t.get("leg_len_px", -1) or abs(he_t - he_s) > 1e-6
+    assert "person_waist_y" in meta_t
+    assert wr_t >= 0.02 and he_t >= 0.03
