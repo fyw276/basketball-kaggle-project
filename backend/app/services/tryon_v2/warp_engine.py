@@ -2220,6 +2220,110 @@ def _pil_quad_warp(
     )
 
 
+def _warp_rgba_to_canvas_quad(
+    src_rgba: Image.Image,
+    dst_quad: list[tuple[float, float]] | np.ndarray,
+    canvas_size: tuple[int, int],
+) -> Image.Image:
+    """Perspective-warp RGBA onto a full-canvas destination trapezoid (TL,TR,BR,BL)."""
+    if src_rgba.mode != "RGBA":
+        src_rgba = src_rgba.convert("RGBA")
+    sw, sh = src_rgba.size
+    pw, ph = canvas_size
+    src_pts = np.float32([[0, 0], [sw - 1, 0], [sw - 1, sh - 1], [0, sh - 1]])
+    dst_pts = np.float32(dst_quad).reshape(4, 2)
+    # Keep quad inside a slightly padded canvas so edges aren't clipped harshly.
+    matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
+    src_arr = np.asarray(src_rgba)
+    warped = cv2.warpPerspective(
+        src_arr,
+        matrix,
+        (pw, ph),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0, 0, 0, 0),
+    )
+    return Image.fromarray(warped, mode="RGBA")
+
+
+def _image_space_leg_keypoints(
+    kpts: dict[str, tuple[float, float]],
+    *,
+    side: str,
+    pw: int,
+    ph: int,
+) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float] | None] | None:
+    """Return (hip, ankle, knee) in pixels for image-left or image-right leg."""
+    lh, rh = kpts.get("left_hip"), kpts.get("right_hip")
+    la, ra = kpts.get("left_ankle"), kpts.get("right_ankle")
+    lk, rk = kpts.get("left_knee"), kpts.get("right_knee")
+    if not (lh and rh and la and ra):
+        return None
+
+    # Facing camera: person's left is image-right. Sort into image x order.
+    if lh[0] <= rh[0]:
+        img_l_hip, img_r_hip = lh, rh
+        img_l_ankle, img_r_ankle = la, ra
+        img_l_knee, img_r_knee = lk, rk
+    else:
+        img_l_hip, img_r_hip = rh, lh
+        img_l_ankle, img_r_ankle = ra, la
+        img_l_knee, img_r_knee = rk, lk
+
+    if side == "left":
+        hip_n, ankle_n, knee_n = img_l_hip, img_l_ankle, img_l_knee
+    else:
+        hip_n, ankle_n, knee_n = img_r_hip, img_r_ankle, img_r_knee
+
+    hip = (float(hip_n[0] * pw), float(hip_n[1] * ph))
+    ankle = (float(ankle_n[0] * pw), float(ankle_n[1] * ph))
+    knee = (float(knee_n[0] * pw), float(knee_n[1] * ph)) if knee_n else None
+    return hip, ankle, knee
+
+
+def _leg_pose_trapezoid(
+    *,
+    hip: tuple[float, float],
+    ankle: tuple[float, float],
+    y_top: float,
+    y_bot: float,
+    half_w_top: float,
+    half_w_bot: float,
+    pw: int,
+    ph: int,
+) -> list[tuple[float, float]]:
+    """Build TL,TR,BR,BL trapezoid along the hip→ankle axis, clamped to y_top/y_bot."""
+    # Place axis endpoints on the garment vertical span.
+    ax = ankle[0] - hip[0]
+    ay = ankle[1] - hip[1]
+    if abs(ay) < 1.0:
+        ay = 1.0
+    # Interpolate x at y_top / y_bot along the bone line.
+    t_top = (y_top - hip[1]) / ay
+    t_bot = (y_bot - hip[1]) / ay
+    top_c = (hip[0] + ax * t_top, y_top)
+    bot_c = (hip[0] + ax * t_bot, y_bot)
+
+    dx = bot_c[0] - top_c[0]
+    dy = bot_c[1] - top_c[1]
+    length = max(1.0, float(np.hypot(dx, dy)))
+    # Perpendicular unit vector.
+    px, py = (-dy / length, dx / length)
+
+    tl = (top_c[0] + px * half_w_top, top_c[1] + py * half_w_top)
+    tr = (top_c[0] - px * half_w_top, top_c[1] - py * half_w_top)
+    br = (bot_c[0] - px * half_w_bot, bot_c[1] - py * half_w_bot)
+    bl = (bot_c[0] + px * half_w_bot, bot_c[1] + py * half_w_bot)
+
+    def _clamp_pt(p: tuple[float, float]) -> tuple[float, float]:
+        return (
+            float(np.clip(p[0], 0, pw - 1)),
+            float(np.clip(p[1], 0, ph - 1)),
+        )
+
+    return [_clamp_pt(tl), _clamp_pt(tr), _clamp_pt(br), _clamp_pt(bl)]
+
+
 def _feather_alpha(rgba: Image.Image, radius_px: int) -> Image.Image:
     if rgba.mode != "RGBA":
         rgba = rgba.convert("RGBA")
@@ -2634,6 +2738,7 @@ def _build_pants_warp_layer(
     skip_waistband_trim: bool = False,
     width_expand_ratio: float = 0.0,
     leg_taper_scale: float = 1.0,
+    pose_leg_axis: bool = False,
     protect_upper_body: bool = True,
 ) -> tuple[Image.Image, WarpMetadata]:
     """Build an RGBA pants warp layer that can be reused by stage-1 and step-12.
@@ -2646,6 +2751,7 @@ def _build_pants_warp_layer(
     width_expand_ratio: extra lateral padding (lower_warp_primary uses this so pants
     are not skeleton-narrow).
     leg_taper_scale: scale applied to leg taper (<1 = wider legs).
+    pose_leg_axis: when True, warp each leg along hip→ankle bone axis (worn look).
     """
     pw, ph = person_image.size
 
@@ -2795,6 +2901,41 @@ def _build_pants_warp_layer(
     else:
         layer_waist = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
 
+    def _warp_leg_pose_axis(
+        src: Image.Image,
+        leg_box: tuple[int, int, int, int],
+        side: str,
+    ) -> Image.Image | None:
+        if not kpts:
+            return None
+        axis = _image_space_leg_keypoints(kpts, side=side, pw=pw, ph=ph)
+        if axis is None:
+            return None
+        hip, ankle, _knee = axis
+        x0, y0, x1, y1 = leg_box
+        box_w = max(2, x1 - x0)
+        half_top = box_w * 0.50
+        # Mild hem change; keep garment width (wide-leg friendly).
+        half_bot = half_top * float(np.clip(1.0 - leg_taper_ratio * 0.35, 0.85, 1.12))
+        # Anchor axis to the raised waist / extended hem span.
+        hip_use = (hip[0], float(y0 + 1))
+        ankle_use = (ankle[0], float(y1 - 1))
+        # Nudge axis x toward box center so extreme pose doesn't leave crotch gap.
+        mid_x = 0.5 * (x0 + x1)
+        hip_use = (0.65 * hip_use[0] + 0.35 * mid_x, hip_use[1])
+        ankle_use = (0.70 * ankle_use[0] + 0.30 * mid_x, ankle_use[1])
+        quad = _leg_pose_trapezoid(
+            hip=hip_use,
+            ankle=ankle_use,
+            y_top=float(y0),
+            y_bot=float(y1),
+            half_w_top=half_top,
+            half_w_bot=half_bot,
+            pw=pw,
+            ph=ph,
+        )
+        return _warp_rgba_to_canvas_quad(src, quad, (pw, ph))
+
     def _warp_two_stage(
         src_upper: Image.Image,
         src_lower: Image.Image,
@@ -2821,6 +2962,7 @@ def _build_pants_warp_layer(
         canvas = Image.alpha_composite(canvas, lower_layer)
         return canvas
 
+    pose_axis_used = False
     if (
         use_knee_split
         and parts.left_upper is not None
@@ -2844,11 +2986,24 @@ def _build_pants_warp_layer(
             right_leg_box,
             knee_person_y=right_knee_px,
         )
+    elif pose_leg_axis:
+        left_pose = _warp_leg_pose_axis(parts.left_leg, left_leg_box, "left")
+        right_pose = _warp_leg_pose_axis(parts.right_leg, right_leg_box, "right")
+        if left_pose is not None and right_pose is not None:
+            layer_left, layer_right = left_pose, right_pose
+            pose_axis_used = True
+            logger.info("pants_warp_layer: pose_leg_axis warp applied")
+        else:
+            layer_left = _warp_into_box(parts.left_leg, left_leg_box)
+            layer_right = _warp_into_box(parts.right_leg, right_leg_box)
     else:
         layer_left = _warp_into_box(parts.left_leg, left_leg_box)
         layer_right = _warp_into_box(parts.right_leg, right_leg_box)
 
     merged = Image.alpha_composite(Image.alpha_composite(layer_left, layer_right), layer_waist)
+    if pose_axis_used:
+        # Soften hard trapezoid edges so it reads as fabric, not a sticker cutout.
+        merged = _feather_alpha(merged, radius_px=max(2, int(min(pw, ph) * 0.004)))
     waistband_trim_meta: dict | None = None
     if include_waistband and visible_waistband_box != (0, 0, 0, 0) and not skip_waistband_trim:
         guides = _estimate_lower_structure_guides(person_image)
@@ -2990,15 +3145,13 @@ def tryon_lower_warp_primary(
     person_image: Image.Image,
     garment_image: Image.Image,
     *,
-    drape_alpha: float = 0.18,
+    drape_alpha: float = 0.30,
     debug_session_dir: str | None = None,
 ) -> tuple[Image.Image, dict]:
-    """Lower-only try-on: continuous left/right leg warp + light body shading.
+    """Lower-only try-on: pose-axis leg warp + body draping (no CatVTON).
 
-    Does NOT call CatVTON. Does NOT use knee-split (avoids 2x2 tile seams).
-    Waist/hem/width follow this person's pose proportions (no silhouette crop).
-    Preserves uploaded pants color/texture by compositing warped garment pixels.
-    Upper try-on must not use this path.
+    Does NOT use knee-split tiles. Legs follow hip→ankle bone axes so pants read
+    as worn on this person, not as axis-aligned stickers. Upper path unchanged.
     """
     try:
         denim_like = _is_denim_like_garment(garment_image)
@@ -3024,6 +3177,8 @@ def tryon_lower_warp_primary(
             # Keep wide-leg product width; do not skeleton-crop.
             width_expand_ratio=0.09,
             leg_taper_scale=0.45,
+            # Follow each leg bone so the result looks worn, not pasted.
+            pose_leg_axis=True,
             protect_upper_body=True,
         )
 
@@ -3032,17 +3187,29 @@ def tryon_lower_warp_primary(
         layer_np = np.asarray(layer.convert("RGBA"), dtype=np.float32)
         alpha = np.clip(layer_np[:, :, 3:4] / 255.0, 0.0, 1.0)
 
-        # Gentle body shading from the person photo (keeps dark browns dark).
-        if float(drape_alpha) > 0 and float(alpha.mean()) > 0:
+        # Body shading + mild cylindrical falloff so fabric wraps the legs.
+        if float(alpha.mean()) > 0:
             person_y = person_np[:, :, :3].mean(axis=2, keepdims=True)
             gar_y = np.maximum(layer_np[:, :, :3].mean(axis=2, keepdims=True), 1.0)
-            # Only modulate where garment is opaque.
-            shade = np.clip(person_y / 180.0, 0.55, 1.15)
-            strength = float(np.clip(drape_alpha, 0.0, 0.45))
+            shade = np.clip(person_y / 180.0, 0.52, 1.18)
+            strength = float(np.clip(drape_alpha, 0.0, 0.50))
             shaded_rgb = layer_np[:, :, :3] * ((1.0 - strength) + strength * shade)
-            # Avoid washing out very dark garments.
             dark_keep = np.clip(gar_y / 80.0, 0.35, 1.0)
             shaded_rgb = layer_np[:, :, :3] * (1.0 - dark_keep) + shaded_rgb * dark_keep
+
+            # Soft limb roundness: darken near left/right edges of opaque regions.
+            a2d = alpha[:, :, 0]
+            edge = (
+                cv2.morphologyEx(
+                    (a2d > 0.35).astype(np.uint8) * 255,
+                    cv2.MORPH_GRADIENT,
+                    np.ones((5, 5), np.uint8),
+                ).astype(np.float32)
+                / 255.0
+            )
+            edge = cv2.GaussianBlur(edge, (0, 0), 2.5)
+            roundness = 1.0 - 0.18 * edge[..., None]
+            shaded_rgb = shaded_rgb * roundness
             layer_np[:, :, :3] = np.clip(shaded_rgb, 0, 255)
 
         merged = Image.fromarray(layer_np.astype(np.uint8), mode="RGBA")
@@ -3052,6 +3219,7 @@ def tryon_lower_warp_primary(
             "engine": "lower_warp_primary",
             "catvton_used": False,
             "use_knee_split": False,
+            "pose_leg_axis": True,
             "include_waistband": not denim_like,
             "denim_like": bool(denim_like),
             "pattern_strength": round(float(pattern_strength), 4),

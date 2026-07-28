@@ -169,6 +169,17 @@ def test_lower_warp_primary_boxes_cover_high_waist_and_hem():
             assert wb[1] <= int(bounds["waist_y"])
 
 
+def test_lower_warp_primary_uses_pose_leg_axis():
+    from app.services.tryon_v2.warp_engine import tryon_lower_warp_primary
+
+    person = _fake_person(size=(384, 512))
+    garment = _fake_pants()
+    out, meta = tryon_lower_warp_primary(person, garment)
+    assert out.size == person.size
+    assert meta.get("pose_leg_axis") is True or meta.get("engine") == "lower_warp_primary_fallback"
+    assert meta.get("catvton_used") is False
+
+
 def test_lower_warp_primary_adapts_to_different_person_proportions():
     """Different body sizes get pose-proportional hem/waist meta (not color crop)."""
     from app.services.tryon_v2.warp_engine import _lower_warp_primary_box_extends
