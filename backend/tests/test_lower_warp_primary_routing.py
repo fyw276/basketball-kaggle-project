@@ -178,6 +178,7 @@ def test_lower_warp_primary_uses_pose_leg_axis():
     assert out.size == person.size
     assert meta.get("pose_leg_axis") is True or meta.get("engine") == "lower_warp_primary_fallback"
     assert meta.get("catvton_used") is False
+    assert meta.get("wear_composite") is True or meta.get("engine") == "lower_warp_primary_fallback"
 
 
 def test_lower_warp_primary_adapts_to_different_person_proportions():

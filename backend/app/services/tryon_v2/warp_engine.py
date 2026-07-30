@@ -3141,17 +3141,99 @@ def tryon_pants_warp(
     return out, meta
 
 
+def _composite_lower_warp_as_worn(
+    person_image: Image.Image,
+    layer_rgba: Image.Image,
+    *,
+    drape_alpha: float = 0.34,
+    ankle_y: int | None = None,
+) -> tuple[Image.Image, dict]:
+    """Composite pants layer so it reads as worn fabric, not a hard sticker.
+
+    - Transfer body luminance into garment (LAB L) while keeping garment color
+    - Soften alpha edges and cross-fade into the person photo
+    - Restore shoes/feet below the pant hem (person wins occlusion)
+    """
+    person_rgb = np.asarray(person_image.convert("RGB"), dtype=np.float32)
+    layer = np.asarray(layer_rgba.convert("RGBA"), dtype=np.float32)
+    h, w = person_rgb.shape[:2]
+    alpha = np.clip(layer[:, :, 3:4] / 255.0, 0.0, 1.0)
+    if float(alpha.mean()) <= 1e-6:
+        return person_image.convert("RGB"), {"applied": False, "reason": "empty_layer"}
+
+    # Soften hard cutout edges (sticker halo).
+    a2d = alpha[:, :, 0]
+    a_blur = cv2.GaussianBlur(a2d, (0, 0), sigmaX=max(1.2, min(w, h) * 0.0035))
+    a_soft = np.clip(np.minimum(a2d, a_blur * 1.05), 0.0, 1.0)
+
+    # Body luminance transfer in LAB (keeps brown/chroma, borrows person shading).
+    person_lab = cv2.cvtColor(person_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float32)
+    gar_lab = cv2.cvtColor(
+        np.clip(layer[:, :, :3], 0, 255).astype(np.uint8), cv2.COLOR_RGB2LAB
+    ).astype(np.float32)
+    strength = float(np.clip(drape_alpha, 0.0, 0.55))
+    # Preserve very dark garment L so browns stay brown.
+    gar_l = gar_lab[:, :, 0:1]
+    dark_keep = np.clip(gar_l / 55.0, 0.25, 1.0)
+    mix_l = strength * dark_keep
+    gar_lab[:, :, 0:1] = gar_l * (1.0 - mix_l) + person_lab[:, :, 0:1] * mix_l
+    worn_rgb = cv2.cvtColor(np.clip(gar_lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB).astype(
+        np.float32
+    )
+
+    # Limb roundness near garment silhouette.
+    edge = (
+        cv2.morphologyEx(
+            (a_soft > 0.30).astype(np.uint8) * 255,
+            cv2.MORPH_GRADIENT,
+            np.ones((7, 7), np.uint8),
+        ).astype(np.float32)
+        / 255.0
+    )
+    edge = cv2.GaussianBlur(edge, (0, 0), 3.0)
+    worn_rgb = worn_rgb * (1.0 - 0.22 * edge[..., None])
+
+    # Edge cross-fade into person (kills cardboard cutout look).
+    ring = np.clip((a_soft > 0.04).astype(np.float32) * (a_soft < 0.92).astype(np.float32), 0, 1)
+    ring = cv2.GaussianBlur(ring, (0, 0), 2.0)
+    edge_mix = (0.35 * ring * (1.0 - a_soft))[..., None]
+    base = person_rgb * (1.0 - a_soft[..., None]) + worn_rgb * a_soft[..., None]
+    out = base * (1.0 - edge_mix) + person_rgb * edge_mix
+
+    # Shoe / foot occlusion: keep original person in the hem-foot band.
+    ay = int(ankle_y) if ankle_y is not None else int(h * 0.82)
+    ay = _clamp_int(ay, int(h * 0.55), h - 2)
+    foot = np.zeros((h, w), dtype=np.float32)
+    foot[ay:, :] = 1.0
+    # Only restore where person is brighter/shoelike or outside strong garment core.
+    person_l = person_rgb.mean(axis=2)
+    shoeish = ((person_l > 140) | (person_l < 70)).astype(np.float32)
+    foot_w = cv2.GaussianBlur(foot * shoeish, (0, 0), 2.5)[..., None]
+    foot_w = np.clip(foot_w * (1.0 - np.clip(a_soft - 0.55, 0, 1)[..., None] * 0.5), 0, 1)
+    out = out * (1.0 - foot_w) + person_rgb * foot_w
+
+    result = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), mode="RGB")
+    return result, {
+        "applied": True,
+        "drape_alpha": round(strength, 4),
+        "ankle_y": int(ay),
+        "mean_alpha": round(float(a_soft.mean()), 4),
+        "edge_mix_mean": round(float(edge_mix.mean()), 4),
+    }
+
+
 def tryon_lower_warp_primary(
     person_image: Image.Image,
     garment_image: Image.Image,
     *,
-    drape_alpha: float = 0.30,
+    drape_alpha: float = 0.34,
     debug_session_dir: str | None = None,
 ) -> tuple[Image.Image, dict]:
-    """Lower-only try-on: pose-axis leg warp + body draping (no CatVTON).
+    """Lower-only try-on: pose-axis leg warp + worn-body composite (no CatVTON).
 
-    Does NOT use knee-split tiles. Legs follow hip→ankle bone axes so pants read
-    as worn on this person, not as axis-aligned stickers. Upper path unchanged.
+    Does NOT use knee-split tiles. Legs follow hip→ankle bone axes, then a wear
+    composite blends shading/edges into the person so pants read as worn fabric.
+    Upper CatVTON path unchanged.
     """
     try:
         denim_like = _is_denim_like_garment(garment_image)
@@ -3166,7 +3248,7 @@ def tryon_lower_warp_primary(
         layer, warp_meta = _build_pants_warp_layer(
             person_image=person_image,
             garment_image=garment_image,
-            alpha_feather_ratio=0.006 if pattern_strength >= 0.55 else 0.009,
+            alpha_feather_ratio=0.008 if pattern_strength >= 0.55 else 0.011,
             # Continuous whole-leg warp — knee-split creates visible 2x2 tiles.
             use_knee_split=False,
             include_waistband=not denim_like,
@@ -3182,44 +3264,22 @@ def tryon_lower_warp_primary(
             protect_upper_body=True,
         )
 
-        person_rgba = person_image.convert("RGBA")
-        person_np = np.asarray(person_rgba, dtype=np.float32)
-        layer_np = np.asarray(layer.convert("RGBA"), dtype=np.float32)
-        alpha = np.clip(layer_np[:, :, 3:4] / 255.0, 0.0, 1.0)
+        ankle_y = int(box_ext_meta.get("ankle_y") or warp_meta.left_leg_box[3])
+        out, wear_meta = _composite_lower_warp_as_worn(
+            person_image,
+            layer,
+            drape_alpha=drape_alpha,
+            ankle_y=ankle_y,
+        )
+        logger.info("lower_warp_primary wear composite: %s", wear_meta)
 
-        # Body shading + mild cylindrical falloff so fabric wraps the legs.
-        if float(alpha.mean()) > 0:
-            person_y = person_np[:, :, :3].mean(axis=2, keepdims=True)
-            gar_y = np.maximum(layer_np[:, :, :3].mean(axis=2, keepdims=True), 1.0)
-            shade = np.clip(person_y / 180.0, 0.52, 1.18)
-            strength = float(np.clip(drape_alpha, 0.0, 0.50))
-            shaded_rgb = layer_np[:, :, :3] * ((1.0 - strength) + strength * shade)
-            dark_keep = np.clip(gar_y / 80.0, 0.35, 1.0)
-            shaded_rgb = layer_np[:, :, :3] * (1.0 - dark_keep) + shaded_rgb * dark_keep
-
-            # Soft limb roundness: darken near left/right edges of opaque regions.
-            a2d = alpha[:, :, 0]
-            edge = (
-                cv2.morphologyEx(
-                    (a2d > 0.35).astype(np.uint8) * 255,
-                    cv2.MORPH_GRADIENT,
-                    np.ones((5, 5), np.uint8),
-                ).astype(np.float32)
-                / 255.0
-            )
-            edge = cv2.GaussianBlur(edge, (0, 0), 2.5)
-            roundness = 1.0 - 0.18 * edge[..., None]
-            shaded_rgb = shaded_rgb * roundness
-            layer_np[:, :, :3] = np.clip(shaded_rgb, 0, 255)
-
-        merged = Image.fromarray(layer_np.astype(np.uint8), mode="RGBA")
-        out = Image.alpha_composite(person_rgba, merged).convert("RGB")
-
+        alpha = np.clip(np.asarray(layer.convert("RGBA"), dtype=np.float32)[:, :, 3] / 255.0, 0, 1)
         meta = {
             "engine": "lower_warp_primary",
             "catvton_used": False,
             "use_knee_split": False,
             "pose_leg_axis": True,
+            "wear_composite": True,
             "include_waistband": not denim_like,
             "denim_like": bool(denim_like),
             "pattern_strength": round(float(pattern_strength), 4),
@@ -3229,6 +3289,7 @@ def tryon_lower_warp_primary(
             "width_expand_ratio": 0.09,
             "leg_taper_scale": 0.45,
             "box_extends": box_ext_meta,
+            "wear_meta": wear_meta,
             "waistband_box": list(warp_meta.waistband_box),
             "left_leg_box": list(warp_meta.left_leg_box),
             "right_leg_box": list(warp_meta.right_leg_box),
@@ -3242,7 +3303,7 @@ def tryon_lower_warp_primary(
                 save_debug_stage_image(
                     debug_session_dir=debug_session_dir,
                     filename="11_lower_warp_primary_layer.png",
-                    image=merged,
+                    image=layer,
                     metadata={"stage": "lower_warp_primary_layer", **meta},
                 )
                 save_debug_stage_image(
