@@ -15,6 +15,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
+from app.api.tryon_v2_helpers import (
+    _load_uploads_url,
+    _make_tryon_error_detail,
+    _normalize_tryon_mode,
+)
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.user import User
@@ -535,20 +540,7 @@ async def tryon_garment_v2(
         )
 
     # mode fallback: accept legacy/alias values from older clients
-    _MODE_FALLBACK = {
-        "detail": "detail_fidelity",
-        "mixed": "hybrid",
-        "fast": "stable_fast",
-        "professional": "detail_fidelity",
-        "realistic": "detail_fidelity",
-        "realistic_v2": "detail_fidelity",
-        "replace": "stable_fast",
-        # /tryon/pants and older clients used strict|balanced for gate intensity.
-        # Map them onto the CatVTON high-quality path instead of rejecting the request.
-        "strict": "detail_fidelity",
-        "balanced": "hybrid",
-    }
-    mode = _MODE_FALLBACK.get(mode, mode)
+    mode = _normalize_tryon_mode(mode)
     logger.info(f"[MODE-DEBUG] mode after fallback: '{mode}'")
 
     if mode not in {
@@ -716,25 +708,8 @@ async def tryon_garment_v2(
             detail="请提供衣物图片：garment_file、garment_id 或 garment_image_url 三选一",
         )
 
-    def _load_uploads_url(url: str) -> Image.Image | None:
-        u = (url or "").strip()
-        low = u.lower()
-        if "/uploads/" not in low:
-            return None
-        idx = low.find("/uploads/")
-        tail = u[idx + len("/uploads/") :].lstrip("/").replace("\\", "/")
-        if not tail:
-            return None
-        full = Path(settings.UPLOAD_DIR) / tail
-        if not full.is_file():
-            return None
-        try:
-            return Image.open(full).convert("RGB")
-        except Exception:
-            return None
-
     if garment_image_url and garment_image is None:
-        img = _load_uploads_url(garment_image_url)
+        img = _load_uploads_url(garment_image_url, settings.UPLOAD_DIR)
         if img is not None:
             garment_image = img
             garment_image_source = "url"
@@ -745,7 +720,7 @@ async def tryon_garment_v2(
         pre_meta = {"standardized_image_url": garment_image_url} if garment_image_url else {}
 
     if garment_image_url_2 and garment_image_2 is None:
-        img2 = _load_uploads_url(garment_image_url_2)
+        img2 = _load_uploads_url(garment_image_url_2, settings.UPLOAD_DIR)
         if img2 is not None:
             garment_image_2 = img2
             garment_image_2_source = "url"
@@ -3998,29 +3973,12 @@ async def tryon_v2_validate_input(
             detail="请提供衣物图片：garment_file、garment_id 或 garment_image_url 三选一",
         )
 
-    def _load_uploads_url(url: str) -> Image.Image | None:
-        u = (url or "").strip()
-        low = u.lower()
-        if "/uploads/" not in low:
-            return None
-        idx = low.find("/uploads/")
-        tail = u[idx + len("/uploads/") :].lstrip("/").replace("\\", "/")
-        if not tail:
-            return None
-        full = Path(settings.UPLOAD_DIR) / tail
-        if not full.is_file():
-            return None
-        try:
-            return Image.open(full).convert("RGB")
-        except Exception:
-            return None
-
     if garment_image_url:
-        img = _load_uploads_url(garment_image_url)
+        img = _load_uploads_url(garment_image_url, settings.UPLOAD_DIR)
         if img is not None:
             garment_image = img
     if garment_image_url_2:
-        img2 = _load_uploads_url(garment_image_url_2)
+        img2 = _load_uploads_url(garment_image_url_2, settings.UPLOAD_DIR)
         if img2 is not None:
             garment_image_2 = img2
 
