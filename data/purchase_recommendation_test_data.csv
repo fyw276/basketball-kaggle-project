@@ -1,0 +1,21 @@
+id,图片名称,source_product_id,source_dataset,真实商品名称,类别,颜色,风格,适用场景,是否推荐购买,推荐理由,字段说明
+001,15970.jpg,15970,Transformersx/fashion-product-images-small,Turtle Check Men Navy Blue Shirt,衬衫,藏蓝色,休闲,日常/校园,推荐,真实商品元数据为衬衫且休闲场景适用，基础色复穿率较高,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+002,39386.jpg,39386,Transformersx/fashion-product-images-small,Peter England Men Party Blue Jeans,牛仔裤,蓝色,休闲,日常/旅行,推荐,牛仔裤为高频基础单品，蓝色易搭配,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+003,59263.jpg,59263,Transformersx/fashion-product-images-small,Titan Women Silver Watch,手表,银色,休闲,上班/日常,推荐,配饰颜色中性，可用于通勤和日常搭配,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+004,21379.jpg,21379,Transformersx/fashion-product-images-small,Manchester United Men Solid Black Track Pants,运动裤,黑色,休闲,运动/日常,推荐,黑色运动裤耐脏且适合运动休闲场景,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+005,53759.jpg,53759,Transformersx/fashion-product-images-small,Puma Men Grey T-shirt,T 恤,灰色,休闲,校园/日常,推荐,灰色 T 恤基础百搭，适合高频穿着,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+006,1855.jpg,1855,Transformersx/fashion-product-images-small,Inkfruit Mens Chain Reaction T-shirt,T 恤,灰色,休闲,日常/校园,推荐,基础 T 恤适合作为衣柜打底单品,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+007,30805.jpg,30805,Transformersx/fashion-product-images-small,Fabindia Men Striped Green Shirt,衬衫,绿色,民族风,旅行/聚会,谨慎推荐,绿色和条纹较有个性，需考虑已有衣柜搭配能力,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+008,26960.jpg,26960,Transformersx/fashion-product-images-small,Jealous 21 Women Purple Shirt,衬衫,紫色,休闲,聚会/日常,谨慎推荐,紫色辨识度高但搭配范围比基础色窄,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+009,29114.jpg,29114,Transformersx/fashion-product-images-small,Puma Men Pack of 3 Socks,袜子,藏蓝色,休闲,运动/日常,推荐,袜子属于消耗型配饰，基础色实用性较强,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+010,30039.jpg,30039,Transformersx/fashion-product-images-small,Skagen Men Black Watch,手表,黑色,休闲,上班/日常,推荐,黑色手表低调百搭，可覆盖通勤和日常场景,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+011,9204.jpg,9204,Transformersx/fashion-product-images-small,Puma Men Future Cat Remix SF Black Casual Shoes,休闲鞋,黑色,休闲,日常/旅行,推荐,黑色休闲鞋耐穿且适合多场景搭配,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+012,48123.jpg,48123,Transformersx/fashion-product-images-small,Fossil Women Black Huarache Weave Belt,腰带,黑色,休闲,上班/日常,推荐,黑色腰带实用性强，可辅助通勤穿搭,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+013,18653.jpg,18653,Transformersx/fashion-product-images-small,Fila Men Cush Flex Black Slippers,拖鞋,黑色,休闲,居家/旅行,谨慎推荐,适用场景较窄，更适合作为补充单品,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+014,47957.jpg,47957,Transformersx/fashion-product-images-small,Murcia Women Blue Handbag,手提包,蓝色,休闲,上班/聚会,推荐,蓝色包具能增加搭配层次，适合已有基础色服装时购买,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+015,12369.jpg,12369,Transformersx/fashion-product-images-small,Reid & Taylor Men Check Purple Shirts,衬衫,紫色,正式,上班/面试,谨慎推荐,正式衬衫适合通勤，但紫色和格纹需匹配个人风格,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+016,42419.jpg,42419,Transformersx/fashion-product-images-small,Gini and Jony Girls Knit White Top,上衣,白色,休闲,校园/日常,推荐,白色上衣百搭，适合作为基础款测试样例,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+017,51832.jpg,51832,Transformersx/fashion-product-images-small,Bwitch Beige Full-Coverage Bra BW335,内衣,米色,休闲,日常,谨慎推荐,属于贴身基础品类，推荐需结合尺码和舒适度,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+018,47359.jpg,47359,Transformersx/fashion-product-images-small,Baggit Women Brown Handbag,手提包,棕色,休闲,上班/旅行,推荐,棕色包具适合秋冬和通勤搭配，实用性较好,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+019,9036.jpg,9036,Transformersx/fashion-product-images-small,Buckaroo Men Flores Black Formal Shoes,正装鞋,黑色,正式,上班/面试,推荐,黑色正装鞋适合正式场景，购买价值明确,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生
+020,13089.jpg,13089,Transformersx/fashion-product-images-small,ADIDAS Men Lfc Auth Hood Grey Sweatshirts,卫衣,灰色,运动,运动/校园,推荐,灰色运动卫衣适合校园和运动场景，复穿率较高,类别/颜色/风格/商品名来自公开数据集；场景/购买建议为项目规则派生

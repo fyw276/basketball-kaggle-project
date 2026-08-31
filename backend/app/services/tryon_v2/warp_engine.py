@@ -2740,6 +2740,7 @@ def _build_pants_warp_layer(
     leg_taper_scale: float = 1.0,
     pose_leg_axis: bool = False,
     protect_upper_body: bool = True,
+    leg_half_width_ratio: float = 0.50,
 ) -> tuple[Image.Image, WarpMetadata]:
     """Build an RGBA pants warp layer that can be reused by stage-1 and step-12.
 
@@ -2752,6 +2753,8 @@ def _build_pants_warp_layer(
     are not skeleton-narrow).
     leg_taper_scale: scale applied to leg taper (<1 = wider legs).
     pose_leg_axis: when True, warp each leg along hip→ankle bone axis (worn look).
+    leg_half_width_ratio: pose-axis trapezoid half-width as fraction of leg box
+    width (lower values leave a crotch gap; 0.50 fills the box).
     """
     pw, ph = person_image.size
 
@@ -2854,9 +2857,15 @@ def _build_pants_warp_layer(
     if not include_waistband:
         top_extend_px = max(0, int(round(ph * float(top_extend_ratio))))
         leg_start_y = _clamp_int(waistband_box[1] - top_extend_px, 0, ph - 2)
+        # Prefer person high-waist when available via waistband top after raise path.
         left_leg_box = (left_leg_box[0], leg_start_y, left_leg_box[2], left_leg_box[3])
         right_leg_box = (right_leg_box[0], leg_start_y, right_leg_box[2], right_leg_box[3])
         visible_waistband_box = (0, 0, 0, 0)
+        logger.info(
+            "pants_warp_layer: continuous waist legs start_y=%d (top_extend_px=%d)",
+            leg_start_y,
+            top_extend_px,
+        )
     else:
         visible_waistband_box = waistband_box
 
@@ -2914,16 +2923,17 @@ def _build_pants_warp_layer(
         hip, ankle, _knee = axis
         x0, y0, x1, y1 = leg_box
         box_w = max(2, x1 - x0)
-        half_top = box_w * 0.50
+        half_ratio = float(np.clip(leg_half_width_ratio, 0.28, 0.55))
+        half_top = box_w * half_ratio
         # Mild hem change; keep garment width (wide-leg friendly).
         half_bot = half_top * float(np.clip(1.0 - leg_taper_ratio * 0.35, 0.85, 1.12))
-        # Anchor axis to the raised waist / extended hem span.
+        # Follow pose bone more closely so legs aren't box-aligned stickers.
         hip_use = (hip[0], float(y0 + 1))
         ankle_use = (ankle[0], float(y1 - 1))
-        # Nudge axis x toward box center so extreme pose doesn't leave crotch gap.
         mid_x = 0.5 * (x0 + x1)
-        hip_use = (0.65 * hip_use[0] + 0.35 * mid_x, hip_use[1])
-        ankle_use = (0.70 * ankle_use[0] + 0.30 * mid_x, ankle_use[1])
+        # Bias axes toward the inseam so L/R trapezoids overlap (no white center gap).
+        hip_use = (0.70 * hip_use[0] + 0.30 * mid_x, hip_use[1])
+        ankle_use = (0.74 * ankle_use[0] + 0.26 * mid_x, ankle_use[1])
         quad = _leg_pose_trapezoid(
             hip=hip_use,
             ankle=ankle_use,
@@ -3046,18 +3056,58 @@ def _build_pants_warp_layer(
     return merged, meta
 
 
+def _estimate_person_body_scale(person_image: Image.Image) -> dict:
+    """Return proportional fit scales for body width / height.
+
+    Uses pose-derived shoulder and hip widths to adapt the lower-garment warp to
+    different body builds while keeping the final ratio proportional to the
+    person rather than a fixed preset.
+    """
+    pw, ph = person_image.size
+    kpts = detect_pose_keypoints(person_image)
+    bounds = get_body_bounds_from_keypoints(kpts, pw, ph, "bottom") if kpts else {"valid": False}
+
+    shoulder_w = float(bounds.get("shoulder_width", pw * 0.36))
+    hip_w = float(bounds.get("hip_width", pw * 0.30))
+    hip_y = float(bounds.get("waist_y", ph * 0.45)) if bounds.get("valid") else ph * 0.45
+    ankle_y = float(bounds.get("ankle_y", ph * 0.82)) if bounds.get("valid") else ph * 0.82
+
+    ref_hip = max(0.24 * pw, min(0.40 * pw, pw * 0.32))
+    ref_shoulder = max(0.28 * pw, min(0.48 * pw, pw * 0.38))
+    body_width_ref = max(ref_hip, ref_shoulder)
+    image_scale = float(np.clip(pw / 384.0, 0.75, 1.35))
+    height_image_scale = float(np.clip(ph / 512.0, 0.80, 1.20))
+    width_scale = float(
+        np.clip((max(shoulder_w, hip_w) / max(body_width_ref, 1.0)) * image_scale, 0.72, 1.35)
+    )
+
+    ref_leg_len = max(0.34 * ph, min(0.58 * ph, ph * 0.46))
+    height_scale = float(
+        np.clip(((ankle_y - hip_y) / max(ref_leg_len, 1.0)) * height_image_scale, 0.80, 1.22)
+    )
+    return {
+        "width_scale": width_scale,
+        "height_scale": height_scale,
+        "shoulder_w": shoulder_w,
+        "hip_w": hip_w,
+        "body_width_ref": body_width_ref,
+        "leg_len_ref": ref_leg_len,
+    }
+
+
 def _lower_warp_primary_box_extends(
     person_image: Image.Image,
 ) -> tuple[float, float, dict]:
     """Pose-proportional waist-raise / hem-extend for lower_warp_primary only.
 
-    Scales with *this* person's torso and leg length (hip/shoulder/ankle), not
-    fragile color guesses of whatever they currently wear. That keeps pants
-    proportionally long/wide across different uploads.
+    The final fit scales with this person's torso/leg proportions instead of a
+    single fixed preset, so slim, average, and broader bodies all get a stable,
+    proportionally adjusted pant size.
     """
     pw, ph = person_image.size
     kpts = detect_pose_keypoints(person_image)
     bounds = get_body_bounds_from_keypoints(kpts, pw, ph, "bottom") if kpts else {"valid": False}
+    body_scale = _estimate_person_body_scale(person_image)
 
     default_waist_y = int(bounds["waist_y"]) if bounds.get("valid") else int(ph * 0.43)
     ankle_y = int(bounds.get("ankle_y", int(ph * 0.81))) if bounds.get("valid") else int(ph * 0.81)
@@ -3078,18 +3128,16 @@ def _lower_warp_primary_box_extends(
 
     torso = max(12, int(hip_y) - int(shoulder_y))
     leg_len = max(12, int(ankle_y) - int(hip_y))
-    # High-waist relative to this torso (~22% of shoulder→hip upward from hip).
-    person_waist_y = _clamp_int(hip_y - int(0.22 * torso), int(ph * 0.30), hip_y)
-    waist_raise = (float(default_waist_y) - float(person_waist_y)) / float(ph)
+    person_waist_y = _clamp_int(hip_y - int(0.08 * torso), int(ph * 0.36), hip_y)
+    waist_raise = max(0.0, (float(default_waist_y) - float(person_waist_y)) / float(ph))
 
-    # Hem past ankle proportional to this person's leg length.
     hem_extra_px = max(int(leg_len * 0.12), int(ph * 0.045))
     hem_extend = hem_extra_px / float(ph)
 
     max_hem = max(0.03, (ph - 4 - ankle_y) / float(ph) - 0.02)
     hem_extend = float(np.clip(hem_extend, 0.04, min(0.14, max_hem)))
-    max_raise = max(0.02, (default_waist_y - int(ph * 0.33)) / float(ph))
-    waist_raise = float(np.clip(waist_raise, 0.02, min(0.10, max_raise)))
+    max_raise = max(0.0, (default_waist_y - int(ph * 0.38)) / float(ph))
+    waist_raise = float(np.clip(waist_raise, 0.0, min(0.04, max_raise if max_raise > 0 else 0.04)))
 
     meta = {
         "adaptive": True,
@@ -3106,6 +3154,7 @@ def _lower_warp_primary_box_extends(
         "hem_extra_px": int(hem_extra_px),
         "box_x0": int(x0),
         "box_x1": int(x1),
+        **body_scale,
     }
     return waist_raise, hem_extend, meta
 
@@ -3141,75 +3190,758 @@ def tryon_pants_warp(
     return out, meta
 
 
+def _clip_pants_layer_to_body_fit(
+    layer_rgba: Image.Image,
+    person_image: Image.Image,
+    *,
+    outer_pad_ratio: float = 1.45,
+    min_keep: float = 0.78,
+) -> tuple[Image.Image, dict]:
+    """Soft-trim fabric floating far outside the lower body (keep baggy coverage).
+
+    ``min_keep`` floors alpha attenuation so baggy legs are not skeleton-cropped
+    back to a thin panel that reveals the original white bottoms.
+    """
+    try:
+        from app.services.body_mask import create_lower_body_polygon_mask
+    except Exception as exc:
+        return layer_rgba, {"applied": False, "reason": f"import:{exc}"}
+
+    kpts = detect_pose_keypoints(person_image)
+    if not kpts:
+        return layer_rgba, {"applied": False, "reason": "no_pose"}
+
+    pw, ph = person_image.size
+    feather = max(6, int(min(pw, ph) * 0.009))
+    mask_u8 = create_lower_body_polygon_mask(
+        kpts,
+        pw,
+        ph,
+        feather_radius=feather,
+        outer_pad_ratio=float(outer_pad_ratio),
+    )
+    if mask_u8 is None or int(mask_u8.max()) < 8:
+        return layer_rgba, {"applied": False, "reason": "empty_body_mask"}
+
+    shift = max(8, int(ph * 0.030))
+    raised = np.zeros_like(mask_u8)
+    raised[:-shift, :] = mask_u8[shift:, :]
+    mask_u8 = np.maximum(mask_u8, raised)
+
+    k = max(7, int(min(pw, ph) * 0.016) | 1)
+    mask_f = cv2.dilate(mask_u8, np.ones((k, k), np.uint8)).astype(np.float32) / 255.0
+    mask_f = cv2.GaussianBlur(mask_f, (0, 0), max(1.6, feather * 0.45))
+    mask_f = np.clip(mask_f, 0.0, 1.0)
+    # Floor attenuation on existing fabric so we only shave far exterior floaters.
+    keep = float(np.clip(min_keep, 0.55, 0.95))
+    arr = np.asarray(layer_rgba.convert("RGBA"), dtype=np.float32)
+    before = float((arr[:, :, 3] > 20).mean())
+    if before < 1e-4:
+        return layer_rgba, {"applied": False, "reason": "empty_layer"}
+    fabric = arr[:, :, 3] > 20
+    atten = np.where(fabric, np.maximum(mask_f, keep), mask_f)
+    arr[:, :, 3] *= atten.astype(np.float32)
+    after = float((arr[:, :, 3] > 20).mean())
+    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), mode="RGBA"), {
+        "applied": True,
+        "before_coverage": round(before, 4),
+        "after_coverage": round(after, 4),
+        "kept_ratio": round(after / max(before, 1e-6), 4),
+        "outer_pad_ratio": round(float(outer_pad_ratio), 3),
+        "min_keep": round(keep, 3),
+    }
+
+
+def _shade_pants_legs_as_cylinders(
+    layer_rgba: Image.Image,
+    person_image: Image.Image,
+    *,
+    left_leg_box: tuple[int, int, int, int],
+    right_leg_box: tuple[int, int, int, int],
+    strength: float = 0.30,
+) -> tuple[Image.Image, dict]:
+    """Add limb-round shading along hip→ankle axes so fabric reads as volume."""
+    arr = np.asarray(layer_rgba.convert("RGBA"), dtype=np.float32)
+    h, w = arr.shape[:2]
+    a = arr[:, :, 3]
+    if float(a.max()) < 20:
+        return layer_rgba, {"applied": False, "reason": "empty"}
+
+    kpts = detect_pose_keypoints(person_image) or {}
+    strength = float(np.clip(strength, 0.0, 0.55))
+    shade = np.ones((h, w), dtype=np.float32)
+    used = 0
+
+    for side, box in (("left", left_leg_box), ("right", right_leg_box)):
+        axis = _image_space_leg_keypoints(kpts, side=side, pw=w, ph=h) if kpts else None
+        x0, y0, x1, y1 = box
+        if axis is None:
+            hip = (0.5 * (x0 + x1), float(y0 + 1))
+            ankle = (0.5 * (x0 + x1), float(y1 - 1))
+        else:
+            hip, ankle, _knee = axis
+            hip = (float(hip[0]), float(max(y0 + 1, hip[1])))
+            ankle = (float(ankle[0]), float(min(y1 - 1, ankle[1])))
+        dx = ankle[0] - hip[0]
+        dy = ankle[1] - hip[1]
+        length = float(math.hypot(dx, dy)) + 1e-3
+        ux, uy = dx / length, dy / length
+        # Perpendicular unit (points outward-ish).
+        px, py = -uy, ux
+        half_w = 0.5 * max(8.0, float(x1 - x0)) * 0.92
+
+        yy, xx = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+        if yy.size == 0:
+            continue
+        relx = xx - hip[0]
+        rely = yy - hip[1]
+        # Distance along axis [0,1] and signed lateral distance.
+        along = (relx * ux + rely * uy) / length
+        lat = (relx * px + rely * py) / half_w
+        valid = (along >= -0.02) & (along <= 1.05) & (np.abs(lat) <= 1.35)
+        # Cylinder: darker near outer edge; avoid bright center ridge (reads as seam).
+        radial = np.clip(np.abs(lat), 0.0, 1.0)
+        local = 1.0 - strength * (radial**1.55)
+        local = np.clip(local, 0.74, 1.0)
+        region = shade[y0:y1, x0:x1]
+        alpha_roi = a[y0:y1, x0:x1] > 30
+        apply = valid & alpha_roi
+        region[apply] = np.minimum(region[apply], local[apply])
+        shade[y0:y1, x0:x1] = region
+        used += int(apply.sum())
+
+    if used <= 0:
+        return layer_rgba, {"applied": False, "reason": "no_leg_pixels"}
+
+    shade = cv2.GaussianBlur(shade, (0, 0), 1.6)
+    arr[:, :, :3] = np.clip(arr[:, :, :3] * shade[..., None], 0.0, 255.0)
+    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), mode="RGBA"), {
+        "applied": True,
+        "touched_px": int(used),
+        "strength": round(strength, 4),
+        "mean_shade": round(float(shade[a > 30].mean()) if (a > 30).any() else 1.0, 4),
+    }
+
+
+def _fill_pants_inner_leg_seam(
+    layer_rgba: Image.Image,
+    *,
+    left_leg_box: tuple[int, int, int, int],
+    right_leg_box: tuple[int, int, int, int],
+) -> tuple[Image.Image, dict]:
+    """Fill L/R inseam holes and heal bright RGB seams baked into opaque fabric.
+
+    Two failure modes on dark pants:
+    1) Alpha gap between independently warped legs (person/white bg flashes through).
+    2) Legs already overlap in alpha, but product white-bg edges were warped in as
+       opaque bright pixels — reads as a vertical white split down the crotch.
+    """
+    arr = np.asarray(layer_rgba.convert("RGBA"), dtype=np.float32)
+    h, w = arr.shape[:2]
+    a = arr[:, :, 3]
+    if float(a.max()) < 20:
+        return layer_rgba, {"applied": False, "reason": "empty"}
+
+    y0 = min(left_leg_box[1], right_leg_box[1])
+    y1 = max(left_leg_box[3], right_leg_box[3])
+    # Focus on crotch→mid-calf where the inseam gap is visible.
+    leg_h = max(8, y1 - y0)
+    y0 = _clamp_int(y0 + int(leg_h * 0.08), 0, h - 2)
+    y1 = _clamp_int(y0 + int(leg_h * 0.72), y0 + 2, h)
+    cx = int(
+        0.5
+        * (0.5 * (left_leg_box[0] + left_leg_box[2]) + 0.5 * (right_leg_box[0] + right_leg_box[2]))
+    )
+    cx = _clamp_int(cx, 2, w - 3)
+    max_gap = max(14, int(w * 0.09))
+    solid_thr = 120.0  # treat soft feather edges as gaps too
+
+    fabric = a > 40
+    if fabric.any():
+        fill_rgb = np.median(arr[fabric][:, :3], axis=0).astype(np.float32)
+    else:
+        fill_rgb = np.array([60.0, 45.0, 35.0], dtype=np.float32)
+
+    filled_px = 0
+    gaps = 0
+    for y in range(y0, y1):
+        row = a[y]
+        left_xs = np.where(row[:cx] > solid_thr)[0]
+        right_xs = np.where(row[cx:] > solid_thr)[0]
+        if left_xs.size == 0 or right_xs.size == 0:
+            continue
+        lx = int(left_xs[-1])
+        rx = int(cx + right_xs[0])
+        gap = rx - lx - 1
+        if gap < 1 or gap > max_gap:
+            continue
+        # Prefer nearby fabric colors over global median.
+        left_col = arr[y, max(0, lx - 2) : lx + 1, :3]
+        right_col = arr[y, rx : min(w, rx + 3), :3]
+        left_a = row[max(0, lx - 2) : lx + 1] > solid_thr
+        right_a = row[rx : min(w, rx + 3)] > solid_thr
+        l_rgb = left_col[left_a].mean(axis=0) if left_a.any() else fill_rgb
+        r_rgb = right_col[right_a].mean(axis=0) if right_a.any() else fill_rgb
+        for x in range(lx + 1, rx):
+            t = (x - lx) / float(max(1, rx - lx))
+            arr[y, x, :3] = (1.0 - t) * l_rgb + t * r_rgb
+            arr[y, x, 3] = 255.0
+            filled_px += 1
+        gaps += 1
+
+    # Horizontal morphological close to catch residual hairline seams.
+    a2 = arr[:, :, 3]
+    solid = (a2 > solid_thr).astype(np.uint8) * 255
+    kx = max(9, (max_gap // 2) | 1)
+    closed = cv2.morphologyEx(solid, cv2.MORPH_CLOSE, np.ones((1, kx), np.uint8))
+    new_fill = (closed > 127) & (a2 <= solid_thr)
+    # Restrict to center band between legs.
+    x_band0 = _clamp_int(cx - max_gap, 0, w - 1)
+    x_band1 = _clamp_int(cx + max_gap, x_band0 + 1, w)
+    band = np.zeros((h, w), dtype=bool)
+    band[y0:y1, x_band0:x_band1] = True
+    new_fill &= band
+    if new_fill.any():
+        # Inpaint RGB from nearby opaque fabric.
+        premul = arr[:, :, :3] * (a2 > solid_thr)[..., None]
+        blur_rgb = cv2.GaussianBlur(premul, (0, 0), 2.0)
+        blur_w = cv2.GaussianBlur((a2 > solid_thr).astype(np.float32), (0, 0), 2.0)
+        safe = blur_rgb / np.maximum(blur_w[..., None], 1e-3)
+        safe = np.where(blur_w[..., None] > 0.05, safe, fill_rgb)
+        arr[new_fill, :3] = safe[new_fill]
+        arr[new_fill, 3] = 255.0
+        filled_px += int(new_fill.sum())
+
+    # Heal opaque bright RGB ridges (product white-bg baked into the join).
+    healed_bright = 0
+    lum = arr[:, :, :3].mean(axis=2)
+    heal_half = max(8, int(max_gap * 0.55))
+    hx0 = _clamp_int(cx - heal_half, 0, w - 1)
+    hx1 = _clamp_int(cx + heal_half, hx0 + 1, w)
+    for y in range(y0, y1):
+        row_a = arr[y, :, 3]
+        row_lum = lum[y]
+        band_solid = row_a[x_band0:x_band1] > solid_thr
+        if int(band_solid.sum()) < 8:
+            continue
+        band_lum = row_lum[x_band0:x_band1][band_solid]
+        fabric_ref = float(np.percentile(band_lum, 35))
+        # Dark pants: anything much brighter than fabric in the inseam band is a seam artifact.
+        bright_cut = max(fabric_ref + 32.0, 78.0)
+        bright_xs: list[int] = []
+        for x in range(hx0, hx1):
+            if row_a[x] <= solid_thr:
+                continue
+            if float(row_lum[x]) < bright_cut:
+                continue
+            left_min = float(row_lum[max(hx0, x - 4) : x].min()) if x > hx0 else float(row_lum[x])
+            right_min = (
+                float(row_lum[x + 1 : min(hx1, x + 5)].min()) if x + 1 < hx1 else float(row_lum[x])
+            )
+            is_peak = float(row_lum[x]) >= min(left_min, right_min) + 16.0
+            is_hot = float(row_lum[x]) >= fabric_ref + 50.0
+            if is_peak or is_hot:
+                bright_xs.append(x)
+        if not bright_xs:
+            continue
+        # Dilate 1px so soft halo around the white hairline is included.
+        heal_set = set()
+        for x in bright_xs:
+            for dx in (-1, 0, 1):
+                xx = x + dx
+                if hx0 <= xx < hx1 and row_a[xx] > solid_thr:
+                    heal_set.add(xx)
+        safe_xs = [
+            x
+            for x in range(x_band0, x_band1)
+            if row_a[x] > solid_thr and x not in heal_set and float(row_lum[x]) < bright_cut
+        ]
+        if len(safe_xs) < 2:
+            continue
+        safe_arr = np.asarray(safe_xs, dtype=np.int32)
+        for x in sorted(heal_set):
+            left_candidates = safe_arr[safe_arr < x]
+            right_candidates = safe_arr[safe_arr > x]
+            if left_candidates.size == 0 and right_candidates.size == 0:
+                arr[y, x, :3] = fill_rgb
+            elif left_candidates.size == 0:
+                arr[y, x, :3] = arr[y, int(right_candidates[0]), :3]
+            elif right_candidates.size == 0:
+                arr[y, x, :3] = arr[y, int(left_candidates[-1]), :3]
+            else:
+                lx = int(left_candidates[-1])
+                rx = int(right_candidates[0])
+                t = (x - lx) / float(max(1, rx - lx))
+                arr[y, x, :3] = (1.0 - t) * arr[y, lx, :3] + t * arr[y, rx, :3]
+            arr[y, x, 3] = 255.0
+            healed_bright += 1
+            filled_px += 1
+
+    # Soft color bridge so independently warped L/R panels don't read as two shades.
+    if healed_bright > 0 or gaps > 0:
+        a2 = arr[:, :, 3]
+        n0 = _clamp_int(cx - max(4, max_gap // 4), 0, w - 1)
+        n1 = _clamp_int(cx + max(4, max_gap // 4), n0 + 1, w)
+        narrow = np.zeros((h, w), dtype=bool)
+        narrow[y0:y1, n0:n1] = True
+        mix = narrow & (a2 > solid_thr)
+        if mix.any():
+            rgb_blur = cv2.GaussianBlur(arr[:, :, :3], (0, 0), 1.15)
+            arr[mix, :3] = 0.62 * arr[mix, :3] + 0.38 * rgb_blur[mix]
+
+    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), mode="RGBA"), {
+        "applied": filled_px > 0,
+        "filled_px": int(filled_px),
+        "gap_rows": int(gaps),
+        "healed_bright_px": int(healed_bright),
+        "cx": int(cx),
+        "max_gap": int(max_gap),
+    }
+
+
+def _add_pants_crotch_crease(
+    layer_rgba: Image.Image,
+    *,
+    left_leg_box: tuple[int, int, int, int],
+    right_leg_box: tuple[int, int, int, int],
+) -> tuple[Image.Image, dict]:
+    """Darken a soft crotch crease so fused legs read as pants, not one panel.
+
+    Keeps full occlusion (no holes that flash the tank / original bottoms).
+    """
+    arr = np.asarray(layer_rgba.convert("RGBA"), dtype=np.float32)
+    h, w = arr.shape[:2]
+    a = arr[:, :, 3]
+    if float(a.max()) < 20:
+        return layer_rgba, {"applied": False, "reason": "empty"}
+
+    y_top = min(left_leg_box[1], right_leg_box[1])
+    y_bot = min(left_leg_box[3], right_leg_box[3])
+    leg_h = max(8, y_bot - y_top)
+    y0 = _clamp_int(y_top + int(leg_h * 0.10), 0, h - 2)
+    y1 = _clamp_int(y_top + int(leg_h * 0.42), y0 + 4, h - 1)
+    cx = int(
+        0.5
+        * (0.5 * (left_leg_box[0] + left_leg_box[2]) + 0.5 * (right_leg_box[0] + right_leg_box[2]))
+    )
+    cx = _clamp_int(cx, 1, w - 2)
+    half0 = max(4, int(0.018 * w))
+
+    yy = np.arange(y0, y1, dtype=np.int32)
+    t = (yy - y0).astype(np.float32) / float(max(1, y1 - y0))
+    half = half0 * (1.15 - 0.55 * t)
+    touched = 0
+    for i, y in enumerate(yy.tolist()):
+        hw = float(half[i])
+        x_l = _clamp_int(int(cx - hw * 2.2), 0, w - 1)
+        x_r = _clamp_int(int(cx + hw * 2.2), x_l + 1, w)
+        xs = np.arange(x_l, x_r, dtype=np.float32)
+        dist = np.abs(xs - float(cx)) / max(hw, 1.0)
+        weight = np.clip(1.0 - dist, 0.0, 1.0) ** 1.35
+        weight *= float(0.85 - 0.35 * t[i])
+        mask = (a[y, x_l:x_r] > 40).astype(np.float32) * weight
+        if float(mask.max()) <= 0:
+            continue
+        arr[y, x_l:x_r, :3] *= (1.0 - 0.28 * mask)[..., None]
+        touched += int((mask > 0.05).sum())
+
+    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), mode="RGBA"), {
+        "applied": touched > 0,
+        "touched_px": int(touched),
+        "y0": int(y0),
+        "y1": int(y1),
+        "cx": int(cx),
+    }
+
+
+def _harden_pants_warp_alpha(layer_rgba: Image.Image) -> tuple[Image.Image, dict]:
+    """Make pants core fully opaque; keep a thin soft silhouette only.
+
+    Soft/feathered alpha was letting the original white pants show through the
+    brown warp — the main 'ghost / sticker' failure mode.
+    """
+    arr = np.asarray(layer_rgba.convert("RGBA"), dtype=np.float32)
+    a = np.clip(arr[:, :, 3] / 255.0, 0.0, 1.0)
+    if float(a.max()) < 0.02:
+        return layer_rgba.convert("RGBA"), {"applied": False, "reason": "empty"}
+
+    solid = (a > 0.20).astype(np.uint8) * 255
+    # Tiny close only — large kernels fuse L/R legs into one flat panel.
+    solid = cv2.morphologyEx(solid, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    core = (solid > 127).astype(np.float32)
+
+    # Fill only pin-hole gaps (<<1% of frame), never the crotch span.
+    need_fill = (core > 0.5) & (a < 0.18)
+    filled = 0.0
+    if need_fill.any() and float(need_fill.mean()) < 0.008:
+        src = arr[a > 0.35][:, :3] if (a > 0.35).any() else arr[a > 0.1][:, :3]
+        fill_rgb = (
+            np.median(src, axis=0).astype(np.float32)
+            if src.size
+            else np.array([60.0, 45.0, 35.0], dtype=np.float32)
+        )
+        arr[need_fill, :3] = fill_rgb
+        filled = float(need_fill.mean())
+    else:
+        need_fill = np.zeros(a.shape, dtype=bool)
+
+    # Soft falloff only near silhouette (2–4px), core stays opaque.
+    dist = cv2.distanceTransform((core > 0.5).astype(np.uint8), cv2.DIST_L2, 3)
+    edge_w = max(2.0, min(arr.shape[:2]) * 0.0045)
+    a_hard = np.clip(dist / edge_w, 0.0, 1.0)
+    a_hard = np.maximum(a_hard, np.where(a > 0.55, 1.0, 0.0))
+    a_hard = cv2.GaussianBlur(a_hard, (0, 0), 0.8)
+    a_hard = np.clip(a_hard, 0.0, 1.0)
+
+    # Kill white/bright fringe RGB on semi-transparent edges (halo on person).
+    opaque = a_hard > 0.85
+    if opaque.any():
+        fill_rgb = np.median(arr[opaque][:, :3], axis=0).astype(np.float32)
+        fringe = (a_hard > 0.02) & (a_hard < 0.85)
+        # Also replace edge pixels that are much brighter than fabric core.
+        lum = arr[:, :, :3].mean(axis=2)
+        core_lum = float(arr[opaque][:, :3].mean())
+        bright_edge = fringe & (lum > core_lum + 28.0)
+        replace = fringe | bright_edge
+        if replace.any():
+            # Pull RGB from nearest opaque via blur of premultiplied core.
+            premul = arr[:, :, :3] * opaque[..., None]
+            blur_rgb = cv2.GaussianBlur(premul, (0, 0), 2.5)
+            blur_w = cv2.GaussianBlur(opaque.astype(np.float32), (0, 0), 2.5)
+            safe = blur_rgb / np.maximum(blur_w[..., None], 1e-3)
+            safe = np.where(blur_w[..., None] > 0.05, safe, fill_rgb)
+            arr[replace, :3] = safe[replace]
+
+    arr[:, :, 3] = a_hard * 255.0
+    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), mode="RGBA"), {
+        "applied": True,
+        "core_coverage": round(float((a_hard > 0.9).mean()), 4),
+        "filled_holes": round(float(filled), 4),
+        "edge_w_px": round(float(edge_w), 2),
+    }
+
+
+def _apply_lower_detail_only_shading(
+    layer_np: np.ndarray,
+    ai_rgb: np.ndarray,
+    blend_mask: np.ndarray,
+    *,
+    shading_strength: float = 0.35,
+) -> tuple[np.ndarray, dict]:
+    """Apply CatVTON high-pass wrinkles only — no low-frequency brightness wash."""
+    if layer_np.ndim != 3 or layer_np.shape[2] < 4:
+        return layer_np, {"reason": "missing_rgba"}
+    h, w = layer_np.shape[:2]
+    if ai_rgb.shape[:2] != (h, w):
+        ai_rgb = np.asarray(
+            Image.fromarray(ai_rgb.astype(np.uint8), mode="RGB").resize(
+                (w, h), Image.Resampling.BILINEAR
+            ),
+            dtype=np.float32,
+        )
+    layer_rgb = layer_np[:, :, :3].astype(np.float32)
+    alpha = np.clip(layer_np[:, :, 3].astype(np.float32) / 255.0, 0.0, 1.0)
+    mask = np.clip(blend_mask.astype(np.float32), 0.0, 1.0) * (alpha > 0.02).astype(np.float32)
+    if mask.max() < 0.01:
+        return layer_np, {"reason": "mask_too_small"}
+
+    ai_gray = cv2.cvtColor(ai_rgb.astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32)
+    kernel = max(15, int(min(w, h) * 0.06))
+    if kernel % 2 == 0:
+        kernel += 1
+    ai_low = cv2.GaussianBlur(ai_gray, (kernel, kernel), 0)
+    ai_detail = ai_gray - ai_low
+    detail_gain = np.clip(ai_detail / 255.0, -0.14, 0.14)
+    shade_strength = float(np.clip(shading_strength, 0.0, 1.0))
+    shading = 1.0 + detail_gain * (0.90 * shade_strength)
+    shaded_rgb = np.clip(layer_rgb * shading[:, :, None], 0.0, 255.0)
+    mixed_rgb = layer_rgb * (1.0 - mask[:, :, None]) + shaded_rgb * mask[:, :, None]
+    out = layer_np.copy()
+    out[:, :, :3] = np.clip(mixed_rgb, 0.0, 255.0).astype(np.uint8)
+    return out, {
+        "mode": "detail_only",
+        "kernel": kernel,
+        "mask_coverage": round(float((mask > 0.08).mean()), 4),
+        "detail_gain_mean": round(float(detail_gain[mask > 0.08].mean()), 4),
+        "shading_strength": round(float(shade_strength), 4),
+    }
+
+
+def _ai_lower_detail_shading_strength(
+    ai_result: Image.Image,
+    person_image: Image.Image,
+    *,
+    raw_decision: str | None = None,
+) -> tuple[float, dict]:
+    """How strongly to borrow CatVTON fold/shadow detail onto warp (0 = skip).
+
+    Wrong-color / blob CatVTON can still contribute high-pass wrinkles. Absolute
+    LAB L borrow is unsafe for those; ratio/detail shading is OK at low strength.
+    """
+    w, h = person_image.size
+    ai = np.asarray(ai_result.convert("RGB").resize((w, h), Image.Resampling.BILINEAR), np.float32)
+    person = np.asarray(person_image.convert("RGB"), np.float32)
+    diff = np.abs(ai - person).mean(axis=2)
+    region = diff > 12.0
+    if float(region.mean()) < 0.03:
+        return 0.0, {"reason": "no_ai_region", "strength": 0.0}
+
+    gray = cv2.cvtColor(ai.astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32)
+    low = cv2.GaussianBlur(gray, (0, 0), 8.0)
+    detail = gray - low
+    dstd = float(detail[region].std()) if region.any() else 0.0
+    gstd = float(gray[region].std()) if region.any() else 0.0
+    decision = (raw_decision or "").strip()
+    if dstd < 3.5 and gstd < 10.0:
+        return 0.0, {"reason": "flat_ai", "detail_std": round(dstd, 2), "strength": 0.0}
+    if decision in {"raw", "artifact_only"}:
+        strength = 0.72 if dstd >= 6.0 else 0.48
+    elif decision == "color_only":
+        strength = 0.40 if dstd >= 5.0 else 0.28
+    elif decision == "strong_spatial":
+        # Blob / wrong panel: only keep mild wrinkle hint if detail exists.
+        strength = 0.26 if dstd >= 6.5 else 0.0
+    else:
+        strength = 0.34 if dstd >= 5.0 else 0.18
+    return float(strength), {
+        "reason": "ok",
+        "detail_std": round(dstd, 2),
+        "gray_std": round(gstd, 2),
+        "decision": decision or "unknown",
+        "strength": round(float(strength), 4),
+    }
+
+
+def blend_lower_ai_lighting_onto_warp(
+    warp_result: Image.Image,
+    ai_result: Image.Image,
+    person_image: Image.Image,
+    *,
+    lighting_strength: float = 0.42,
+    garment_mask: Image.Image | np.ndarray | None = None,
+) -> tuple[Image.Image, dict]:
+    """Borrow CatVTON wrinkles/shadows (LAB L only); keep warp garment color/chroma.
+
+    Used by lower_warp_primary after a gated CatVTON call. Does not replace
+    warp RGB with AI RGB, so dark browns and product texture stay from warp.
+    """
+    warp_rgb = np.asarray(warp_result.convert("RGB"), dtype=np.float32)
+    person_rgb = np.asarray(person_image.convert("RGB"), dtype=np.float32)
+    h, w = warp_rgb.shape[:2]
+    ai_resized = ai_result.convert("RGB").resize((w, h), Image.Resampling.LANCZOS)
+    ai_rgb = np.asarray(ai_resized, dtype=np.float32)
+
+    if garment_mask is not None:
+        if isinstance(garment_mask, Image.Image):
+            m = np.asarray(garment_mask.convert("L").resize((w, h), Image.NEAREST), np.float32)
+            mask = np.clip(m / 255.0, 0.0, 1.0)
+        else:
+            m = np.asarray(garment_mask, dtype=np.float32)
+            if m.ndim == 3:
+                m = m.mean(axis=2)
+            if m.shape != (h, w):
+                m = np.asarray(
+                    Image.fromarray((np.clip(m, 0, 1) * 255).astype(np.uint8), mode="L").resize(
+                        (w, h), Image.NEAREST
+                    ),
+                    np.float32,
+                )
+            mask = np.clip(m / (255.0 if m.max() > 1.5 else 1.0), 0.0, 1.0)
+    else:
+        # Estimate pants region: where warp differs from the original person.
+        diff = np.abs(warp_rgb - person_rgb).mean(axis=2)
+        mask = (diff > 14.0).astype(np.float32)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+        mask = cv2.GaussianBlur(mask, (0, 0), 2.0)
+        mask = np.clip(mask, 0.0, 1.0)
+
+    if float(mask.mean()) < 0.01:
+        return warp_result.convert("RGB"), {"applied": False, "reason": "empty_mask"}
+
+    warp_lab = cv2.cvtColor(warp_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float32)
+    ai_lab = cv2.cvtColor(ai_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float32)
+
+    strength = float(np.clip(lighting_strength, 0.0, 0.65))
+    # Keep very dark fabric from being washed out by bright AI L.
+    dark_keep = np.clip(warp_lab[:, :, 0:1] / 60.0, 0.30, 1.0)
+    mix = (strength * dark_keep * mask[..., None]).astype(np.float32)
+    out_lab = warp_lab.copy()
+    out_lab[:, :, 0:1] = warp_lab[:, :, 0:1] * (1.0 - mix) + ai_lab[:, :, 0:1] * mix
+    # Tiny chroma nudge from AI for fold edges only (still mostly warp color).
+    edge = (
+        cv2.morphologyEx(
+            (mask > 0.35).astype(np.uint8) * 255,
+            cv2.MORPH_GRADIENT,
+            np.ones((5, 5), np.uint8),
+        ).astype(np.float32)
+        / 255.0
+    )
+    edge = cv2.GaussianBlur(edge, (0, 0), 1.8)
+    ab_mix = (0.12 * strength * edge * mask)[..., None]
+    out_lab[:, :, 1:3] = warp_lab[:, :, 1:3] * (1.0 - ab_mix) + ai_lab[:, :, 1:3] * ab_mix
+
+    out_rgb = cv2.cvtColor(np.clip(out_lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
+    return Image.fromarray(out_rgb, mode="RGB"), {
+        "applied": True,
+        "lighting_strength": round(strength, 4),
+        "mask_coverage": round(float(mask.mean()), 4),
+        "mean_mix": round(float(mix.mean()), 4),
+        "method": "lab_l_from_catvton_ab_from_warp",
+    }
+
+
 def _composite_lower_warp_as_worn(
     person_image: Image.Image,
     layer_rgba: Image.Image,
     *,
-    drape_alpha: float = 0.34,
+    drape_alpha: float = 0.22,
     ankle_y: int | None = None,
 ) -> tuple[Image.Image, dict]:
-    """Composite pants layer so it reads as worn fabric, not a hard sticker.
+    """Composite pants layer as worn fabric: opaque cover + body shading + shoe keep.
 
-    - Transfer body luminance into garment (LAB L) while keeping garment color
-    - Soften alpha edges and cross-fade into the person photo
-    - Restore shoes/feet below the pant hem (person wins occlusion)
+    Critical: garment core must fully occlude the person's original bottoms.
+    Softness is limited to a thin silhouette ring (not translucent wash).
     """
     person_rgb = np.asarray(person_image.convert("RGB"), dtype=np.float32)
     layer = np.asarray(layer_rgba.convert("RGBA"), dtype=np.float32)
     h, w = person_rgb.shape[:2]
-    alpha = np.clip(layer[:, :, 3:4] / 255.0, 0.0, 1.0)
+    alpha = np.clip(layer[:, :, 3] / 255.0, 0.0, 1.0)
     if float(alpha.mean()) <= 1e-6:
         return person_image.convert("RGB"), {"applied": False, "reason": "empty_layer"}
 
-    # Soften hard cutout edges (sticker halo).
-    a2d = alpha[:, :, 0]
-    a_blur = cv2.GaussianBlur(a2d, (0, 0), sigmaX=max(1.2, min(w, h) * 0.0035))
-    a_soft = np.clip(np.minimum(a2d, a_blur * 1.05), 0.0, 1.0)
+    # Opaque core with thin AA edge only.
+    a_soft = cv2.GaussianBlur(alpha, (0, 0), sigmaX=max(0.6, min(w, h) * 0.0018))
+    a_soft = np.clip(np.maximum(alpha, a_soft), 0.0, 1.0)
+    a_soft = np.where(a_soft > 0.22, np.clip(0.55 + 0.55 * a_soft, 0.0, 1.0), a_soft)
+    a_soft = np.clip(a_soft, 0.0, 1.0)
 
     # Body luminance transfer in LAB (keeps brown/chroma, borrows person shading).
     person_lab = cv2.cvtColor(person_rgb.astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float32)
     gar_lab = cv2.cvtColor(
         np.clip(layer[:, :, :3], 0, 255).astype(np.uint8), cv2.COLOR_RGB2LAB
     ).astype(np.float32)
-    strength = float(np.clip(drape_alpha, 0.0, 0.55))
-    # Preserve very dark garment L so browns stay brown.
+    strength = float(np.clip(drape_alpha, 0.0, 0.45))
     gar_l = gar_lab[:, :, 0:1]
-    dark_keep = np.clip(gar_l / 55.0, 0.25, 1.0)
-    mix_l = strength * dark_keep
-    gar_lab[:, :, 0:1] = gar_l * (1.0 - mix_l) + person_lab[:, :, 0:1] * mix_l
+    person_l = person_lab[:, :, 0:1]
+    dark_keep = np.clip(gar_l / 55.0, 0.20, 1.0)
+    # Never lift dark fabric toward bright original bottoms (white pants wash).
+    # Prefer person shadows / midtones that read as body form.
+    person_ok = (person_l < gar_l + 18.0) & (person_l < 150.0)
+    mix_l = strength * dark_keep * person_ok.astype(np.float32)
+    gar_lab[:, :, 0:1] = gar_l * (1.0 - mix_l) + person_l * mix_l
     worn_rgb = cv2.cvtColor(np.clip(gar_lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB).astype(
         np.float32
     )
 
-    # Limb roundness near garment silhouette.
+    # Stronger limb roundness on silhouette (volume cue vs sticker).
     edge = (
         cv2.morphologyEx(
-            (a_soft > 0.30).astype(np.uint8) * 255,
+            (a_soft > 0.45).astype(np.uint8) * 255,
             cv2.MORPH_GRADIENT,
             np.ones((7, 7), np.uint8),
         ).astype(np.float32)
         / 255.0
     )
-    edge = cv2.GaussianBlur(edge, (0, 0), 3.0)
-    worn_rgb = worn_rgb * (1.0 - 0.22 * edge[..., None])
+    edge = cv2.GaussianBlur(edge, (0, 0), 2.4)
+    worn_rgb = worn_rgb * (1.0 - 0.20 * edge[..., None])
 
-    # Edge cross-fade into person (kills cardboard cutout look).
-    ring = np.clip((a_soft > 0.04).astype(np.float32) * (a_soft < 0.92).astype(np.float32), 0, 1)
-    ring = cv2.GaussianBlur(ring, (0, 0), 2.0)
-    edge_mix = (0.35 * ring * (1.0 - a_soft))[..., None]
-    base = person_rgb * (1.0 - a_soft[..., None]) + worn_rgb * a_soft[..., None]
-    out = base * (1.0 - edge_mix) + person_rgb * edge_mix
+    # Contact AO under waist / hip where fabric meets torso.
+    ys = np.where(a_soft.max(axis=1) > 0.35)[0]
+    if ys.size:
+        y_top = int(ys[0])
+        ao_h = max(6, int(h * 0.028))
+        y1 = min(h, y_top + ao_h)
+        ao = np.linspace(0.16, 0.0, y1 - y_top, dtype=np.float32)[:, None]
+        worn_rgb[y_top:y1] *= 1.0 - (ao * (a_soft[y_top:y1] > 0.25))[..., None]
+
+    # Full occlusion composite — no person bleed through fabric core.
+    out = person_rgb * (1.0 - a_soft[..., None]) + worn_rgb * a_soft[..., None]
+
+    # Tiny outer-ring AA into person (anti-alias only, not translucency).
+    ring = np.clip((a_soft > 0.02).astype(np.float32) * (a_soft < 0.55).astype(np.float32), 0, 1)
+    ring = cv2.GaussianBlur(ring, (0, 0), 1.2)
+    edge_mix = (0.12 * ring * (1.0 - a_soft))[..., None]
+    out = out * (1.0 - edge_mix) + person_rgb * edge_mix
+
+    # Soft curved waist tuck into the tank only.
+    # Never anchor this fade at the hips: that punched a bright horizontal band
+    # where the person's original white bottoms showed through mid-pants.
+    guides = _estimate_lower_structure_guides(person_image)
+    left_hip = guides.get("left_hip")
+    right_hip = guides.get("right_hip")
+    waist_curve_used = False
+    if ys.size and left_hip is not None and right_hip is not None:
+        fabric_top = int(ys[0])
+        waist_y = int(guides.get("waist_y", fabric_top))
+        # Tuck at fabric top / natural waist — well above the hip line.
+        tuck_y = int(min(waist_y, fabric_top + max(3, int(h * 0.008))))
+        hip_y = float(min(left_hip[1], right_hip[1]))
+        lift = max(6, int(hip_y - tuck_y))
+        waist_pts = [
+            (left_hip[0], int(left_hip[1] - lift)),
+            (right_hip[0], int(right_hip[1] - lift)),
+            (
+                (left_hip[0] + right_hip[0]) // 2,
+                int(round(tuck_y - h * 0.003)),
+            ),
+        ]
+        curve = _interpolate_body_curve(w, waist_pts, default_y=tuck_y)
+        fade_h = max(4, int(h * 0.011))
+        yy = np.arange(h, dtype=np.float32)[:, None]
+        above = np.clip((curve[None, :] - yy) / float(fade_h), 0.0, 1.0)
+        # Thin band at/above the tuck only — never into the pants body.
+        top_band = (yy >= (curve[None, :] - fade_h)) & (yy <= curve[None, :])
+        # Block tuck where original bottoms are bright (white-pants flash).
+        person_l = person_rgb.mean(axis=2)
+        safe = (person_l < 150.0).astype(np.float32)
+        safe = cv2.GaussianBlur(safe, (0, 0), 1.2)
+        a_waist = a_soft * (1.0 - above * 0.65 * safe)
+        a_use = np.where(top_band, a_waist, a_soft).astype(np.float32)
+        out = person_rgb * (1.0 - a_use[..., None]) + worn_rgb * a_use[..., None]
+        out = out * (1.0 - edge_mix) + person_rgb * edge_mix
+        waist_curve_used = True
+    elif ys.size:
+        y_top = int(ys[0])
+        fade_h = max(4, int(h * 0.010))
+        y1 = min(h, y_top + fade_h)
+        person_l = person_rgb[y_top:y1].mean(axis=2)
+        safe = (person_l < 150.0).astype(np.float32)
+        ramp = np.linspace(0.35, 1.0, y1 - y_top, dtype=np.float32)[:, None]
+        # Only soft-edge the top into dark/tank pixels; keep coverage on bright bottoms.
+        a_top = a_soft[y_top:y1] * (1.0 - (1.0 - ramp) * safe)
+        out[y_top:y1] = (
+            person_rgb[y_top:y1] * (1.0 - a_top[..., None]) + worn_rgb[y_top:y1] * a_top[..., None]
+        )
+
+    # Hands / arms in front of baggy pants: restore person skin-like sides.
+    # Conservative: only where person is skin-tone and outside central torso column.
+    hsv = cv2.cvtColor(person_rgb.astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
+    skin = (
+        ((hsv[:, :, 0] < 25) | (hsv[:, :, 0] > 160))
+        & (hsv[:, :, 1] > 20)
+        & (hsv[:, :, 1] < 180)
+        & (hsv[:, :, 2] > 60)
+        & (hsv[:, :, 2] < 245)
+    ).astype(np.float32)
+    cx0, cx1 = int(w * 0.34), int(w * 0.66)
+    side = np.ones((h, w), dtype=np.float32)
+    side[:, cx0:cx1] = 0.0
+    y_hand0, y_hand1 = int(h * 0.38), int(h * 0.62)
+    hand_band = np.zeros((h, w), dtype=np.float32)
+    hand_band[y_hand0:y_hand1, :] = 1.0
+    hand_w = cv2.GaussianBlur(skin * side * hand_band, (0, 0), 1.8)[..., None]
+    hand_w = np.clip(hand_w * np.clip(a_soft[..., None], 0, 1), 0, 1) * 0.92
+    out = out * (1.0 - hand_w) + person_rgb * hand_w
 
     # Shoe / foot occlusion: keep original person in the hem-foot band.
     ay = int(ankle_y) if ankle_y is not None else int(h * 0.82)
     ay = _clamp_int(ay, int(h * 0.55), h - 2)
     foot = np.zeros((h, w), dtype=np.float32)
     foot[ay:, :] = 1.0
-    # Only restore where person is brighter/shoelike or outside strong garment core.
-    person_l = person_rgb.mean(axis=2)
-    shoeish = ((person_l > 140) | (person_l < 70)).astype(np.float32)
-    foot_w = cv2.GaussianBlur(foot * shoeish, (0, 0), 2.5)[..., None]
-    foot_w = np.clip(foot_w * (1.0 - np.clip(a_soft - 0.55, 0, 1)[..., None] * 0.5), 0, 1)
+    person_gray = person_rgb.mean(axis=2)
+    shoeish = ((person_gray > 145) | (person_gray < 65)).astype(np.float32)
+    foot_w = cv2.GaussianBlur(foot * shoeish, (0, 0), 2.0)[..., None]
+    foot_w = np.clip(foot_w * (1.0 - np.clip(a_soft - 0.75, 0, 1)[..., None]), 0, 1)
     out = out * (1.0 - foot_w) + person_rgb * foot_w
 
     result = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), mode="RGB")
@@ -3218,7 +3950,10 @@ def _composite_lower_warp_as_worn(
         "drape_alpha": round(strength, 4),
         "ankle_y": int(ay),
         "mean_alpha": round(float(a_soft.mean()), 4),
+        "opaque_core": round(float((a_soft > 0.9).mean()), 4),
         "edge_mix_mean": round(float(edge_mix.mean()), 4),
+        "hand_restore_mean": round(float(hand_w.mean()), 4),
+        "waist_curve": bool(waist_curve_used),
     }
 
 
@@ -3226,13 +3961,15 @@ def tryon_lower_warp_primary(
     person_image: Image.Image,
     garment_image: Image.Image,
     *,
-    drape_alpha: float = 0.34,
+    drape_alpha: float = 0.22,
+    ai_result: Image.Image | None = None,
+    ai_raw_decision: str | None = None,
     debug_session_dir: str | None = None,
 ) -> tuple[Image.Image, dict]:
-    """Lower-only try-on: pose-axis leg warp + worn-body composite (no CatVTON).
+    """Lower-only try-on: pose-axis leg warp + opaque wear composite.
 
-    Does NOT use knee-split tiles. Legs follow hip→ankle bone axes, then a wear
-    composite blends shading/edges into the person so pants read as worn fabric.
+    Optional ``ai_result`` contributes CatVTON fold/shadow detail via luminance
+    ratio shading (warp color always wins). Does NOT use knee-split tiles.
     Upper CatVTON path unchanged.
     """
     try:
@@ -3245,24 +3982,106 @@ def tryon_lower_warp_primary(
             hem_extend,
             box_ext_meta,
         )
+        # Keep the continuous-waist coverage modest so the garment stays at the
+        # natural waist, not the chest. The actual scaling is adapted to input
+        # person proportions, so slim/average/wider builds each get a sensible
+        # garment width without fixed presets.
+        width_scale = float(box_ext_meta.get("width_scale", 1.0))
+        height_scale = float(box_ext_meta.get("height_scale", 1.0))
+        width_expand_ratio = float(np.clip(0.025 + (width_scale - 1.0) * 0.08, 0.02, 0.10))
+        leg_half_width_ratio = float(np.clip(0.48 + (width_scale - 1.0) * 0.12, 0.44, 0.60))
+        top_extend = float(
+            np.clip(waist_raise + 0.025 + max(0.0, height_scale - 1.0) * 0.02, 0.02, 0.065)
+        )
         layer, warp_meta = _build_pants_warp_layer(
             person_image=person_image,
             garment_image=garment_image,
-            alpha_feather_ratio=0.008 if pattern_strength >= 0.55 else 0.011,
-            # Continuous whole-leg warp — knee-split creates visible 2x2 tiles.
+            alpha_feather_ratio=0.0035 if pattern_strength >= 0.55 else 0.0050,
             use_knee_split=False,
-            include_waistband=not denim_like,
+            include_waistband=False,
+            top_extend_ratio=top_extend,
             bottom_extend_ratio=hem_extend,
-            waist_raise_ratio=waist_raise,
-            # Body-curve trim would erase the raised high-waist coverage.
+            waist_raise_ratio=0.0,
             skip_waistband_trim=True,
-            # Keep wide-leg product width; do not skeleton-crop.
-            width_expand_ratio=0.09,
-            leg_taper_scale=0.45,
-            # Follow each leg bone so the result looks worn, not pasted.
+            width_expand_ratio=width_expand_ratio,
+            leg_taper_scale=0.40,
             pose_leg_axis=True,
             protect_upper_body=True,
+            # Wider half-width so L/R legs overlap and don't flash a white center seam.
+            leg_half_width_ratio=leg_half_width_ratio,
         )
+        layer, seam_meta = _fill_pants_inner_leg_seam(
+            layer,
+            left_leg_box=warp_meta.left_leg_box,
+            right_leg_box=warp_meta.right_leg_box,
+        )
+        layer, crotch_meta = _add_pants_crotch_crease(
+            layer,
+            left_leg_box=warp_meta.left_leg_box,
+            right_leg_box=warp_meta.right_leg_box,
+        )
+        # Soft body-fit only: never skeleton-crop baggy pants (reveals original bottoms).
+        layer, body_fit_meta = _clip_pants_layer_to_body_fit(
+            layer,
+            person_image,
+            outer_pad_ratio=1.45,
+            min_keep=0.78,
+        )
+        layer, cylinder_meta = _shade_pants_legs_as_cylinders(
+            layer,
+            person_image,
+            left_leg_box=warp_meta.left_leg_box,
+            right_leg_box=warp_meta.right_leg_box,
+            strength=0.34,
+        )
+        layer, harden_meta = _harden_pants_warp_alpha(layer)
+
+        shading_meta: dict = {"applied": False, "reason": "no_ai"}
+        if ai_result is not None:
+            strength, strength_meta = _ai_lower_detail_shading_strength(
+                ai_result,
+                person_image,
+                raw_decision=ai_raw_decision,
+            )
+            if strength > 0.02:
+                layer_np = np.asarray(layer.convert("RGBA"), dtype=np.uint8)
+                alpha = layer_np[:, :, 3].astype(np.float32) / 255.0
+                blend_mask = np.clip(alpha, 0.0, 1.0)
+                ai_arr = np.asarray(
+                    ai_result.convert("RGB").resize(person_image.size, Image.Resampling.BILINEAR),
+                    dtype=np.float32,
+                )
+                # Wrong-color CatVTON: wrinkles only. Good CatVTON: full luminance ratio.
+                if (ai_raw_decision or "") in {
+                    "color_only",
+                    "color_and_pattern",
+                    "strong_spatial",
+                }:
+                    shaded, shade_info = _apply_lower_detail_only_shading(
+                        layer_np=layer_np,
+                        ai_rgb=ai_arr,
+                        blend_mask=blend_mask,
+                        shading_strength=strength,
+                    )
+                else:
+                    shaded, shade_info = _apply_lower_luminance_shading(
+                        layer_np=layer_np,
+                        ai_rgb=ai_arr,
+                        blend_mask=blend_mask,
+                        shading_strength=strength,
+                    )
+                layer = Image.fromarray(np.clip(shaded, 0, 255).astype(np.uint8), mode="RGBA")
+                # Re-clean edges after shading (can reintroduce bright fringe).
+                layer, harden2 = _harden_pants_warp_alpha(layer)
+                harden_meta = {**harden_meta, "post_shade": harden2}
+                shading_meta = {
+                    "applied": True,
+                    **strength_meta,
+                    **shade_info,
+                }
+                logger.info("lower_warp_primary AI detail shading: %s", shading_meta)
+            else:
+                shading_meta = {"applied": False, **strength_meta}
 
         ankle_y = int(box_ext_meta.get("ankle_y") or warp_meta.left_leg_box[3])
         out, wear_meta = _composite_lower_warp_as_worn(
@@ -3276,25 +4095,35 @@ def tryon_lower_warp_primary(
         alpha = np.clip(np.asarray(layer.convert("RGBA"), dtype=np.float32)[:, :, 3] / 255.0, 0, 1)
         meta = {
             "engine": "lower_warp_primary",
-            "catvton_used": False,
+            "catvton_used": bool(shading_meta.get("applied")),
             "use_knee_split": False,
             "pose_leg_axis": True,
             "wear_composite": True,
-            "include_waistband": not denim_like,
+            "include_waistband": False,
+            "continuous_leg_waist": True,
             "denim_like": bool(denim_like),
             "pattern_strength": round(float(pattern_strength), 4),
             "drape_alpha": float(drape_alpha),
             "waist_raise_ratio": round(float(waist_raise), 4),
+            "top_extend_ratio": round(float(top_extend), 4),
             "hem_extend_ratio": round(float(hem_extend), 4),
-            "width_expand_ratio": 0.09,
-            "leg_taper_scale": 0.45,
+            "width_expand_ratio": round(float(width_expand_ratio), 4),
+            "leg_taper_scale": 0.40,
+            "leg_half_width_ratio": round(float(leg_half_width_ratio), 4),
             "box_extends": box_ext_meta,
+            "seam_meta": seam_meta,
+            "crotch_meta": crotch_meta,
+            "body_fit_meta": body_fit_meta,
+            "cylinder_meta": cylinder_meta,
+            "harden_meta": harden_meta,
+            "ai_shading_meta": shading_meta,
             "wear_meta": wear_meta,
             "waistband_box": list(warp_meta.waistband_box),
             "left_leg_box": list(warp_meta.left_leg_box),
             "right_leg_box": list(warp_meta.right_leg_box),
             "alpha_feather_px": int(warp_meta.alpha_feather_px),
             "alpha_coverage": round(float(alpha.mean()), 4),
+            "opaque_core": round(float((alpha > 0.9).mean()), 4),
         }
         if debug_session_dir:
             try:
@@ -3322,7 +4151,7 @@ def tryon_lower_warp_primary(
             person_image,
             garment_image,
             use_knee_split=False,
-            include_waistband=True,
+            include_waistband=False,
         )
         return out, {
             "engine": "lower_warp_primary_fallback",

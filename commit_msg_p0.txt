@@ -1,0 +1,7 @@
+feat(mobile): add save-to-gallery for virtual try-on results
+
+- Add gal + url_launcher dependencies
+- Create platform-aware image_saver (conditional import: IO/Web)
+- Add "保存到相册" button below try-on results
+- Web: open image in new tab via url_launcher
+- Mobile: download + save to device album via gal

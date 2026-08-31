@@ -57,7 +57,20 @@
       "Bash(python -m pytest tests/test_agent_skills.py -v)",
       "Bash(python -m pytest tests/test_memory_hybrid.py -v)",
       "Bash(python -m pytest tests/test_tool_registry.py tests/test_agent_skills.py -v)",
-      "Bash(python -m pytest tests/test_agent_metrics.py -v)"
+      "Bash(python -m pytest tests/test_agent_metrics.py -v)",
+      "Bash(python backend/scripts/evaluate_recognition_accuracy.py --quiet)",
+      "Bash(python backend/scripts/evaluate_recognition_accuracy.py)",
+      "Bash(awk -F',' '$2==\"外套\" {print $1, $6, $7}')",
+      "Bash(awk -F',' '$15==\"0\" {print $1, $7, $10, $13}' data/eval/recognition/results.csv)",
+      "Bash(awk -F',' '$15==\"0\" {print $1, $7, $10, $13}')",
+      "Bash(python -m pytest tests/ -v --tb=short)",
+      "Bash(timeout 30 tail -f C:/Users/omen/AppData/Local/Temp/claude/D--Users-omen-OneDrive----clothing-assistant/8f861e84-e04a-491a-a245-1a059e215cbb/tasks/bywzgnqdg.output)",
+      "Bash(python -m pytest tests/ --tb=no -q)",
+      "Bash(python backend/scripts/project_health_check.py)",
+      "Bash(python scripts/run_sleep_mode.py --lite --skip-logs)",
+      "Bash(python scripts/run_sleep_mode.py --lite)",
+      "Bash(python scripts/run_sleep_mode_v2.py --lite --skip-logs)",
+      "Bash(python scripts/run_sleep_mode_v3.py --lite --skip-logs)"
     ]
   }
 }

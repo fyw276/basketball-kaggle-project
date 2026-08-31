@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
@@ -63,6 +64,57 @@ def _merge_external_with_om(
 
 
 NOMINATIM_UA = "ClothingAssistant/1.1 (weather; +https://github.com)"
+
+
+def _outside_china(latitude: float, longitude: float) -> bool:
+    """GCJ-02 is only applicable inside mainland China."""
+    return not (72.004 <= longitude <= 137.8347 and 0.8293 <= latitude <= 55.8271)
+
+
+def _wgs84_to_gcj02(latitude: float, longitude: float) -> Tuple[float, float]:
+    """Convert phone GPS WGS-84 coordinates to the GCJ-02 coordinates Amap expects."""
+    if _outside_china(latitude, longitude):
+        return latitude, longitude
+
+    def transform_lat(x: float, y: float) -> float:
+        value = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * math.sqrt(abs(x))
+        value += (
+            (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
+        )
+        value += (20.0 * math.sin(y * math.pi) + 40.0 * math.sin(y / 3.0 * math.pi)) * 2.0 / 3.0
+        value += (
+            (160.0 * math.sin(y / 12.0 * math.pi) + 320.0 * math.sin(y * math.pi / 30.0))
+            * 2.0
+            / 3.0
+        )
+        return value
+
+    def transform_lon(x: float, y: float) -> float:
+        value = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * math.sqrt(abs(x))
+        value += (
+            (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
+        )
+        value += (20.0 * math.sin(x * math.pi) + 40.0 * math.sin(x / 3.0 * math.pi)) * 2.0 / 3.0
+        value += (
+            (150.0 * math.sin(x / 12.0 * math.pi) + 300.0 * math.sin(x / 30.0 * math.pi))
+            * 2.0
+            / 3.0
+        )
+        return value
+
+    a = 6378245.0
+    eccentricity_squared = 0.00669342162296594323
+    delta_lat = transform_lat(longitude - 105.0, latitude - 35.0)
+    delta_lon = transform_lon(longitude - 105.0, latitude - 35.0)
+    rad_lat = latitude / 180.0 * math.pi
+    magic = 1.0 - eccentricity_squared * math.sin(rad_lat) ** 2
+    sqrt_magic = math.sqrt(magic)
+    delta_lat = (
+        delta_lat * 180.0 / ((a * (1.0 - eccentricity_squared)) / (magic * sqrt_magic) * math.pi)
+    )
+    delta_lon = delta_lon * 180.0 / (a / sqrt_magic * math.cos(rad_lat) * math.pi)
+    return latitude + delta_lat, longitude + delta_lon
+
 
 # 国道/省道/县道/高速及「某某线」等道路编号，逆地理常压在 street 上，对用户展示「省市区」更稳。
 _ROUTE_NAME_HINT = re.compile(r"(国道|省道|县道|乡道|高速公路|快速路|环线|绕城|高速|^[Gg]\d{1,4})")
@@ -365,7 +417,8 @@ async def _amap_reverse(
     """
     if not (api_key or "").strip():
         return None, None, ""
-    loc = f"{longitude},{latitude}"
+    amap_latitude, amap_longitude = _wgs84_to_gcj02(latitude, longitude)
+    loc = f"{amap_longitude},{amap_latitude}"
     url = "https://restapi.amap.com/v3/geocode/regeo"
     try:
         res = await client.get(
@@ -556,14 +609,16 @@ async def fetch_weather_lat_lon(latitude: float, longitude: float) -> Dict[str, 
                 )
                 geocode_source = "amap"
 
-        nom, nom_err = await _nominatim_reverse(client, latitude, longitude)
-        if nom_err:
-            geocode_errors.append(f"nominatim: {nom_err}")
-        if nom:
-            p, c, d, s, full_line = _merge_external_with_om(
-                op, oc, od, os, line_om, nom, (p, c, d, s)
-            )
-            geocode_source = "nominatim"
+        # Keep a successful Amap result authoritative; Nominatim is a fallback.
+        if geocode_source != "amap":
+            nom, nom_err = await _nominatim_reverse(client, latitude, longitude)
+            if nom_err:
+                geocode_errors.append(f"nominatim: {nom_err}")
+            if nom:
+                p, c, d, s, full_line = _merge_external_with_om(
+                    op, oc, od, os, line_om, nom, (p, c, d, s)
+                )
+                geocode_source = "nominatim"
 
         if not full_line.strip() and r0:
             fb = _line_from_om_result(r0)

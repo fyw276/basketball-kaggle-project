@@ -240,6 +240,13 @@ class SimilarityAnalyzer:
 
         return similarities
 
+    def average_similarity_scores(self, scores: List[float]) -> float:
+        """Average bounded similarity scores, returning 0 for empty input."""
+        if not scores:
+            return 0.0
+        clipped = [max(0.0, min(1.0, float(score))) for score in scores]
+        return sum(clipped) / len(clipped)
+
     def has_duplicate_warning(self, matches: List[SimilarityMatch]) -> bool:
         """
         Check if there are high similarity matches (duplicate warning)

@@ -337,6 +337,30 @@ def create_logs_mockup(path: Path):
     img.save(path)
 
 
+def create_feature_detail_mockup(path: Path, title: str, subtitle: str, bullets: list[str], action: str, accent='#0F766E'):
+    img = make_canvas(bg='#F6F8FB')
+    draw = ImageDraw.Draw(img)
+    round_rect(draw, (50, 40, 1550, 860), radius=32, fill='#FFFFFF', outline='#D7DEE8', width=2)
+    draw.text((90, 75), title, font=font(34, True), fill='#111827')
+    draw.text((90, 132), subtitle, font=font(26), fill='#6B7280')
+
+    round_rect(draw, (90, 210, 610, 760), radius=26, fill='#F8FAFC', outline='#E2E8F0', width=2)
+    draw.ellipse((235, 280, 465, 510), fill='#E5F4F1', outline=accent, width=5)
+    centered_text(draw, (160, 525, 540, 610), title, fill=accent, size=30, bold=True)
+    round_rect(draw, (185, 650, 515, 725), radius=20, fill=accent)
+    centered_text(draw, (185, 650, 515, 725), action, fill='#FFFFFF', size=25, bold=True)
+
+    round_rect(draw, (680, 210, 1490, 760), radius=26, fill='#FAFAFB', outline='#E2E8F0', width=2)
+    draw.text((720, 250), '用户会看到', font=font(28, True), fill='#0F4C5C')
+    y = 325
+    for item in bullets:
+        draw.ellipse((725, y + 10, 743, y + 28), fill=accent)
+        for i, line in enumerate(wrap(item, 30)):
+            draw.text((765, y + i * 34), line, font=font(24), fill='#374151')
+        y += 86
+    img.save(path)
+
+
 def ensure_assets():
     TMP_DIR.mkdir(exist_ok=True)
     create_login_mockup(TMP_DIR / 'login_mockup.png')
@@ -348,6 +372,38 @@ def ensure_assets():
     create_tryon_mockup(TMP_DIR / 'tryon_mockup.png')
     create_analysis_mockup(TMP_DIR / 'analysis_mockup.png')
     create_logs_mockup(TMP_DIR / 'logs_mockup.png')
+    create_feature_detail_mockup(
+        TMP_DIR / 'profile_mockup.png',
+        '个人设置',
+        '维护身高、体型、肤色、风格偏好与性别表达指数',
+        ['填写基础资料后，推荐更贴合个人情况。', '性别表达指数会影响主题配色和推荐倾向。', '修改后建议重新生成智能穿搭或适合度分析。'],
+        '保存设置',
+        '#7C3AED',
+    )
+    create_feature_detail_mockup(
+        TMP_DIR / 'body_shape_mockup.png',
+        '体型洞察',
+        '基于用户画像生成体型友好的穿搭建议',
+        ['读取个人设置中的身高、体型和偏好。', '输出 3 套体型专属搭配方向。', '解释哪些版型更修饰身形或更适合当前场景。'],
+        '生成建议',
+        '#2563EB',
+    )
+    create_feature_detail_mockup(
+        TMP_DIR / 'agent_mockup.png',
+        'AI Agent',
+        '用自然语言提出复杂穿搭需求，系统流式执行工具',
+        ['可以同时结合天气、衣橱、记忆和场景。', '页面会展示执行步骤、工具调用和最终答案。', '适合不知道从哪个功能开始的用户。'],
+        '发送问题',
+        '#059669',
+    )
+    create_feature_detail_mockup(
+        TMP_DIR / 'style_score_mockup.png',
+        '风格打分',
+        '输入上衣、下装、颜色和场景，查看搭配分数',
+        ['返回风格分、Top3 推荐和中文解释。', '适合快速比较不同单品组合。', '可作为运营演示中的轻量 AI 评分入口。'],
+        '开始评分',
+        '#D97706',
+    )
 
 
 def add_para(story, styles, text, style='TTBody'):
@@ -565,67 +621,115 @@ def build_pdf():
         '若失败，先看前端提示，再查后端日志中的状态码与错误字段。',
     )
 
-    add_section(story, styles, '6. 情绪穿搭怎么用')
+    add_section(story, styles, '6. 搭配推荐 / 风格打分怎么用')
     add_step_detail(
         story,
         styles,
-        '步骤 6.1：情绪输入与建议生成',
+        '步骤 6.1：输入单品组合并评分',
+        '输入：上衣、下装、颜色、季节和场景。',
+        '进入“搭配推荐”或风格打分入口，填写单品组合后点击生成。',
+        '输出：风格分、Top3 推荐和中文解释，用于快速比较不同搭配。',
+        '后端常见日志：POST /predict... 200。',
+    )
+    add_image(story, TMP_DIR / 'style_score_mockup.png', '图 6：风格打分示意截图，用于快速比较搭配组合')
+
+    add_section(story, styles, '7. 情绪穿搭怎么用')
+    add_step_detail(
+        story,
+        styles,
+        '步骤 7.1：情绪输入与建议生成',
         '输入：选择当前心情标签（如“开心/放松/疲惫/压力大”）。',
         '点击“生成情绪穿搭建议”。',
         '输出：系统给出颜色方向、风格关键词及衣橱匹配建议。',
         '后端常见日志：POST /api/v1/analysis/mood-outfit... 200。',
     )
-    add_image(story, choose_asset('real_mood.jpg', 'mood_mockup.png'), '图 6：情绪穿搭真实截图，先选心情，再看推荐方向')
+    add_image(story, choose_asset('real_mood.jpg', 'mood_mockup.png'), '图 7：情绪穿搭真实截图，先选心情，再看推荐方向')
 
-    add_section(story, styles, '7. 适合度分析怎么用')
+    add_section(story, styles, '8. 适合度分析怎么用')
     add_step_detail(
         story,
         styles,
-        '步骤 7.1：上传图片并读取总分',
+        '步骤 8.1：上传图片并读取总分',
         '输入：一张待分析服饰图。',
         '进入“适合度评分”页面，点击“选择服饰图片”。',
         '输出：返回总分与维度解释（场景/体型/风格）。',
         '后端常见日志：POST /api/v1/analysis/suitability... 200。',
     )
-    add_image(story, choose_asset('real_suitability.png', 'analysis_mockup.png'), '图 7：适合度分析真实截图，先看说明，再选图分析')
+    add_image(story, choose_asset('real_suitability.png', 'analysis_mockup.png'), '图 8：适合度分析真实截图，先看说明，再选图分析')
 
-    add_section(story, styles, '8. 相似度分析怎么用')
+    add_section(story, styles, '9. 相似度分析怎么用')
     add_step_detail(
         story,
         styles,
-        '步骤 8.1：上传新衣服做相似度比对',
-        '输入：一张计划购买/新拍的衣服图。',
-        '进入“相似度分析”，点击“选择图片”。',
-        '输出：返回相似候选与相似度分数；分数高表示已有相近款。',
-        '后端常见日志：POST /api/v1/analysis/similarity... 200。',
+        '步骤 9.1：上传新衣服做相似度比对',
+        '输入：一张计划购买/新拍的衣服图，或一张整身 Look 图。',
+        '进入“相似度分析”，选择“单品”或“Look”模式后点击“选择图片”。',
+        '输出：单品模式返回相似候选与相似度分数；Look 模式返回整体匹配、部件匹配、缺失品类和试衣候选。',
+        '后端常见日志：POST /api/v1/analysis/similarity... 200；POST /api/v1/analysis/look-similarity... 200。',
     )
-    add_image(story, choose_asset('real_similarity.png', 'analysis_mockup.png'), '图 8：相似度分析真实截图，避免重复购买')
+    add_image(story, choose_asset('real_similarity.png', 'analysis_mockup.png'), '图 9：相似度分析真实截图，避免重复购买')
 
-    add_section(story, styles, '9. 虚拟试衣怎么用')
+    add_section(story, styles, '10. 虚拟试衣怎么用')
     add_step_detail(
         story,
         styles,
-        '步骤 9.1：上传衣服图 + 人物图生成试衣',
-        '输入：衣服图（建议无模特）+ 人物正面照（必填，建议白底）。',
-        '进入“虚拟试衣”，按提示上传两张图片，点击生成。',
-        '输出：返回试穿图（可扩展到正/侧/背多视角）。',
+        '步骤 10.1：上传衣服图 + 人物图生成试衣',
+        '输入：衣服图（建议无模特）+ 人物正面照（必填，建议白底）；从 Look 候选进入时衣服图会自动带入。',
+        '进入“虚拟试衣”，按提示上传图片，点击生成。',
+        '输出：返回试穿图；移动端可保存到相册，Web 端可打开结果图下载。',
         '后端常见日志：POST /tryon/garment... 200；若 400 通常是输入图不符合要求。',
     )
-    add_image(story, choose_asset('real_tryon.png', 'tryon_mockup.png'), '图 9：虚拟试衣步骤截图（点击入口后按提示上传衣服图与人物图）')
+    add_image(story, choose_asset('real_tryon.png', 'tryon_mockup.png'), '图 10：虚拟试衣步骤截图（点击入口后按提示上传衣服图与人物图）')
 
-    add_section(story, styles, '10. 日志怎么看')
+    add_section(story, styles, '11. 个人设置怎么用')
     add_step_detail(
         story,
         styles,
-        '步骤 10.1：按“时间点 + 接口 + 状态码”排查',
+        '步骤 11.1：补充画像并保存',
+        '输入：身高、体型、肤色、风格偏好和性别表达指数。',
+        '进入底部“设置”，填写资料后点击保存。',
+        '输出：后续推荐、适合度分析和体型洞察会读取这些资料。',
+        '前端成功标志：页面保存成功提示；后端常见日志：PUT /api/v1/profile... 200。',
+    )
+    add_image(story, TMP_DIR / 'profile_mockup.png', '图 11：个人设置示意截图，先补画像再做推荐')
+
+    add_section(story, styles, '12. 体型洞察怎么用')
+    add_step_detail(
+        story,
+        styles,
+        '步骤 12.1：生成体型友好穿搭',
+        '输入：已保存的用户画像。',
+        '进入“体型洞察”，点击生成建议。',
+        '输出：3 套体型专属搭配方向和版型解释。',
+        '前端成功标志：页面展示搭配卡片和原因说明。',
+    )
+    add_image(story, TMP_DIR / 'body_shape_mockup.png', '图 12：体型洞察示意截图，读取画像后生成建议')
+
+    add_section(story, styles, '13. AI Agent 对话怎么用')
+    add_step_detail(
+        story,
+        styles,
+        '步骤 13.1：用自然语言提出穿搭需求',
+        '输入：一句完整需求，例如“明天面试，20 度，帮我从衣橱选一套”。',
+        '进入 AI Agent 对话页，发送问题并等待流式步骤完成。',
+        '输出：执行步骤、工具调用结果和最终穿搭建议。',
+        '后端常见日志：POST /api/v1/agent/chat-stream... 200。',
+    )
+    add_image(story, TMP_DIR / 'agent_mockup.png', '图 13：AI Agent 示意截图，适合复杂自然语言需求')
+
+    add_section(story, styles, '14. 日志怎么看')
+    add_step_detail(
+        story,
+        styles,
+        '步骤 14.1：按“时间点 + 接口 + 状态码”排查',
         '输入：页面报错时间、当前操作（例如登录/生成/试衣）。',
         '在后端控制台按时间找到对应接口，确认返回码。',
         '输出：快速定位是前端参数问题、鉴权问题还是后端服务问题。',
         '示例：POST /api/v1/auth/login 200；POST /api/v1/smart-outfit/generate 200。',
     )
-    add_image(story, TMP_DIR / 'logs_mockup.png', '图 10：后端日志示意图，能快速判断注册、登录和生成是否成功')
+    add_image(story, TMP_DIR / 'logs_mockup.png', '图 14：后端日志示意图，能快速判断注册、登录和生成是否成功')
 
-    add_section(story, styles, '11. 推荐的实际使用顺序')
+    add_section(story, styles, '15. 推荐的实际使用顺序')
     sequence = Table(
         [
             ['顺序', '你要做什么', '目的'],
@@ -656,7 +760,7 @@ def build_pdf():
     story.append(sequence)
     story.append(Spacer(1, 0.25 * cm))
 
-    add_section(story, styles, '12. 常见问题')
+    add_section(story, styles, '16. 常见问题')
     add_subsection(
         story,
         styles,

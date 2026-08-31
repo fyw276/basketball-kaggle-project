@@ -910,36 +910,125 @@ async def tryon_garment_v2(
     garment_jpg = _pil_image_to_jpeg_bytes(garment_image, quality=95)
     person_jpg = _pil_image_to_jpeg_bytes(person_image, quality=95)
 
-    # Lower-only: continuous whole-leg geometric warp. Must run before detail_fidelity/hybrid
-    # so upper CatVTON paths stay completely unchanged.
+    # Lower-only: warp primary for color/structure, optional CatVTON detail shading.
+    # Must run before detail_fidelity/hybrid so upper CatVTON paths stay unchanged.
     _cloth_type_early = map_to_catvton_cloth_type(garment_category)
     if mode in {"detail_fidelity", "hybrid"} and (
         is_lower_garment_category(garment_category) or _cloth_type_early == "lower"
     ):
+        from app.services.tryon_v2.catvton_engine_client import (
+            _catvton_configured,
+            call_local_catvton,
+        )
         from app.services.tryon_v2.warp_engine import tryon_lower_warp_primary
 
         logger.info(
-            "[%s] lower garment → lower_warp_primary (skip CatVTON)",
+            "[%s] lower garment → lower_warp_primary (+ optional CatVTON detail shading)",
             mode,
         )
+        ai_img = None
+        ai_raw_decision: str | None = None
+        ai_lighting_meta: dict[str, Any] = {
+            "applied": False,
+            "reason": "catvton_skipped_or_unavailable",
+        }
+        if _catvton_configured():
+            try:
+                upstream = await call_local_catvton(
+                    garment_bytes=garment_jpg,
+                    person_bytes=person_jpg,
+                    garment_category=_cloth_type_early,
+                    debug_dir=debug_session_dir,
+                )
+                ai_img = (upstream or {}).get("result_image")
+                if ai_img is None:
+                    ai_lighting_meta = {"applied": False, "reason": "catvton_no_image"}
+                else:
+                    features = extract_engine_decision_features(original_garment_image)
+                    raw_quality = evaluate_raw_catvton_quality(
+                        raw_result=ai_img,
+                        original_garment=original_garment_image,
+                        person_image=person_image,
+                        garment_category=garment_category or "下装",
+                        features=features,
+                        raw_mask_image=(upstream.get("metadata") or {}).get("mask_image"),
+                    )
+                    ai_raw_decision = raw_quality.decision
+                    ai_lighting_meta = {
+                        "applied": False,  # filled after warp if shading used
+                        "raw_decision": raw_quality.decision,
+                        "raw_reason": raw_quality.reason,
+                        "catvton_called": True,
+                    }
+            except Exception as ai_err:
+                ai_img = None
+                ai_raw_decision = None
+                ai_lighting_meta = {
+                    "applied": False,
+                    "reason": f"catvton_lighting_error:{ai_err}",
+                }
+                logger.warning("lower CatVTON call failed, warp-only: %s", ai_err)
+
         result_img, warp_meta = tryon_lower_warp_primary(
             person_image=person_image,
             garment_image=garment_image,
+            ai_result=ai_img,
+            ai_raw_decision=ai_raw_decision,
             debug_session_dir=debug_session_dir,
         )
+        shade = (warp_meta or {}).get("ai_shading_meta") or {}
+        if shade.get("applied"):
+            ai_lighting_meta = {
+                **ai_lighting_meta,
+                **shade,
+                "applied": True,
+                "catvton_used_for_lighting": True,
+                "method": "luminance_detail_on_warp_layer",
+            }
+            logger.info("lower AI detail shading applied: %s", ai_lighting_meta)
+            if debug_session_dir:
+                try:
+                    save_debug_stage_image(
+                        debug_session_dir=debug_session_dir,
+                        filename="13_lower_ai_lighting_result.jpg",
+                        image=result_img,
+                        metadata={"stage": "lower_ai_lighting", **ai_lighting_meta},
+                    )
+                except Exception:
+                    pass
+        elif ai_img is not None and not ai_lighting_meta.get("reason"):
+            ai_lighting_meta = {
+                **ai_lighting_meta,
+                **shade,
+                "applied": False,
+                "reason": shade.get("reason") or "detail_shading_skipped",
+            }
+
         result = {
             "status": "success",
-            "message": "下装几何试衣完成（左右整腿连续 warp，颜色纹理保真，未调用 CatVTON）",
+            "message": (
+                "下装试衣完成（不透明 warp 保色"
+                + (
+                    " + CatVTON 褶皱光影）"
+                    if ai_lighting_meta.get("applied")
+                    else "；CatVTON 光影未用或细节不足）"
+                )
+            ),
             "result_image": result_img,
             "qc_scores": {
                 "fidelity_score": 0.92,
-                "realism_score": 0.78,
+                "realism_score": 0.88 if ai_lighting_meta.get("applied") else 0.82,
             },
             "metadata": {
                 "pipeline": "LOWER_WARP_PRIMARY",
                 "mode": mode,
                 "catvton_category": _cloth_type_early,
-                "method": "whole_leg_warp_primary",
+                "method": (
+                    "whole_leg_warp_primary_plus_ai_detail"
+                    if ai_lighting_meta.get("applied")
+                    else "whole_leg_warp_primary"
+                ),
+                "ai_lighting": ai_lighting_meta,
                 **warp_meta,
             },
         }

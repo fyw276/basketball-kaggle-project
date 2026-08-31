@@ -9,6 +9,7 @@ from app.services.weather_service import (
     _is_route_like_road,
     _normalize_admin_parts,
     _normalize_city_query,
+    _wgs84_to_gcj02,
 )
 
 
@@ -73,3 +74,13 @@ def test_amap_cn_weather_to_wmo_approx_maps_common():
     assert _amap_cn_weather_to_wmo_approx("阴") == 3
     assert _amap_cn_weather_to_wmo_approx("阵雨") == 61
     assert _amap_cn_weather_to_wmo_approx("雷阵雨") == 95
+
+
+def test_wgs84_to_gcj02_converts_mainland_china_coordinates():
+    latitude, longitude = _wgs84_to_gcj02(31.2304, 121.4737)
+    assert latitude == pytest.approx(31.22846, abs=0.0001)
+    assert longitude == pytest.approx(121.47822, abs=0.0001)
+
+
+def test_wgs84_to_gcj02_keeps_overseas_coordinates_unchanged():
+    assert _wgs84_to_gcj02(40.7128, -74.0060) == (40.7128, -74.0060)

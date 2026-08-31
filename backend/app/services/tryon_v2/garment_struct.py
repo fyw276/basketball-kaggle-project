@@ -607,6 +607,69 @@ def cutout_garment_rgba(
     return GarmentCutout(rgba=rgba, cropped=cropped)
 
 
+def _strip_inner_leg_white_edge(leg: Image.Image, *, inseam: str) -> Image.Image:
+    """Clear near-white product-bg pixels stuck to a leg crop's inseam side.
+
+    White-bg pants photos leave a bright fringe between the legs. After L/R split
+    that fringe sits on the inseam edge and warps into a vertical white split.
+
+    Args:
+        leg: RGBA leg crop.
+        inseam: ``"right"`` for the left leg (inseam on its right), ``"left"``
+            for the right leg.
+    """
+    im = leg.convert("RGBA")
+    arr = np.asarray(im, dtype=np.uint8).copy()
+    h, w = arr.shape[:2]
+    if w < 8 or h < 8:
+        return im
+
+    rgb = arr[:, :, :3].astype(np.float32)
+    alpha = arr[:, :, 3]
+    gray = rgb.mean(axis=2)
+    sat = rgb.max(axis=2) - rgb.min(axis=2)
+    fg = alpha > 20
+    if not fg.any():
+        return im
+
+    edge_band = np.zeros((h, w), dtype=bool)
+    band_w = max(3, int(w * 0.20))
+    if inseam == "right":
+        edge_band[:, w - band_w :] = True
+    else:
+        edge_band[:, :band_w] = True
+
+    eroded = cv2.erode(fg.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=2)
+    near_boundary = fg & (eroded == 0)
+    interior = eroded > 0
+    interior_gray = float(np.median(gray[interior])) if interior.any() else 255.0
+    whiteish = (gray > 175.0) & (sat < 28.0) & fg
+
+    # Dark pants: white product-bg between legs is often fully opaque and glued to
+    # the fabric, so do not require an alpha boundary — clear the whole inseam fringe.
+    # Light pants: only clear true background fringe near the silhouette edge.
+    if interior_gray < 140.0:
+        kill = whiteish & edge_band
+        bright_edge = (
+            edge_band & near_boundary & fg & (gray > interior_gray + 45.0) & (gray > 110.0)
+        )
+        kill |= bright_edge
+    else:
+        kill = whiteish & edge_band & near_boundary
+
+    if not kill.any():
+        return im
+
+    arr[kill, :3] = 255
+    arr[kill, 3] = 0
+    logger.debug(
+        "[GARMENT-STRUCT] stripped inner-leg white edge inseam=%s px=%d",
+        inseam,
+        int(kill.sum()),
+    )
+    return Image.fromarray(arr, mode="RGBA")
+
+
 def split_pants_parts(
     cropped_rgba: Image.Image,
     *,
@@ -642,8 +705,14 @@ def split_pants_parts(
         x_mid = int(np.median(xs))
         x_mid = _clamp_int(x_mid, int(w * 0.35), int(w * 0.65))
 
-    left_leg = lower.crop((0, 0, x_mid, lower.size[1]))
-    right_leg = lower.crop((x_mid, 0, w, lower.size[1]))
+    left_leg = _strip_inner_leg_white_edge(
+        lower.crop((0, 0, x_mid, lower.size[1])),
+        inseam="right",
+    )
+    right_leg = _strip_inner_leg_white_edge(
+        lower.crop((x_mid, 0, w, lower.size[1])),
+        inseam="left",
+    )
 
     parts = PantsParts(waistband=waistband, left_leg=left_leg, right_leg=right_leg)
 
