@@ -119,10 +119,11 @@ class _SuitabilityScreenState extends State<SuitabilityScreen> {
             Container(
               padding: const EdgeInsets.all(16.0),
               decoration: BoxDecoration(
-                color: tokens.surface
-                    .withOpacity(tokens.style == UserGender.male ? 0.78 : 0.70),
+                color: tokens.surface.withValues(
+                    alpha: tokens.style == UserGender.male ? 0.78 : 0.70),
                 borderRadius: BorderRadius.circular(tokens.cardRadius),
-                border: Border.all(color: tokens.border.withOpacity(0.85)),
+                border:
+                    Border.all(color: tokens.border.withValues(alpha: 0.85)),
                 boxShadow: tokens.cardShadow(),
               ),
               child: Column(

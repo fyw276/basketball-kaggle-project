@@ -55,24 +55,30 @@ class _PersonalSettingsScreenState extends State<PersonalSettingsScreen> {
   }
 
   Future<void> _load() async {
+    if (!mounted) return;
     setState(() => _loading = true);
+
     final client = context.read<AuthProvider>().apiClient;
+    final themeProvider = context.read<ThemeProvider>();
     try {
       final sub = await client.getSubscriptionStatus();
+      if (!mounted) return;
       if (sub is Map && !sub.containsKey('error')) {
         _subscription = Map<String, dynamic>.from(sub);
       }
 
       final p = await client.getProfile();
+      if (!mounted) return;
       if (p is Map && !p.containsKey('error')) {
         // 性别表达指数 → 同步全局主题
         if (p['gender_expression'] != null) {
-          context.read<ThemeProvider>().setGenderExpression(
-                (p['gender_expression'] as num).toDouble(),
-              );
+          themeProvider.setGenderExpression(
+            (p['gender_expression'] as num).toDouble(),
+          );
         }
-        if (p['height'] != null)
+        if (p['height'] != null) {
           _height = (p['height'] as num).toDouble().clamp(140, 200);
+        }
         _bodyType = p['body_type']?.toString();
         _skinTone = p['skin_tone']?.toString();
         _budget = p['budget_range']?.toString();

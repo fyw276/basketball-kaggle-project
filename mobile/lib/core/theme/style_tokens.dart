@@ -9,7 +9,7 @@ class StyleTokens {
   final Color border;
   final Color text;
   final Color muted;
-  final int style;
+  final UserGender style;
 
   const StyleTokens({
     required this.primary,
@@ -33,9 +33,9 @@ class StyleTokens {
           border: Color(0xFFCBD5E1),
           text: Color(0xFF1E293B),
           muted: Color(0xFF64748B),
-          style: 0,
+          style: UserGender.male,
         );
-      case 1:
+      case UserGender.female:
         return const StyleTokens(
           primary: Color(0xFFEC4899),
           accent: Color(0xFFF472B6),
@@ -44,9 +44,9 @@ class StyleTokens {
           border: Color(0xFFF9A8D4),
           text: Color(0xFF831843),
           muted: Color(0xFFBE185D),
-          style: 1,
+          style: UserGender.female,
         );
-      default:
+      case UserGender.none:
         return const StyleTokens(
           primary: Color(0xFF6366F1),
           accent: Color(0xFF8B5CF6),
@@ -55,7 +55,7 @@ class StyleTokens {
           border: Color(0xFFE2E8F0),
           text: Color(0xFF1E293B),
           muted: Color(0xFF64748B),
-          style: 2,
+          style: UserGender.none,
         );
     }
   }
